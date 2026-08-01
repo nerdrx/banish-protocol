@@ -103,10 +103,20 @@ Steal the data. Reach a backdoor. Exfiltrate before the system decompiles you.
   surfaces, organic-looking cable growths — MOTHER's oldest code, half-mad.
 
 ### Antivirus (v1: two processes)
-- **Scrubbers** — fast pack hunters, weak, avoid decryption beams, swarm from
-  the dark. The system's cheap, disposable cleaners.
-- **Sentinel** — slow heavy quarantine process, beam-immune, area denial,
-  guards data vaults. Announces itself with a red scan sweep.
+
+**The killability law (design invariant): every monster dies to the breaker.**
+Nothing in MOTHER is immune — you can always delete the running instance. You
+just can't delete the *process*: she recompiles it. Persistence comes from
+respawn and behavior, never from immunity. Terror must never read as "your
+gun is useless," only as "shooting is one of several competing options."
+
+- **Scrubbers** — fast pack hunters, weak (2-3 breaker hits), avoid decryption
+  beams, swarm from the dark. The system's cheap, disposable cleaners.
+- **Sentinel** — slow heavy quarantine process, heavily armored (~20x Scrubber
+  HP) with an exposed emissive core that takes bonus damage during its SCAN
+  and PURGE states (shielding drops to act). A solo kill is a huge investment;
+  a crew kill is a coordinated takedown. Drops a burst of data shards. Area
+  denial, guards data vaults, announces itself with a red scan sweep.
 - Host-side AI: state machines (idle patrol → trace → purge), navigate the
   room graph. Stats scale with layer number.
 
@@ -259,3 +269,53 @@ nullvoid/
   files, backdoor-injection lobby flow, archive economy, threat-curve balancing.
 - **M5 — Expensive**: post/glitch polish, audio, screen shake, kill cams,
   low-Cycles presentation, menu/lobby polish, Linux + Windows export presets.
+- **M6 — The Haunting**: MOTHER becomes the horror director + hunter processes.
+
+## M6 — The Haunting (design arc, post-v1)
+
+Goal: *proper scary, never hardcore.* Terror and punishment are different
+axes — max the first, cap the second. The killability law applies to every
+hunter below: all of them die to the breaker; persistence is respawn + memory,
+never immunity.
+
+### The Director
+MOTHER always knows where the crew is (you run inside her); her processes only
+know what she tells them — a canonical two-brain setup (Alien: Isolation) with
+L4D-style pacing: she tracks crew stress (recent damage, Cycles, time since
+last scare) and paces leaks of your position — quiet dread, spike, mercy.
+When the crew is broken and limping she withholds (a predator toys with dying
+prey): invisible rubber-banding that reads as lore, not difficulty settings.
+
+### Hunter processes (each hunts by a different sense; counters conflict)
+- **The Hound** — hears. Spawned by noise debt (siphons, breaker fire,
+  sprinting). Relentless pursuit; at low HP it flees to darkness to recompile
+  (wounded-animal window — chase it or let it go). Killable with focused fire:
+  a real crew decision with a real reward (large data burst + silence). But
+  the process survives: minutes later MOTHER recompiles it and its howl
+  announces the timer restarting. Killing it buys time, never peace.
+- **The Moth** — sees light. Drawn to beams, flares, muzzle flash — the exact
+  inverse of Scrubbers, so light discipline and darkness-safety start
+  contradicting each other mid-fight. Fragile-ish but fast; shooting it means
+  muzzle light, which excites it — kill it quickly or go dark and hide.
+- **The Auditor** (deep layers) — methodical, not reactive. Walks the layer
+  checking rooms in a fixed order, audible rooms away. Killable (tanky); a
+  deleted Auditor ends audits for that layer — the most "earnable safety" of
+  the three. Dread on a schedule.
+- Escalation by depth: layers 1-5 none, then one hunter class at a time;
+  past ~15 the Director may run two simultaneously (Hound+Moth plays nothing
+  like Hound+Auditor).
+
+### Mercy layer (the not-hardcore guarantees)
+- Hunters haunt, they don't erase: getting caught costs integrity + Cycles,
+  not the run. Builds are never lost (roguelite invariant).
+- Backdoor rooms are absolutely sacred — no antivirus, ever. Horror needs a
+  campfire.
+- Injection depth IS the difficulty slider; no difficulty menu.
+- "Dampened protocol" toggle: softens audio spikes + jumpscare sharpness
+  without touching difficulty.
+
+### Garnish
+- Glitch HUD as proximity sense: corruption static intensifies near hunters —
+  your screen breaking is the radar.
+- MOTHER addresses players by callsign through glyph panels. Rarely. She has
+  always known.
