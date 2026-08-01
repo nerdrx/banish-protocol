@@ -244,12 +244,16 @@ nullvoid/
     frictionless glide with glitch-stutter on direction change, procedural
     head-track via eye/head bones so it watches players, jaw bone for the
     scream, IK claw plants on lunge.
-  - **Crew avatar (interim)**: same model, INVERTED — bright/pale shell with
-    blue glowing accents (default swatch bright blue; accent tint follows the
-    lobby shell-marker color so crewmates stay tellable-apart). Light
-    procedural locomotion only (movement lean, head look, subtle limb bob) —
-    an honest placeholder: user will supply a dedicated player model later,
-    at which point this variant retires.
+  - **Crew avatar (interim, but long-lived)**: same model, INVERTED —
+    bright/pale shell with blue glowing accents (default swatch bright blue;
+    accent tint follows the lobby shell-marker color so crewmates stay
+    tellable-apart). Full authored locomotion set, built as cyclic keyframe
+    animations on the rig in Blender (headless-scripted, digitigrade gait):
+    idle (weight shift + tail sway + ear/head micro-motion), walk, run
+    (forward lean), plus corrupted-kneel and restore-rise poses for M3 states.
+    Godot AnimationTree blends by replicated speed; procedural head-look and
+    movement lean layered on top. Retires whenever the user ships a dedicated
+    player model.
   FBX→glTF via Blender 5.2 headless (pipeline verified).
 - **M4 — The long game**: Compilers + permanent module tracks, per-player save
   files, backdoor-injection lobby flow, archive economy, threat-curve balancing.
