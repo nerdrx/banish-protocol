@@ -57,6 +57,8 @@ func _build_content() -> void:
 				_dress_vault(room)
 			LayerGraph.SHAFT:
 				_dress_shaft(room)
+			LayerGraph.BACKDOOR:
+				_dress_backdoor(room)
 			_:
 				_dress_bus(room)
 
@@ -70,28 +72,42 @@ func _build_content() -> void:
 ## relative heuristic the hand-authored layer uses does not survive a room 50 m
 ## off-centre.
 func _light_room(room: Dictionary) -> void:
+	# Nests get nothing at all. An unlit room is the darkest thing on a layer and
+	# the only place a Scrubber is comfortable — the two facts are the same fact.
+	if bool(room["unlit"]):
+		return
+
 	var lo: Vector2 = room["min"]
 	var hi: Vector2 = room["max"]
 	var h: float = room["h"]
 	var count: int = int(graph.params["room_light_count"])
 
 	# The arrival room is the crew's one moment of orientation, so it always gets
-	# the full complement plus a little more energy. Everything else is sparse.
+	# the full complement plus a little more energy. The sanctuary is the other
+	# exception: it is meant to feel safe, and dark is not safe.
 	var archetype: String = String(room["archetype"])
 	if archetype == LayerGraph.ARRIVAL:
 		count += 1
+	elif archetype == LayerGraph.BACKDOOR:
+		count += 3
 
 	for i: int in count:
 		var wall: int = _rng.randi_range(0, 3)
 		var height: float = minf(h - 1.0, _rng.randf_range(2.6, 4.2))
-		var warm: bool = _rng.randf() < 0.22
+		# The sanctuary runs warm and steady; everywhere else the system's own
+		# cold teal, with the occasional amber accent.
+		var warm: bool = _rng.randf() < 0.22 or archetype == LayerGraph.BACKDOOR
 		var colour: Color = SYSTEM_AMBER if warm else Color(
 				_rng.randf_range(0.26, 0.34), _rng.randf_range(0.78, 0.88), 1.0)
-		# Flicker is the layer telling you not to trust it. More of it deeper.
-		var flicker: bool = _rng.randf() < lerpf(0.28, 0.55, float(graph.params["depth"]))
+		# Flicker is the layer telling you not to trust it. More of it deeper —
+		# and none of it in the one room that is not lying to you.
+		var flicker: bool = _rng.randf() < lerpf(0.28, 0.55, float(graph.params["depth"])) \
+				and archetype != LayerGraph.BACKDOOR
 		var energy: float = _rng.randf_range(1.6, 3.2)
 		if archetype == LayerGraph.ARRIVAL:
 			energy += 1.0
+		elif archetype == LayerGraph.BACKDOOR:
+			energy += 1.6
 
 		var spec: Dictionary = {
 			"len": _rng.randf_range(2.0, 4.0),
@@ -204,8 +220,82 @@ func _dress_vault(room: Dictionary) -> void:
 		_mesh_box(Vector3(x, 2.4, centre.y), Vector3(0.06, 0.06, hi.y - lo.y - 3.0), bar)
 
 
+## Backdoor node sanctuary. Deliberately unlike every other room on the layer:
+## bigger, taller, warm, symmetrical, and with a vaulted ceiling instead of a
+## slab. DESIGN.md makes this the crew's one safe place — antivirus never comes
+## in here — and it has to *look* like somewhere you can stop running.
+func _dress_backdoor(room: Dictionary) -> void:
+	var lo: Vector2 = room["min"]
+	var hi: Vector2 = room["max"]
+	var h: float = room["h"]
+	var centre: Vector2 = (lo + hi) * 0.5
+	var amber: StandardMaterial3D = _make_emissive(SYSTEM_AMBER, 0.8)
+
+	# A colonnade rather than scattered clutter: the room is architecture, and
+	# somebody built it on purpose.
+	var columns: int = 6
+	for i: int in columns:
+		var angle: float = TAU * float(i) / float(columns)
+		var at: Vector2 = centre + Vector2(cos(angle), sin(angle)) * (LayerGraph.BACKDOOR_HALF - 2.6)
+		_box(Vector3(at.x, h * 0.5, at.y), Vector3(1.1, h, 1.1), MAT_CONDUIT)
+		_mesh_box(Vector3(at.x, h - 0.5, at.y), Vector3(1.35, 0.12, 1.35), amber)
+		_mesh_box(Vector3(at.x, 1.2, at.y), Vector3(1.2, 0.05, 1.2), amber)
+		# Ribs running from every column to the middle: a vault, not a lid.
+		_conduit_run(Vector3(at.x, h - 0.55, at.y), Vector3(centre.x, h - 1.6, centre.y), 0.22)
+
+	# Warm floor ring around the middle of the room, wide enough to walk inside.
+	var ring: int = 28
+	for i: int in ring:
+		var angle: float = TAU * float(i) / float(ring)
+		var at: Vector2 = centre + Vector2(cos(angle), sin(angle)) * (LayerGraph.BACKDOOR_HALF - 5.5)
+		_mesh_box(Vector3(at.x, 0.016, at.y), Vector3(0.9, 0.03, 0.12), amber)
+
+	# The one glyph panel on the layer that is telling you something good.
+	_glyph_panel(Vector3(centre.x, 0.0, lo.y + 1.4), SYSTEM_AMBER)
+
+	var hearth: OmniLight3D = OmniLight3D.new()
+	hearth.name = "SanctuaryGlow"
+	hearth.position = Vector3(centre.x, h - 1.8, centre.y)
+	hearth.light_color = SYSTEM_AMBER
+	hearth.light_energy = 3.6 * light_scale
+	hearth.omni_range = 30.0
+	hearth.omni_attenuation = 0.75
+	hearth.light_volumetric_fog_energy = 1.6
+	hearth.shadow_enabled = false
+	_fixtures.add_child(hearth)
+
+	_scatter_blocks(room, 5, 1.0, 1.7)
+
+
+## A nest. No fixtures at all (see _light_room) — just dark red inlay on the
+## floor, so a beam sweeping the room tells you what you have walked into a
+## moment before the sensors light up.
+func _dress_nest(room: Dictionary) -> void:
+	var lo: Vector2 = room["min"]
+	var hi: Vector2 = room["max"]
+	var centre: Vector2 = (lo + hi) * 0.5
+	var rot: StandardMaterial3D = _make_emissive(Color(0.6, 0.08, 0.1), 0.42)
+
+	# Growth radiating from the middle of the room: MOTHER's cleaners have been
+	# living here and the architecture has gone over to them.
+	var strands: int = _rng.randi_range(5, 8)
+	for i: int in strands:
+		var angle: float = _rng.randf_range(0.0, TAU)
+		var reach: float = _rng.randf_range(3.0, 7.0)
+		var to: Vector2 = centre + Vector2(cos(angle), sin(angle)) * reach
+		to.x = clampf(to.x, lo.x + 1.0, hi.x - 1.0)
+		to.y = clampf(to.y, lo.y + 1.0, hi.y - 1.0)
+		_trace(Vector3(centre.x, 0.016, centre.y), Vector3(to.x, 0.016, to.y), rot, 0.07)
+		_data_block(Vector3(to.x, 0.0, to.y), Vector3.ONE * _rng.randf_range(0.5, 0.9),
+				_rng.randf_range(-0.8, 0.8))
+
+
 ## Bus hall: processing stacks that break a beam into slats, and trunk conduits.
 func _dress_bus(room: Dictionary) -> void:
+	if bool(room["unlit"]):
+		_dress_nest(room)
+		return
+
 	var lo: Vector2 = room["min"]
 	var hi: Vector2 = room["max"]
 	var h: float = room["h"]
@@ -285,6 +375,17 @@ func _place_furniture() -> void:
 	_shaft = DropShaft.create(graph.shaft_point)
 	_shaft.add_to_group("drop_shafts")
 	_fixtures.add_child(_shaft)
+
+	# Salvage. Worth is a pure function of the layer, so every peer agrees on
+	# what a shard is worth without being told.
+	var worth: int = Balance.shard_value(graph.layer_number)
+	for i: int in graph.shard_points.size():
+		_fixtures.add_child(DataShard.create(i, graph.shard_points[i], worth))
+
+	if not graph.is_backdoor:
+		return
+	_fixtures.add_child(BackdoorNode.create(graph.backdoor_point))
+	_fixtures.add_child(ExfilUplink.create(graph.uplink_point))
 
 
 # ------------------------------------------------------------------- spawns --

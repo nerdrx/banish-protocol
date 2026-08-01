@@ -13,6 +13,10 @@ extends Node3D
 
 @export var sweep_speed: float = 0.42
 @export var pulse_depth: float = 0.14
+## When set, something else owns `rotation.y` — M3's Sentinel aims its own sweep
+## from a replicated angle, because a sweep that misses on your screen and hits
+## on the host's would be unplayable. The breathing pulse still runs.
+@export var driven: bool = false
 
 @onready var _light: SpotLight3D = get_node_or_null("Spot") as SpotLight3D
 
@@ -24,10 +28,18 @@ func _ready() -> void:
 		_base_energy = _light.light_energy
 
 
+## Brightness scale applied on top of the breath, so a driver can dim the sweep
+## while its owner is dormant and blow it out on an alarm.
+func set_intensity(scale: float) -> void:
+	if _light != null:
+		_light.light_energy = maxf(_base_energy * scale, 0.0)
+
+
 func _process(_delta: float) -> void:
 	var t: float = float(Time.get_ticks_msec()) / 1000.0
-	rotation.y = t * sweep_speed
-	if _light != null:
+	if not driven:
+		rotation.y = t * sweep_speed
+	if _light != null and not driven:
 		# A slow breath on top of the rotation, so the sweep never sits at one
 		# steady brightness long enough to become wallpaper.
 		_light.light_energy = _base_energy * (1.0 - pulse_depth + sin(t * 1.3) * pulse_depth)

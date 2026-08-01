@@ -38,6 +38,10 @@ const BEAM_SWAY: float = 0.045
 const NAMEPLATE_FULL_DISTANCE: float = 8.0
 const NAMEPLATE_FADE_DISTANCE: float = 15.0
 
+## Above this apparent speed, a remote avatar did not move — it was moved (a
+## descent, a debug jump). Comfortably above a sprint plus a fall.
+const TELEPORT_SPEED: float = 24.0
+
 ## How far you can reach an interactable, and the interact-layer mask the probe
 ## ray tests against (project.godot [layer_names] 3d_physics/layer_3).
 const REACH: float = 3.4
@@ -51,9 +55,33 @@ const SPECTATE_DISTANCE: float = 3.4
 const SPECTATE_HEIGHT: float = 2.1
 const SPECTATE_LERP: float = 3.5
 
+# --- corrupted (downed) ------------------------------------------------------
+## How hot the circuit seams run normally. They go out as the process corrupts.
+const SEAM_ENERGY: float = 3.0
+
+## Where the lens sits once the process is on its knees, and how far the shell
+## drops with it.
+const CORRUPT_EYE_HEIGHT: float = 0.72
+const CORRUPT_BODY_DROP: float = 0.62
+const CORRUPT_LERP: float = 4.0
+
+# --- kit ---------------------------------------------------------------------
+## Where the breaker's lash leaves the shell: low and to the side of the lens, so
+## it reads as coming off the avatar rather than out of your eye.
+const MUZZLE_OFFSET: Vector3 = Vector3(0.2, -0.18, -0.35)
+## A flare leaves the hand with a lob on it and inherits the throw's motion.
+const FLARE_LOFT: float = 2.4
+
+# --- screen shake ------------------------------------------------------------
+const SHAKE_DECAY: float = 3.4
+const SHAKE_TRANSLATION: float = 0.09
+const SHAKE_ROLL: float = 0.035
+
 # --- identity (set by Net._spawn_player on every peer before tree entry) -----
 var player_name: String = "AGENT"
 var player_color: Color = Color.WHITE
+## Node name is the peer id (Net._spawn_player), cached here for readability.
+var peer_id: int = 1
 
 # --- replicated state -------------------------------------------------------
 var sync_position: Vector3 = Vector3.ZERO
@@ -85,8 +113,20 @@ var focus_available: bool = false
 var _focus: Interactable = null
 var _channel_elapsed: float = 0.0
 
-# --- decompiled -------------------------------------------------------------
+# --- kit (present on every peer's copy; only the owner pulls the trigger) ----
+var _breaker: Breaker = null
+var _restore_point: RestorePoint = null
+
+# --- decompiled / corrupted --------------------------------------------------
+var _seam_material: StandardMaterial3D = null
 var _spectating: bool = false
+## 0..1 how far into the collapse this avatar is, eased on every peer.
+var _collapse: float = 0.0
+var _corrupt_light: OmniLight3D = null
+
+# --- screen shake (local lens only) -----------------------------------------
+var _shake: float = 0.0
+var _shake_seed: float = 0.0
 
 # --- remote smoothing -------------------------------------------------------
 var _remote_velocity: Vector3 = Vector3.ZERO
@@ -107,10 +147,13 @@ var _time_since_packet: float = 0.0
 
 func _ready() -> void:
 	_is_local = is_multiplayer_authority()
+	peer_id = String(name).to_int()
 	sync_position = global_position
 	_last_sync_position = sync_position
 	sync_yaw = rotation.y
+	_shake_seed = float(peer_id) * 7.13
 	_apply_identity()
+	_build_kit()
 
 	if _is_local:
 		camera.current = true
@@ -126,7 +169,33 @@ func _ready() -> void:
 		set_physics_process(true)
 
 	_set_beam_state(sync_beam)
+	if _is_local:
+		Run.damaged.connect(_on_damaged)
 	Net.notify_player_ready(self)
+
+
+## The kit every copy of an avatar carries. The breaker exists on remote copies
+## so a crewmate's shot draws on your screen; the restore point exists on every
+## copy because any of them might be the one you have to go and pick up.
+func _build_kit() -> void:
+	_breaker = Breaker.create()
+	add_child(_breaker)
+
+	_restore_point = RestorePoint.create(peer_id)
+	add_child(_restore_point)
+
+	# The beacon that makes a downed crewmate findable across a dark room. Off
+	# until they go down.
+	_corrupt_light = OmniLight3D.new()
+	_corrupt_light.name = "CorruptBeacon"
+	_corrupt_light.position = Vector3(0.0, 0.6, 0.0)
+	_corrupt_light.light_color = Color(1.0, 0.36, 0.28)
+	_corrupt_light.light_energy = 0.0
+	_corrupt_light.omni_range = 9.0
+	_corrupt_light.omni_attenuation = 0.9
+	_corrupt_light.light_volumetric_fog_energy = 2.4
+	_corrupt_light.shadow_enabled = false
+	add_child(_corrupt_light)
 
 
 func _apply_identity() -> void:
@@ -134,18 +203,18 @@ func _apply_identity() -> void:
 	nameplate.modulate = player_color
 	# Circuit seams are how you tell crewmates apart at 20 m in the dark, so they
 	# run hot enough to bloom and are applied to every seam mesh at once.
-	var accent: StandardMaterial3D = StandardMaterial3D.new()
-	accent.albedo_color = player_color.darkened(0.6)
-	accent.emission_enabled = true
-	accent.emission = player_color
-	accent.emission_energy_multiplier = 3.0
-	accent.metallic = 0.1
-	accent.roughness = 0.4
-	accent.disable_receive_shadows = true
+	_seam_material = StandardMaterial3D.new()
+	_seam_material.albedo_color = player_color.darkened(0.6)
+	_seam_material.emission_enabled = true
+	_seam_material.emission = player_color
+	_seam_material.emission_energy_multiplier = SEAM_ENERGY
+	_seam_material.metallic = 0.1
+	_seam_material.roughness = 0.4
+	_seam_material.disable_receive_shadows = true
 	for seam: Node in seams.get_children():
 		var mesh: MeshInstance3D = seam as MeshInstance3D
 		if mesh != null:
-			mesh.material_override = accent
+			mesh.material_override = _seam_material
 
 	var visor_mat: StandardMaterial3D = StandardMaterial3D.new()
 	visor_mat.albedo_color = Color(0.02, 0.03, 0.04)
@@ -190,6 +259,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event.is_action_pressed("beam"):
 		_set_beam_state(not sync_beam)
+	elif event.is_action_pressed("flare") and Run.local_running():
+		throw_flare()
 
 
 func _capture_mouse() -> void:
@@ -209,10 +280,17 @@ func _physics_process(delta: float) -> void:
 
 
 func _simulate_local(delta: float) -> void:
-	# Decompiled: the process is gone, the view stays. Nothing below this point
+	# Deleted: the process is gone, the view stays. Nothing below this point
 	# should run — no movement, no interaction, no billing weight.
 	if not Run.local_alive():
 		_spectate(delta)
+		return
+
+	# Corrupted: still here, still watching, and completely helpless. The camera
+	# stays first-person on purpose — being down has to be *your* problem, not a
+	# spectator mode with a countdown attached.
+	if Run.local_corrupted():
+		_kneel(delta)
 		return
 
 	# Debug.lock_input freezes the avatar for reproducible automated captures.
@@ -269,7 +347,122 @@ func _simulate_local(delta: float) -> void:
 			SPRINT_FOV if (sprinting and sync_speed > WALK_SPEED * 0.6) else BASE_FOV,
 			1.0 - exp(-FOV_LERP * delta))
 
+	if Debug.aim_antivirus:
+		_track_nearest_antivirus(delta)
+	_update_breaker(frozen)
 	_update_interaction(delta)
+
+
+## `--aim`. An automated run has no mouse, and the breaker is a short-range tool
+## pointed at knee-high things that circle you — without this, a capture can
+## never frame a hit. Steers the same lens a player would, at a human rate.
+func _track_nearest_antivirus(delta: float) -> void:
+	var best: Node3D = null
+	var best_distance: float = Balance.BREAKER_RANGE + 4.0
+	for node: Node in get_tree().get_nodes_in_group(Antivirus.GROUP):
+		var creature: Antivirus = node as Antivirus
+		if creature == null or not is_instance_valid(creature):
+			continue
+		var distance: float = creature.global_position.distance_to(global_position)
+		if distance < best_distance:
+			best_distance = distance
+			best = creature
+	if best == null:
+		return
+
+	var eye: Vector3 = global_position + Vector3.UP * 1.62
+	var to_target: Vector3 = (best as Antivirus).aim_point() - eye
+	if to_target.length_squared() < 0.01:
+		return
+	var blend: float = 1.0 - exp(-8.0 * delta)
+	rotation.y = lerp_angle(rotation.y, atan2(-to_target.x, -to_target.z), blend)
+	_pitch = lerp_angle(_pitch, clampf(
+			atan2(to_target.y, Vector2(to_target.x, to_target.z).length()),
+			-PITCH_LIMIT, PITCH_LIMIT), blend)
+	head.rotation.x = _pitch
+
+
+# ----------------------------------------------------------------------- kit --
+
+## Local only. The trigger is held, not tapped: the cutter has its own cadence
+## and heat ceiling, so holding it down is a decision about the next few seconds
+## rather than a stream of free damage.
+func _update_breaker(frozen: bool) -> void:
+	var holding: bool = Debug.hold_fire or (not frozen and Input.is_action_pressed("fire"))
+	if not holding or not _breaker.ready_to_fire():
+		return
+
+	var from: Vector3 = camera.global_position
+	var basis: Basis = camera.global_transform.basis
+	var direction: Vector3 = -basis.z
+	var muzzle: Vector3 = from + basis * MUZZLE_OFFSET
+
+	_breaker.pull_trigger()
+	# Predicted endpoint, drawn this frame. The host re-casts the same ray and
+	# decides what actually died — this is only where the streak stops.
+	_breaker.show_lash(muzzle, _breaker_endpoint(from, direction))
+	add_shake(0.22)
+	Run.request_breaker(from, direction)
+
+
+## Where the streak stops: whatever the cutter is pointing at, or the wall behind
+## it. Same target selection the host runs, so the prediction is not a guess.
+func _breaker_endpoint(from: Vector3, direction: Vector3) -> Vector3:
+	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
+	var creature: Antivirus = Antivirus.pick_target(get_tree(), space, from, direction)
+	if creature != null:
+		return creature.aim_point()
+
+	var reach: Vector3 = from + direction * Balance.BREAKER_RANGE
+	if space == null:
+		return reach
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(from, reach)
+	query.collision_mask = Antivirus.WORLD_MASK
+	query.exclude = [get_rid()]
+	var hit: Dictionary = space.intersect_ray(query)
+	return reach if hit.is_empty() else Vector3(hit["position"])
+
+
+## Local only. Throws from the lens with a loft on it, inheriting the avatar's
+## own motion so a flare thrown while sprinting goes where you expect. Public
+## because `--flare` drives the same path an input would.
+func throw_flare() -> void:
+	if Run.flares_of(peer_id) <= 0:
+		return
+	var basis: Basis = camera.global_transform.basis
+	var origin: Vector3 = camera.global_position + basis * Vector3(0.0, -0.1, -0.6)
+	var velocity: Vector3 = -basis.z * Balance.FLARE_THROW_SPEED \
+			+ Vector3.UP * FLARE_LOFT + Vector3(self.velocity.x, 0.0, self.velocity.z)
+	Run.request_flare(origin, velocity)
+
+
+## Called on every peer by Run when a shot is resolved. The shooter has already
+## drawn its own lash a round trip ago and only wants the kill confirmation.
+func show_breaker_shot(origin: Vector3, endpoint: Vector3, killed: bool, mine: bool) -> void:
+	if not mine:
+		_breaker.show_lash(origin, endpoint)
+		return
+	if killed:
+		add_shake(0.85)
+
+
+## Breaker state, read by the HUD's heat indicator.
+func breaker_heat() -> float:
+	return 0.0 if _breaker == null else _breaker.heat
+
+
+func breaker_locked() -> bool:
+	return _breaker != null and _breaker.locked
+
+
+## Adds to the lens shake. Bounded rather than accumulated without limit: two
+## kills in a second should read as emphatic, not as a broken camera.
+func add_shake(amount: float) -> void:
+	_shake = clampf(_shake + amount, 0.0, 1.2)
+
+
+func _on_damaged(_from: Vector3) -> void:
+	add_shake(0.6)
 
 
 # ------------------------------------------------------------- interaction --
@@ -340,6 +533,28 @@ func _reset_channel() -> void:
 	channel_progress = 0.0
 
 
+# ---------------------------------------------------------------- corrupted --
+
+## Down. Gravity still applies (a process corrupted mid-air still falls), the
+## avatar still occupies the world so crewmates can find and reach it, and
+## nothing else runs: no input, no channel, no kit.
+func _kneel(delta: float) -> void:
+	velocity.x = 0.0
+	velocity.z = 0.0
+	velocity.y = 0.0 if is_on_floor() else velocity.y - get_gravity().length() * delta
+	move_and_slide()
+
+	_reset_channel()
+	focus_prompt = ""
+	focus_available = false
+
+	sync_position = global_position
+	sync_yaw = rotation.y
+	sync_pitch = _pitch
+	sync_speed = 0.0
+	sync_grounded = is_on_floor()
+
+
 # -------------------------------------------------------------- decompiled --
 
 ## Third-person chase cam on a living crewmate. Cheaper and more robust than
@@ -351,8 +566,6 @@ func _spectate(delta: float) -> void:
 		velocity = Vector3.ZERO
 		collision_layer = 0
 		collision_mask = 0
-		beam.visible = false
-		beam_cone.visible = false
 		_reset_channel()
 		focus_prompt = ""
 
@@ -384,7 +597,7 @@ func _find_living_crewmate() -> Node3D:
 	ids.sort()
 	for id: int in ids:
 		var peer: int = int(id)
-		if peer == Net.local_id() or not Run.is_alive(peer):
+		if peer == Net.local_id() or not Run.is_running(peer):
 			continue
 		var node: Node = Net.get_player(peer)
 		if node != null and is_instance_valid(node):
@@ -394,13 +607,18 @@ func _find_living_crewmate() -> Node3D:
 
 ## Authority-side reposition, used by the drop-shaft rebuild. Clears the
 ## dead-reckoning history too, or remote peers would smoothly slide the avatar
-## across the whole previous layer to its new home.
-func teleport_to(where: Vector3, yaw: float) -> void:
+## across the whole previous layer to its new home. `pitch` exists for the debug
+## teleports: Scrubbers are knee-high, and an automated run that always looks at
+## the horizon can never point at one.
+func teleport_to(where: Vector3, yaw: float, pitch: float = 0.0) -> void:
 	global_position = where
 	rotation.y = yaw
 	velocity = Vector3.ZERO
+	_pitch = clampf(pitch, -PITCH_LIMIT, PITCH_LIMIT)
+	head.rotation.x = _pitch
 	sync_position = where
 	sync_yaw = yaw
+	sync_pitch = _pitch
 	_last_sync_position = where
 	_remote_velocity = Vector3.ZERO
 	_reset_channel()
@@ -413,7 +631,14 @@ func _smooth_remote(delta: float) -> void:
 	if not sync_position.is_equal_approx(_last_sync_position):
 		if _time_since_packet > 0.001:
 			var measured: Vector3 = (sync_position - _last_sync_position) / _time_since_packet
-			_remote_velocity = _remote_velocity.lerp(measured, 0.5)
+			if measured.length() > TELEPORT_SPEED:
+				# Not motion — a teleport (a descent, a debug jump). Reckoning
+				# from it would extrapolate hundreds of metres in one frame and
+				# the snap below would then commit to that garbage.
+				_remote_velocity = Vector3.ZERO
+				global_position = sync_position
+			else:
+				_remote_velocity = _remote_velocity.lerp(measured, 0.5)
 		_last_sync_position = sync_position
 		_time_since_packet = 0.0
 
@@ -454,14 +679,61 @@ func _update_view(delta: float) -> void:
 	_dip_velocity += (-_dip_offset * DIP_STIFFNESS - _dip_velocity * DIP_DAMPING) * delta
 	_dip_offset += _dip_velocity * delta
 
-	camera.position = Vector3(
-			horizontal * BOB_HORIZONTAL * _bob_weight,
-			vertical * BOB_VERTICAL * _bob_weight + _dip_offset,
-			0.0)
-	camera.rotation.z = horizontal * BOB_ROLL * _bob_weight
+	# Shake rides on top of bob rather than replacing it, so a hit while running
+	# reads as a hit while running. Driven from the clock at two incommensurate
+	# rates, which is cheaper than noise and does not loop audibly.
+	_shake = maxf(_shake - SHAKE_DECAY * delta * _shake, 0.0)
+	if _shake < 0.002:
+		_shake = 0.0
+	var t: float = float(Time.get_ticks_msec()) / 1000.0 + _shake_seed
+	var kick: Vector3 = Vector3(
+			sin(t * 47.0) * 0.6 + sin(t * 23.0) * 0.4,
+			sin(t * 39.0) * 0.6 + sin(t * 17.0) * 0.4, 0.0) * _shake * SHAKE_TRANSLATION
 
+	camera.position = Vector3(
+			horizontal * BOB_HORIZONTAL * _bob_weight + kick.x,
+			vertical * BOB_VERTICAL * _bob_weight + _dip_offset + kick.y,
+			0.0)
+	camera.rotation.z = horizontal * BOB_ROLL * _bob_weight \
+			+ sin(t * 31.0) * _shake * SHAKE_ROLL
+
+	_update_collapse(delta)
 	_update_beam(delta, speed)
 	_update_nameplate()
+
+
+## The downed shell, on every peer. The avatar sinks, its seams go out, and a red
+## beacon comes up — a corrupted crewmate has to be findable from across a dark
+## room, or the restore window is theatre.
+func _update_collapse(delta: float) -> void:
+	var down: bool = Run.is_corrupted(peer_id)
+	_collapse = move_toward(_collapse, 1.0 if down else 0.0, CORRUPT_LERP * delta)
+	if _collapse <= 0.001 and not down:
+		if _corrupt_light.light_energy != 0.0:
+			_corrupt_light.light_energy = 0.0
+			body.position.y = 0.0
+			body.rotation.x = 0.0
+			head.position.y = 1.62
+			if _seam_material != null:
+				_seam_material.emission = player_color
+				_seam_material.emission_energy_multiplier = SEAM_ENERGY
+		return
+
+	body.position.y = -CORRUPT_BODY_DROP * _collapse
+	body.rotation.x = _collapse * 0.42
+	if _is_local:
+		head.position.y = lerpf(1.62, CORRUPT_EYE_HEIGHT, _collapse)
+
+	# The seams go out and go red as the process comes apart: a downed crewmate
+	# must not still be wearing their colour, or a crew cannot read the room.
+	if _seam_material != null:
+		_seam_material.emission = player_color.lerp(Color(1.0, 0.3, 0.24), _collapse)
+		_seam_material.emission_energy_multiplier = lerpf(SEAM_ENERGY, 0.45, _collapse)
+
+	var t: float = float(Time.get_ticks_msec()) / 1000.0
+	# A slow two-beat, like something failing rather than an alarm going off.
+	var beat: float = 0.55 + 0.45 * absf(sin(t * 2.2))
+	_corrupt_light.light_energy = 1.5 * _collapse * beat
 
 
 ## The beam rides a lagged rig instead of being pinned to the lens — the
@@ -487,6 +759,17 @@ func _update_nameplate() -> void:
 	var distance: float = viewer.global_position.distance_to(nameplate.global_position)
 	var alpha: float = clampf(
 			inverse_lerp(NAMEPLATE_FADE_DISTANCE, NAMEPLATE_FULL_DISTANCE, distance), 0.0, 1.0)
+
+	# A downed crewmate's tag reads at any range and never fades: it is the only
+	# thing pointing at where the run went wrong.
+	if Run.is_corrupted(peer_id):
+		nameplate.text = "%s\nCORRUPTED" % player_name
+		nameplate.modulate = Color(1.0, 0.42, 0.34)
+		alpha = 1.0
+	elif nameplate.text != player_name:
+		nameplate.text = player_name
+		nameplate.modulate = player_color
+
 	nameplate.modulate.a = alpha
 	nameplate.outline_modulate.a = alpha * 0.8
 
@@ -498,14 +781,19 @@ func _set_beam_state(on: bool) -> void:
 	_apply_beam_visuals()
 
 
+## A beam is a running process's tool. Corrupted or deleted, it goes out — which
+## also takes away the light that was keeping the Scrubbers off you.
 func _apply_beam_visuals() -> void:
-	beam.visible = sync_beam
-	beam_cone.visible = sync_beam and not _is_local
+	var live: bool = sync_beam and Run.is_running(peer_id)
+	beam.visible = live
+	beam_cone.visible = live and not _is_local
 
 
 func _process(_delta: float) -> void:
-	if not _is_local and beam.visible != sync_beam:
-		_apply_beam_visuals()
+	# Cheap enough to reconcile every frame, and it covers three separate inputs
+	# (the toggle, corruption, deletion) without any of them having to remember
+	# to call it.
+	_apply_beam_visuals()
 
 
 # ------------------------------------------------------------------- events --

@@ -1,13 +1,18 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene load_steps=8 format=3]
 
 ; The played map. Identical rig to test_layer.tscn minus the LayerBuilder child:
 ; geometry is generated at runtime from (run_seed, layer_number) by layer.gd, and
 ; regenerated in place every time the crew rides the drop shaft down.
+;
+; Three containers survive that rebuild and are cleared explicitly instead:
+; Players (replicated avatars), Antivirus (replicated creatures) and Dynamic
+; (flares and dropped bundles, which belong to the layer but are not seeded).
 
 [ext_resource type="Script" path="res://src/world/layer.gd" id="1_layer"]
 [ext_resource type="Environment" path="res://src/world/layer_environment.tres" id="2_env"]
 [ext_resource type="Shader" path="res://src/ui/post_process.gdshader" id="4_post"]
 [ext_resource type="PackedScene" path="res://src/ui/hud.tscn" id="5_hud"]
+[ext_resource type="Script" path="res://src/creatures/antivirus_director.gd" id="6_director"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_layer_post"]
 shader = ExtResource("4_post")
@@ -36,6 +41,13 @@ camera_attributes = SubResource("CameraAttributesPractical_layer")
 
 [node name="PlayerSpawner" type="MultiplayerSpawner" parent="."]
 spawn_path = NodePath("../Players")
+
+[node name="Antivirus" type="Node3D" parent="."]
+
+[node name="Dynamic" type="Node3D" parent="."]
+
+[node name="AntivirusDirector" type="Node" parent="."]
+script = ExtResource("6_director")
 
 [node name="Post" type="CanvasLayer" parent="."]
 layer = 1

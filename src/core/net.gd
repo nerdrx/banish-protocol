@@ -81,7 +81,9 @@ func host(port: int = DEFAULT_PORT, dedicated: bool = false) -> Error:
 		port, "dedicated" if dedicated else "listen", Rng.run_seed])
 	# The host is the only peer that decides what world this is. Everything the
 	# clients need to reproduce it locally goes out in _register_crew's reply.
-	Run.begin(Debug.start_layer, Debug.use_test_layer)
+	# The injection point is whichever is deeper: the menu's choice (a backdoor
+	# this machine has installed) or an explicit `--layer`.
+	Run.begin(maxi(Debug.start_layer, GameState.injection_layer), Debug.use_test_layer)
 	Run.on_crew_changed()
 	crew_changed.emit()
 	get_tree().change_scene_to_file(LAYER_SCENE)

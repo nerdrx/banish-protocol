@@ -139,13 +139,17 @@ func _hologram(colour: Color, alpha: float) -> StandardMaterial3D:
 func prompt() -> String:
 	if Run.descending:
 		return "DESCENDING"
+	# Nobody rides the trunk down while a crewmate is face down on the floor —
+	# the layer above is about to stop existing, and so is anything left in it.
+	if not Run.crew_intact():
+		return "CREW CORRUPTED  ·  RESTORE THEM FIRST"
 	if not Run.crew_mustered():
 		return "CREW IN SHAFT  %d/%d" % [Run.muster_inside, Run.muster_total]
 	return "HOLD E  ·  DESCEND TO LAYER %02d" % (Run.layer_number + 1)
 
 
 func available() -> bool:
-	return Run.crew_mustered() and not Run.descending
+	return Run.crew_mustered() and Run.crew_intact() and not Run.descending
 
 
 func complete() -> void:

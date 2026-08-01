@@ -167,6 +167,16 @@ custom_minimum_size = Vector2(0, 1)
 layout_mode = 2
 color = Color(0.36, 0.78, 1, 0.14)
 
+[node name="InjectionLabel" type="Label" parent="Margin/Column/Console/Fields"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.4, 0.48, 0.58, 1)
+theme_override_font_sizes/font_size = 12
+text = "INJECTION POINT"
+
+[node name="InjectionSelect" type="OptionButton" parent="Margin/Column/Console/Fields"]
+unique_name_in_owner = true
+layout_mode = 2
+
 [node name="HostRow" type="HBoxContainer" parent="Margin/Column/Console/Fields"]
 layout_mode = 2
 theme_override_constants/separation = 10
@@ -239,7 +249,7 @@ grow_vertical = 0
 mouse_filter = 2
 theme_override_colors/font_color = Color(0.22, 0.27, 0.34, 1)
 theme_override_font_sizes/font_size = 11
-text = "M1 // SKELETON CREW"
+text = "M3 // THE SYSTEM BITES"
 horizontal_alignment = 2
 
 [node name="Post" type="ColorRect" parent="."]

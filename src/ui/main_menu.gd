@@ -13,6 +13,7 @@ extends Control
 @onready var _quit_button: Button = %QuitButton
 @onready var _status_label: Label = %StatusLabel
 @onready var _color_row: HBoxContainer = %ColorRow
+@onready var _injection_select: OptionButton = %InjectionSelect
 
 var _swatches: Array[Button] = []
 var _color_index: int = 0
@@ -23,6 +24,7 @@ func _ready() -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 	_build_swatches()
+	_build_injection_points()
 	_name_edit.text = GameState.local_name
 	_port_edit.text = str(Net.DEFAULT_PORT)
 	_ip_edit.text = "127.0.0.1"
@@ -75,11 +77,28 @@ func _paint_swatch(swatch: Button, color: Color, selected: bool) -> void:
 		swatch.add_theme_stylebox_override(state, style)
 
 
+# ----------------------------------------------------------------- injection --
+
+## DESIGN.md lobby step 1: "layer 1, or any backdoor every present crew member
+## has installed". M3 ships the single-machine half of that — this menu offers
+## the ring below the deepest node *this* machine has rooted. Checking it against
+## the whole crew's saves is M4's lobby.
+func _build_injection_points() -> void:
+	_injection_select.clear()
+	for layer: int in GameState.injection_choices():
+		_injection_select.add_item("LAYER %02d%s" % [
+			layer, "" if layer == 1 else "  ·  BACKDOOR"], layer)
+	_injection_select.select(_injection_select.item_count - 1)
+	# One choice is not a choice; do not offer a dropdown that cannot change.
+	_injection_select.disabled = _injection_select.item_count <= 1
+
+
 # ------------------------------------------------------------------- actions --
 
 func _apply_identity() -> void:
 	GameState.local_name = GameState.sanitize_name(_name_edit.text)
 	GameState.local_color = GameState.DEFAULT_COLORS[_color_index]
+	GameState.injection_layer = maxi(_injection_select.get_selected_id(), 1)
 	_name_edit.text = GameState.local_name
 
 

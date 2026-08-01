@@ -20,12 +20,24 @@ const DESCENT_SETTLE_HEIGHT: float = 0.35
 @onready var _spawner: MultiplayerSpawner = $PlayerSpawner
 @onready var _world_environment: WorldEnvironment = $WorldEnvironment
 @onready var _grade: ColorRect = $Post/Grade
+@onready var _director: AntivirusDirector = $AntivirusDirector
+## Flares and dropped bundles. Not seeded content, so it is cleared by hand on
+## every rebuild rather than dying with the geometry.
+@onready var _dynamic: Node3D = $Dynamic
 
 ## Where Run measures the crew muster from. Read by name from the autoload, so
 ## it stays a plain property.
 var shaft_position: Vector3 = Vector3.ZERO
 var siphon_positions: Array[Vector3] = []
 var siphon_approaches: Array[Vector3] = []
+## Backdoor layers only; Vector3.ZERO elsewhere. Read by the debug teleports and
+## by Run when it decides who was stood on the pad.
+var backdoor_position: Vector3 = Vector3.ZERO
+var uplink_position: Vector3 = Vector3.ZERO
+## Where the layer's data vault is, for `--goto vault`, and its first Scrubber
+## nest, for `--goto nest` — the two rooms M3's verification runs care about.
+var vault_position: Vector3 = Vector3.ZERO
+var nest_position: Vector3 = Vector3.ZERO
 
 var _builder: GeometryKit = null
 var _authored: bool = false
@@ -75,6 +87,7 @@ func _rebuild() -> void:
 		remove_child(_builder)
 		_builder.queue_free()
 		_builder = null
+	_clear_dynamic()
 
 	if Run.use_test_layer:
 		var authored: LayerBuilder = LayerBuilder.new()
@@ -88,9 +101,20 @@ func _rebuild() -> void:
 		shaft_position = graph.shaft_point
 		siphon_positions = graph.siphon_points
 		siphon_approaches = graph.siphon_approaches
+		backdoor_position = graph.backdoor_point
+		uplink_position = graph.uplink_point
+		vault_position = graph.centre_of(graph.vault_index)
+		nest_position = graph.centre_of(
+				graph.nest_rooms[0] if not graph.nest_rooms.is_empty() else -1)
 
 	add_child(_builder)  # GeometryKit._ready() runs build() synchronously.
 	_apply_environment()
+
+	# Antivirus last: the taps it listens to and the rooms it paths through both
+	# have to exist first. The host buys the layer's processes here; a client
+	# only records the layout its spawn packets will be interpreted against.
+	var built: ProcLayerBuilder = _builder as ProcLayerBuilder
+	_director.begin(null if built == null else built.graph, Run.layer_number)
 
 	# Node count is the cheap canary for the descent leaking geometry: it must
 	# come back to roughly the same number on every layer, not climb.
@@ -98,6 +122,15 @@ func _rebuild() -> void:
 		"layer %d: hand-authored test layer" % Run.layer_number if Run.use_test_layer
 				else LayerParams.describe(Run.layer_number),
 		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))])
+
+
+## Frees flares and dropped bundles. Immediate rather than deferred, for the
+## same reason the geometry is detached before it is freed: nothing from the
+## layer above may still be standing in the layer below.
+func _clear_dynamic() -> void:
+	for child: Node in _dynamic.get_children():
+		_dynamic.remove_child(child)
+		child.queue_free()
 
 
 func _adopt_test_layer_furniture() -> void:

@@ -32,14 +32,34 @@ extends Node
 ##
 ## M2 automation. Real systems are exercised end to end — these drive the same
 ## input paths a player would, they do not shortcut the host validation:
-##   --goto shaft|siphon [delay]   teleport the local avatar there after `delay`
-##                                 seconds, and again on every new layer
+##   --goto TARGET [delay]         teleport the local avatar there after `delay`
+##                                 seconds, and again on every new layer.
+##                                 TARGET: shaft | siphon | vault | nest | node |
+##                                 uplink | crew (the nearest corrupted crewmate)
 ##   --hold-interact [delay]       hold E from `delay` seconds onward
 ##   --sprint                      hold forward + sprint (Cycles drain test)
 ##   --autodescend                 goto shaft + hold E on every layer, forever:
 ##                                 the soak that rides 1 -> 2 -> 3 -> 4
-##   --decompile-at N              ask the host to zero this peer's integrity at
-##                                 N seconds, to exercise the spectator cam
+##   --decompile-at N              take lethal damage at N seconds. M3 routes
+##                                 this through the real damage path, so it
+##                                 corrupts in a crew and deletes solo.
+##
+## M3 flags:
+##   --fire [delay]      hold the breaker's trigger from `delay` seconds onward
+##   --flare [delay]     throw one flare at `delay` seconds
+##   --aim               the local avatar tracks the nearest process with its
+##                       lens. There is no mouse in an automated run, and a
+##                       Scrubber circling you at knee height cannot be hit
+##                       without one — this is how a capture frames a kill.
+##   --grab [count]      hop the local avatar onto data shards until `count` are
+##                       in its buffer. The pickup itself is the real one: the
+##                       host still decides that a shard was absorbed
+##   --exfil [delay]     the whole endgame, driven through the real channels:
+##                       walk to the node, root it, walk to the uplink, call
+##                       exfiltration, then stand on the pad until it fires
+##   --no-antivirus      generate the layer but buy nothing hostile
+##   --log-ai            per-second census of every process and its state, plus
+##                       a line on every state transition and every tap ping
 
 const BOOT_DELAY_FRAMES: int = 2
 
@@ -61,10 +81,19 @@ var use_test_layer: bool = false
 var start_cycles: float = -1.0
 var log_cycles: bool = false
 
+# --- M3 world/AI selection ---------------------------------------------------
+## Generate the layer with no antivirus in it, for isolating everything else.
+var no_antivirus: bool = false
+## Read by the director and both state machines.
+var log_ai: bool = false
+
 # --- synthetic input (read by Player) ---------------------------------------
 var hold_interact: bool = false
 var hold_sprint: bool = false
 var hold_forward: bool = false
+var hold_fire: bool = false
+## Track the nearest antivirus with the lens (read by Player).
+var aim_antivirus: bool = false
 
 var _mode: String = ""
 var _address: String = "127.0.0.1"
@@ -80,6 +109,10 @@ var _goto_delay: float = 1.6
 var _hold_delay: float = -1.0
 var _auto_descend: bool = false
 var _decompile_at: float = -1.0
+var _fire_delay: float = -1.0
+var _flare_delay: float = -1.0
+var _exfil_delay: float = -1.0
+var _grab_count: int = 0
 
 var _shot_armed: bool = false
 var _frames_left: int = 0
@@ -139,6 +172,32 @@ func _parse_args(args: PackedStringArray) -> void:
 					start_cycles = args[i].to_float()
 			"--log-cycles":
 				log_cycles = true
+			"--log-ai":
+				log_ai = true
+			"--no-antivirus":
+				no_antivirus = true
+			"--aim":
+				aim_antivirus = true
+			"--grab":
+				_grab_count = 6
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_grab_count = maxi(args[i].to_int(), 1)
+			"--exfil":
+				_exfil_delay = 3.0
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_exfil_delay = args[i].to_float()
+			"--fire":
+				_fire_delay = 3.0
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_fire_delay = args[i].to_float()
+			"--flare":
+				_flare_delay = 3.0
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_flare_delay = args[i].to_float()
 			"--dumplayer":
 				_mode = "dump"
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
@@ -198,7 +257,9 @@ func _boot() -> void:
 		_arm_screenshot()
 	if auto_quit_after > 0.0:
 		_quit_after(auto_quit_after)
-	if not _goto.is_empty() or _hold_delay >= 0.0 or _decompile_at >= 0.0:
+	if not _goto.is_empty() or _hold_delay >= 0.0 or _decompile_at >= 0.0 \
+			or _fire_delay >= 0.0 or _flare_delay >= 0.0 or _exfil_delay >= 0.0 \
+			or _grab_count > 0:
 		_arm_automation()
 
 	match _mode:
@@ -250,12 +311,39 @@ func _on_automation_player_ready(_player: Node) -> void:
 	_run_automation()
 	if _decompile_at >= 0.0:
 		_decompile_later(_decompile_at)
+	if _fire_delay >= 0.0:
+		_fire_later(_fire_delay)
+	if _flare_delay >= 0.0:
+		_flare_later(_flare_delay)
+	if _grab_count > 0:
+		_grab_shards(_grab_count)
+	if _exfil_delay >= 0.0:
+		_run_exfil(_exfil_delay)
 
 
 func _decompile_later(seconds: float) -> void:
 	await get_tree().create_timer(seconds).timeout
-	print("[Debug] requesting decompile of the local avatar")
+	print("[Debug] applying lethal damage to the local avatar")
 	Run.request_debug_decompile()
+
+
+func _fire_later(seconds: float) -> void:
+	await get_tree().create_timer(seconds).timeout
+	print("[Debug] holding the breaker trigger")
+	hold_fire = true
+
+
+## Drives the same path the input does, so the host's stock and Cycles checks are
+## exercised rather than bypassed.
+func _flare_later(seconds: float) -> void:
+	await get_tree().create_timer(seconds).timeout
+	var player: Node = Net.get_player(Net.local_id())
+	var avatar: Player = player as Player
+	if avatar == null or not is_instance_valid(avatar):
+		push_warning("[Debug] --flare skipped: no local player")
+		return
+	print("[Debug] throwing a flare")
+	avatar.throw_flare()
 
 
 func _on_automation_layer(number: int) -> void:
@@ -301,6 +389,44 @@ func _teleport_local(where: String) -> void:
 		var side: float = 0.0 if index == 0 else (1.9 if index % 2 == 1 else -1.9)
 		avatar.teleport_to(shaft + Vector3(side, 0.35, 5.4), 0.0)
 		print("[Debug] teleported to drop shaft %s" % str(shaft))
+	elif where == "node" or where == "uplink" or where == "vault" or where == "nest":
+		var target: Vector3 = Vector3(layer.get(
+				"backdoor_position" if where == "node" else
+				("uplink_position" if where == "uplink" else
+				("vault_position" if where == "vault" else "nest_position"))))
+		if target.is_equal_approx(Vector3.ZERO):
+			push_warning("[Debug] no '%s' on this layer" % where)
+			return
+		var lateral: float = 0.0 if index == 0 else (1.6 if index % 2 == 1 else -1.6)
+		if where == "nest":
+			# Stand in the middle of it, looking down: that is where the pack is,
+			# and a Scrubber is well below the horizon.
+			avatar.teleport_to(target + Vector3(lateral, 0.35, 0.0), 0.0, -0.42)
+			print("[Debug] teleported to nest %s" % str(target))
+			return
+		if where == "uplink":
+			# Inside the pad looking outward at the console on its rim: standing
+			# behind the console would be standing off the pad when it fires.
+			avatar.teleport_to(target + Vector3(lateral, 0.35, 0.9), PI)
+			print("[Debug] teleported to uplink %s" % str(target))
+			return
+		# The node is channelled from its +Z face, same convention as the shaft.
+		avatar.teleport_to(target + Vector3(lateral, 0.35, 3.4), 0.0)
+		print("[Debug] teleported to %s %s" % [where, str(target)])
+	elif where == "crew":
+		var casualty: Node3D = _nearest_corrupted(avatar)
+		if casualty == null:
+			push_warning("[Debug] no corrupted crewmate to walk to")
+			return
+		# Stood just off them on whichever side is actually open, looking down: a
+		# corrupted crewmate is on the floor, and they often went down against a
+		# wall.
+		var approach: Vector3 = _clear_side(casualty)
+		avatar.teleport_to(casualty.global_position + approach + Vector3.UP * 0.35,
+				atan2(approach.x, approach.z), -0.4)
+		print("[Debug] teleported to corrupted crewmate %s at %s (approach %s)" % [
+			String(casualty.name), str(casualty.global_position.snapped(Vector3.ONE * 0.1)),
+			str(approach.snapped(Vector3.ONE * 0.1))])
 	elif where == "siphon":
 		var taps: Array = layer.get("siphon_positions")
 		var approaches: Array = layer.get("siphon_approaches")
@@ -316,6 +442,126 @@ func _teleport_local(where: String) -> void:
 		print("[Debug] teleported to siphon tap %d %s" % [pick, str(tap)])
 	else:
 		push_warning("[Debug] unknown --goto target '%s'" % where)
+
+
+## Walks the avatar onto shard after shard until its buffer holds `count`. The
+## absorb is the real one — the host still has to agree the shard was reached —
+## so this exercises the salvage path rather than writing a number into it.
+func _grab_shards(count: int) -> void:
+	await get_tree().create_timer(1.2).timeout
+	for i: int in count:
+		var player: Node = Net.get_player(Net.local_id())
+		var avatar: Player = player as Player
+		if avatar == null or not is_instance_valid(avatar) or Run.run_over:
+			return
+		var shard: DataShard = _nearest_shard(avatar)
+		if shard == null:
+			push_warning("[Debug] --grab: no shards left on this layer")
+			return
+		avatar.teleport_to(shard.global_position - Vector3(0.0, DataShard.REST_HEIGHT, 0.0),
+				avatar.rotation.y)
+		await get_tree().create_timer(0.45).timeout
+	print("[Debug] grabbed shards: buffer holds %d" % Run.local_buffered())
+
+
+func _nearest_shard(from: Node3D) -> DataShard:
+	var best: DataShard = null
+	var best_distance: float = INF
+	for node: Node in get_tree().get_nodes_in_group("data_shards"):
+		var shard: DataShard = node as DataShard
+		if shard == null or not is_instance_valid(shard):
+			continue
+		if Run.is_shard_taken(shard.shard_index):
+			continue
+		var distance: float = shard.global_position.distance_to(from.global_position)
+		if distance < best_distance:
+			best_distance = distance
+			best = shard
+	return best
+
+
+## The endgame, end to end, through the same channels a player would hold: root
+## the node, call the uplink, then stand on the pad. Every step waits on real
+## replicated state rather than on a timer, so a slow host cannot make it lie.
+func _run_exfil(delay: float) -> void:
+	await get_tree().create_timer(delay).timeout
+	_teleport_local("node")
+	await get_tree().create_timer(0.4).timeout
+	hold_interact = true
+	if not await _wait_until(func() -> bool: return Run.backdoor_rooted, 20.0):
+		push_warning("[Debug] --exfil gave up waiting for the node to root")
+		return
+
+	hold_interact = false
+	await get_tree().create_timer(0.4).timeout
+	_teleport_local("uplink")
+	await get_tree().create_timer(0.4).timeout
+	hold_interact = true
+	if not await _wait_until(func() -> bool: return Run.exfil_calling, 20.0):
+		push_warning("[Debug] --exfil gave up waiting for the uplink")
+		return
+
+	hold_interact = false
+	print("[Debug] exfiltration called; standing on the pad")
+
+
+## Polls `test` until it passes or `limit` seconds go by. Returns whether it
+## passed; a run that has already ended stops waiting immediately.
+func _wait_until(test: Callable, limit: float) -> bool:
+	var waited: float = 0.0
+	while waited < limit:
+		if bool(test.call()):
+			return true
+		if Run.run_over:
+			return false
+		await get_tree().create_timer(0.2).timeout
+		waited += 0.2
+	return false
+
+
+## An offset from `body` with nothing solid in it. A shard-grabbing avatar tends
+## to go down two metres from a wall, and dropping the rescuer inside that wall
+## points its crosshair at masonry.
+func _clear_side(body: Node3D) -> Vector3:
+	var space: PhysicsDirectSpaceState3D = body.get_world_3d().direct_space_state
+	var from: Vector3 = body.global_position + Vector3.UP * 1.0
+	var best: Vector3 = Vector3(0.0, 0.0, 1.9)
+	if space == null:
+		return best
+
+	var best_clearance: float = -1.0
+	for i: int in 8:
+		var angle: float = TAU * float(i) / 8.0
+		var direction: Vector3 = Vector3(sin(angle), 0.0, cos(angle))
+		var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+				from, from + direction * 3.0)
+		query.collision_mask = 1
+		var hit: Dictionary = space.intersect_ray(query)
+		var clearance: float = 3.0 if hit.is_empty() \
+				else from.distance_to(Vector3(hit["position"]))
+		if clearance > best_clearance:
+			best_clearance = clearance
+			best = direction * minf(1.9, maxf(clearance - 0.6, 0.8))
+	return best
+
+
+## Nearest crewmate who is currently down, for `--goto crew`: the automated
+## half of a restore, with the channel itself left to `--hold-interact`.
+func _nearest_corrupted(from: Node3D) -> Node3D:
+	var best: Node3D = null
+	var best_distance: float = INF
+	for peer: int in Run.corrupted_crew():
+		if peer == Net.local_id():
+			continue
+		var node: Node = Net.get_player(peer)
+		if node == null or not is_instance_valid(node):
+			continue
+		var body: Node3D = node as Node3D
+		var distance: float = body.global_position.distance_to(from.global_position)
+		if distance < best_distance:
+			best_distance = distance
+			best = body
+	return best
 
 
 # ---------------------------------------------------------------- screenshot --

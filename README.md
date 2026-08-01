@@ -179,13 +179,27 @@ fiction-earns-the-mechanics reasoning, art direction language.
 - [x] **M0 — Design** · concept, systems, fiction, art direction ([DESIGN.md](DESIGN.md))
 - [x] **M1 — Skeleton crew** · ENet host/join, first-person controller with real feel, decryption beam, moody greybox layer, dedicated server mode
 - [x] **M2 — The dark** · procgen layers + drop shafts, layer-scaled generation, Cycles + siphon taps, HUD
-- [ ] **M3 — The system bites** *(in development)* · Scrubbers + Sentinels, combat, corrupted/restore, data shards, backdoor nodes, exfiltration — *a full intrusion, playable*
+- [x] **M3 — The system bites** · Scrubbers + Sentinels, combat, corrupted/restore, data shards, backdoor nodes, exfiltration — *a full intrusion, playable*
+- [ ] **M3.5 — Steamworks** *(in development)* · Steam lobbies, invites, achievements, rich presence
+- [ ] **M3.7 — Embodiment & Overhaul** *(art in production)* · creature models, beveled architecture kit, wet-floor SSR, the Expensive pass
 - [ ] **M4 — The long game** · Compilers, permanent modules, per-player saves, backdoor injection lobby, economy balancing
 - [ ] **M5 — Expensive** · glitch post stack, positional audio, kill cams, low-Cycles presentation, menu polish, Linux + Windows exports
 
 ## Screenshots
 
-> Live captures from the M1 build — two networked instances, real lighting.
+> Live captures from the build — two networked instances, real lighting.
+
+*A Scrubber stalking through layer 6 — its scan cone is the only warning:*
+
+![Scrubber](.github/assets/screenshots/scrubber.png)
+
+*The Sentinel, alerted — its exposed core is the weak point, if you dare the purge arc:*
+
+![Sentinel](.github/assets/screenshots/sentinel.png)
+
+*Exfiltration called — 17 seconds to be standing on that pad:*
+
+![Exfiltration](.github/assets/screenshots/exfil.png)
 
 *A crewmate's avatar, circuit seams in their shell color, decryption beam cutting the haze — 23 ms link:*
 

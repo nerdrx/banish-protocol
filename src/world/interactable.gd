@@ -62,3 +62,12 @@ func _add_probe(size: Vector3, offset: Vector3 = Vector3.ZERO) -> void:
 	shape.shape = box
 	_probe.add_child(shape)
 	add_child(_probe)
+
+
+## Interactables that are only sometimes there at all — a crewmate you can
+## restore, and only while they are down — switch their probe off rather than
+## refusing in `available()`, so the crosshair passes straight through them.
+func set_probe_enabled(on: bool) -> void:
+	if _probe == null or not is_instance_valid(_probe):
+		return
+	_probe.collision_layer = INTERACT_LAYER if on else 0

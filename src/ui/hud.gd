@@ -42,14 +42,30 @@ const GHOST_DECAY: float = 0.55
 @onready var _prompt_label: Label = %PromptLabel
 
 @onready var _summary: Control = %SummaryOverlay
+@onready var _summary_title: Label = %SummaryTitle
 @onready var _summary_body: Label = %SummaryBody
 @onready var _summary_button: Button = %SummaryButton
+
+# --- M3 ---------------------------------------------------------------------
+@onready var _data_value: Label = %DataValue
+@onready var _kit_label: Label = %KitLabel
+@onready var _heat_fill: ColorRect = %HeatFill
+@onready var _flare_pips: HBoxContainer = %FlarePips
+@onready var _alert_label: Label = %AlertLabel
+@onready var _exfil_label: Label = %ExfilLabel
+@onready var _damage_edges: Control = %DamageEdges
 
 var _ping_clock: float = 0.0
 var _notice_clock: float = 0.0
 var _pulse: float = 0.0
 var _ghost: float = 0.0
 var _player: Player = null
+
+## Directional damage: 0..1 flash weight, and the direction it came from in view
+## space (x = right, y = forward).
+var _damage_flash: float = 0.0
+var _damage_local: Vector2 = Vector2.ZERO
+var _pips: Array[ColorRect] = []
 
 
 func _ready() -> void:
@@ -59,7 +75,12 @@ func _ready() -> void:
 	Run.notice.connect(_show_notice)
 	Run.siphon_taken.connect(_on_siphon_taken)
 	Run.layer_changed.connect(_on_layer_changed)
+	# A client learns which layer it is on from the config packet, which lands
+	# after the HUD is built. Without this the readout is stuck on 01 for anyone
+	# who joined an intrusion that did not start at the surface.
+	Run.config_changed.connect(func() -> void: _on_layer_changed(Run.layer_number))
 	Run.run_ended.connect(_on_run_ended)
+	Run.damaged.connect(_on_damaged)
 	_resume_button.pressed.connect(_set_paused.bind(false))
 	_leave_button.pressed.connect(_on_leave_pressed)
 	_summary_button.pressed.connect(_on_leave_pressed)
@@ -69,6 +90,9 @@ func _ready() -> void:
 	_notice_label.text = ""
 	_channel_ring.visible = false
 	_prompt_label.text = ""
+	_alert_label.text = ""
+	_exfil_label.text = ""
+	_build_pips()
 	_ghost = Run.display_fraction()
 	_on_layer_changed(Run.layer_number)
 	_rebuild_crew()
@@ -107,6 +131,9 @@ func _process(delta: float) -> void:
 	_update_cycles(delta)
 	_update_integrity()
 	_update_channel()
+	_update_kit()
+	_update_alerts()
+	_update_damage(delta)
 
 
 # ------------------------------------------------------------------- cycles --
@@ -164,7 +191,10 @@ func _update_integrity() -> void:
 		colour = Color(1.0, 0.62, 0.26)
 	_integrity_fill.color = colour
 
-	if fraction <= 0.0:
+	if Run.local_corrupted():
+		_integrity_label.text = "CORRUPTED"
+		_integrity_label.add_theme_color_override("font_color", COLOUR_WARNING)
+	elif fraction <= 0.0:
 		_integrity_label.text = "DECOMPILED  ·  SPECTATING"
 		_integrity_label.add_theme_color_override("font_color", COLOUR_WARNING)
 	else:
@@ -191,6 +221,125 @@ func _update_channel() -> void:
 	_channel_ring.visible = progress > 0.001
 	_channel_ring.value = progress
 	_channel_ring.glow = progress * 0.6
+
+
+# ----------------------------------------------------------------------- kit --
+
+## One pip per flare in the crew's default stock. Built once: the stock size is a
+## constant until M4's Cache modules raise it, and a rebuilt row would flicker.
+func _build_pips() -> void:
+	for child: Node in _flare_pips.get_children():
+		child.queue_free()
+	_pips.clear()
+	for i: int in Balance.FLARE_STOCK:
+		var pip: ColorRect = ColorRect.new()
+		pip.custom_minimum_size = Vector2(18.0, 8.0)
+		pip.color = COLOUR_OK
+		_flare_pips.add_child(pip)
+		_pips.append(pip)
+
+
+## Buffered data, breaker heat and flare stock — everything the local agent is
+## carrying, in one corner.
+func _update_kit() -> void:
+	var carried: int = Run.local_buffered()
+	_data_value.text = "%03d" % carried
+	# The readout turns amber once the haul is heavy enough to be slowing you
+	# down: the weight rule is invisible otherwise.
+	var heavy: bool = carried > Balance.CARRY_FREE_SHARDS
+	_data_value.add_theme_color_override("font_color",
+			Color(1.0, 0.72, 0.3) if heavy else Color(0.42, 0.95, 1.0))
+
+	var heat: float = 0.0
+	var locked: bool = false
+	if _player != null and is_instance_valid(_player):
+		heat = _player.breaker_heat()
+		locked = _player.breaker_locked()
+	var track: Control = _heat_fill.get_parent_control()
+	_heat_fill.size.x = float(track.size.x) * clampf(heat, 0.0, 1.0)
+	_heat_fill.color = COLOUR_WARNING if locked else \
+			(Color(1.0, 0.62, 0.26) if heat > 0.6 else COLOUR_OK)
+	_kit_label.text = "BREAKER  ·  OVERHEATED" if locked else "BREAKER"
+	_kit_label.add_theme_color_override("font_color",
+			COLOUR_WARNING if locked else COLOUR_DIM)
+
+	var stock: int = Run.flares_of(Net.local_id())
+	for i: int in _pips.size():
+		var lit: bool = i < stock
+		_pips[i].color = Color(0.62, 0.95, 1.0) if lit else Color(0.12, 0.18, 0.24, 0.9)
+
+
+# -------------------------------------------------------------------- alerts --
+
+## Corrupted crewmates and the exfil countdown. Both are the kind of thing you
+## must not be able to miss while looking at something else.
+func _update_alerts() -> void:
+	var down: Array[int] = Run.corrupted_crew()
+	if down.is_empty():
+		_alert_label.text = ""
+	else:
+		var lines: PackedStringArray = PackedStringArray()
+		for peer: int in down:
+			var seconds: int = int(ceilf(Run.corruption_left(peer)))
+			if peer == Net.local_id():
+				lines.append("YOU ARE CORRUPTED  ·  %ds  ·  HOLD ON" % seconds)
+			else:
+				lines.append("%s CORRUPTED  ·  %ds  ·  HOLD E TO RESTORE" % [
+					Net.crew_name(peer), seconds])
+		_alert_label.text = "\n".join(lines)
+		var beat: float = 0.7 + 0.3 * sin(float(Time.get_ticks_msec()) / 140.0)
+		_alert_label.modulate.a = beat
+
+	if not Run.exfil_calling:
+		_exfil_label.text = ""
+		return
+	var left: float = Run.exfil_remaining
+	_exfil_label.text = "EXFILTRATION  %02d" % int(ceilf(left))
+	# The pulse tightens as the window closes.
+	var urgency: float = 1.0 - clampf(left / Balance.EXFIL_COUNTDOWN, 0.0, 1.0)
+	var flash: float = 0.65 + 0.35 * absf(sin(
+			float(Time.get_ticks_msec()) / (260.0 - urgency * 170.0)))
+	_exfil_label.modulate.a = flash
+
+
+# -------------------------------------------------------------------- damage --
+
+func _on_damaged(from: Vector3) -> void:
+	_damage_flash = 1.0
+	_damage_local = Vector2.ZERO
+	if _player == null or not is_instance_valid(_player):
+		return
+	# Project the hit into the lens's own frame, so "left" means left on screen
+	# rather than left in the world.
+	var to_source: Vector3 = from - _player.global_position
+	to_source.y = 0.0
+	if to_source.length_squared() < 0.01:
+		return
+	to_source = to_source.normalized()
+	var yaw: float = _player.rotation.y
+	var forward: Vector3 = Vector3(-sin(yaw), 0.0, -cos(yaw))
+	var right: Vector3 = Vector3(cos(yaw), 0.0, -sin(yaw))
+	_damage_local = Vector2(to_source.dot(right), to_source.dot(forward))
+
+
+## Four edge bands rather than a full-screen wash: a wash tells you that you were
+## hit, and the whole point is telling you *where from*.
+func _update_damage(delta: float) -> void:
+	if _damage_flash <= 0.0:
+		return
+	_damage_flash = maxf(_damage_flash - delta / Balance.DAMAGE_FLASH_TIME, 0.0)
+	var strength: float = _damage_flash * _damage_flash * 0.55
+
+	_set_edge("Top", maxf(_damage_local.y, 0.0) * strength)
+	_set_edge("Bottom", maxf(-_damage_local.y, 0.0) * strength)
+	_set_edge("Right", maxf(_damage_local.x, 0.0) * strength)
+	_set_edge("Left", maxf(-_damage_local.x, 0.0) * strength)
+
+
+func _set_edge(edge: String, alpha: float) -> void:
+	var rect: ColorRect = _damage_edges.get_node_or_null(edge) as ColorRect
+	if rect != null:
+		rect.color.a = clampf(alpha, 0.0, 1.0)
 
 
 # --------------------------------------------------------------------- crew --
@@ -264,6 +413,9 @@ func _refresh_link() -> void:
 		if not Run.is_alive(id):
 			tag.text = "GONE"
 			tag.add_theme_color_override("font_color", COLOUR_WARNING)
+		elif Run.is_corrupted(id):
+			tag.text = "DOWN %ds" % int(ceilf(Run.corruption_left(id)))
+			tag.add_theme_color_override("font_color", Color(1.0, 0.62, 0.26))
 		elif id == 1:
 			tag.text = "HOST"
 		elif id == Net.local_id():
@@ -304,21 +456,46 @@ func _set_paused(paused: bool) -> void:
 			Input.MOUSE_MODE_VISIBLE if paused else Input.MOUSE_MODE_CAPTURED)
 
 
-## Full wipe. DESIGN.md M5 will make this a proper debrief; for now it exists so
-## the loop closes and a run is a thing that ends rather than a thing that hangs.
+## The debrief, for both ways a run can end. DESIGN.md M5 will make this a proper
+## screen; what it has to do now is say plainly whether the haul came home.
 func _on_run_ended(summary: Dictionary) -> void:
 	_pause.visible = false
 	_summary.visible = true
-	_summary_body.text = "\n".join([
-		"REASON        %s" % String(summary.get("reason", "UNKNOWN")),
+	_exfil_label.text = ""
+	_alert_label.text = ""
+
+	var success: bool = bool(summary.get("success", false))
+	_summary_title.text = "EXFILTRATION COMPLETE" if success else "INTRUSION TERMINATED"
+	_summary_title.add_theme_color_override("font_color",
+			Color(0.42, 0.95, 1.0) if success else COLOUR_WARNING)
+
+	var lines: PackedStringArray = PackedStringArray([
+		"REASON            %s" % String(summary.get("reason", "UNKNOWN")),
 		"LAYERS REACHED    %02d" % int(summary.get("layers", 1)),
 		"SIPHONS DRAINED   %d" % int(summary.get("siphons", 0)),
 		"RUNTIME           %d:%02d" % [
 			int(float(summary.get("seconds", 0.0))) / 60,
 			int(float(summary.get("seconds", 0.0))) % 60],
 		"",
-		"BUFFERED DATA LOST. COMPILED MODULES INTACT.",
 	])
+
+	# Per-player banked data: the crew reads the same table on every screen, and
+	# whose buffer made it out is the whole story of the run.
+	var banked: Dictionary = summary.get("banked", {}) as Dictionary
+	if success:
+		var ids: Array = banked.keys()
+		ids.sort()
+		for id: int in ids:
+			var peer: int = int(id)
+			var amount: int = int(banked[peer])
+			lines.append("%-14s %s" % [Net.crew_name(peer),
+				"BANKED %d DATA" % amount if amount > 0 else "LEFT BEHIND"])
+		lines.append("")
+		lines.append("ARCHIVE  %d DATA" % GameState.archive)
+	else:
+		lines.append("BUFFERED DATA LOST. COMPILED MODULES INTACT.")
+
+	_summary_body.text = "\n".join(lines)
 	if DisplayServer.get_name() != "headless":
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
