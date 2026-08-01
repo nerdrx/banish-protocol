@@ -354,3 +354,39 @@ prey): invisible rubber-banding that reads as lore, not difficulty settings.
 - **Resources beyond data**: rare material drops found in-world (clean RAM,
   legacy components, intact glyph panels) that fuel the Assembler — a second,
   optional collection layer that rewards exploration over speed.
+
+### Below the Kernel (endgame / NG+ arc)
+
+Real silicon has privilege rings below Ring 0 (hypervisor, SMM, management
+engines). Canon: when the crew finally roots the Kernel, they learn MOTHER is
+not the bottom. **Negative rings exist — and something lives down there that
+she went rogue to contain.** The paranoid police state, the propaganda,
+"QUARANTINE IS MERCY" — she was never the villain; she was the warden. NG+:
+descend below zero, into architecture that was never hers.
+
+### M7+ candidates (canonized ideas)
+
+- **Proximity voice**: in-fiction radio; creatures HEAR you talking. Whisper
+  or die. The single biggest co-op horror multiplier available.
+- **Purge storms**: mid-run structural events — MOTHER kills a layer's
+  lighting for 90s, or slowly walls off sectors with quarantine barriers.
+- **Loadout archetypes** (starting-module presets, not rigid classes):
+  Breacher (cutter), Cartographer (pings, wayfinding at range), Restorer
+  (revives, integrity share), Mule (double buffer, slower).
+- **New tools**: decoy process (fakes your noise signature), tripflares,
+  wall-revealing scanner pulse that pings the antivirus. Everything costs.
+- **Daily intrusion**: one shared seed worldwide, one attempt, leaderboard by
+  banked data — determinism makes this nearly free.
+- **Contracts**: rival employers with reputations buying the data;
+  conflicting job modifiers ("bank 40, root nothing — leave no trace").
+- **Biome bands by depth**: coolant flats (liquid reflective floors), memory
+  gardens (data growing organically, wrong), dead sectors (no light, no
+  traces, decaying geometry).
+- **Companion drone**: a repurposed Scrubber that follows, carries a lamp,
+  magnets chips from corners. Emotional damage when the Hound takes it.
+- **Photo mode**.
+- **Corrupted minigame**: while downed, a tiny terminal puzzle slows your
+  decay timer.
+- Plus, from M6 notes: **the Still** (moves only unobserved — beam = statue)
+  and **honeypot vaults** (too-rich vaults that are traps; MOTHER read the
+  same security textbooks as her creators).
