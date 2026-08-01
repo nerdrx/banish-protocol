@@ -20,6 +20,8 @@ GameState="*res://src/core/game_state.gd"
 Net="*res://src/core/net.gd"
 Run="*res://src/core/run_state.gd"
 Debug="*res://src/core/debug.gd"
+SteamHub="*res://src/core/steam_service.gd"
+Achievements="*res://src/core/achievements.gd"
 
 [debug]
 

@@ -44,6 +44,11 @@ signal corruption_changed
 signal backdoor_rooted_changed
 signal exfil_changed
 
+## M3.5 events. These carry no new state — they name moments the run already
+## replicates, so `Achievements` can listen instead of polling.
+signal process_deleted(by_peer: int, kind: String)  ## A breaker shot killed something.
+signal restored(peer_id: int, by_peer: int)         ## Somebody was brought back up.
+
 # --- world config -----------------------------------------------------------
 
 ## False until the host has told us the seed and the layer. The Layer scene
@@ -829,18 +834,23 @@ func _breaker_request(origin: Vector3, direction: Vector3) -> void:
 
 	var endpoint: Vector3 = origin + direction.normalized() * Balance.BREAKER_RANGE
 	var killed: bool = false
+	## Which kind of process died, for the kill feed and the achievement hooks.
+	## Empty on a miss or a survivor.
+	var kind: String = ""
 	var creature: Antivirus = Antivirus.pick_target(get_tree(), _layer_space(), origin, direction)
 	if creature != null:
 		var damage: float = creature.breaker_damage(origin)
 		endpoint = creature.aim_point()
 		creature.take_damage(damage, origin)
 		killed = damage > 0.0 and creature.health <= 0.0
+		if killed:
+			kind = creature.get_script().get_global_name()
 	if Debug.log_ai:
 		print("[AI] breaker shot by %d: %s" % [sender,
 			"miss" if creature == null else "%s hp=%.0f%s" % [
 				String(creature.name), maxf(creature.health, 0.0),
 				"  KILL" if killed else ""]])
-	_breaker_shot.rpc(sender, origin, endpoint, killed)
+	_breaker_shot.rpc(sender, origin, endpoint, killed, kind)
 
 
 func _layer_space() -> PhysicsDirectSpaceState3D:
@@ -894,6 +904,9 @@ func _fire_exfil() -> void:
 
 	var pad: Vector3 = _uplink_position()
 	var banked: Dictionary = {}
+	## Who was actually stood on the pad when it fired. Distinct from `banked`,
+	## which is zero for an agent who got out empty-handed.
+	var escaped: Array = []
 	var left_behind: PackedStringArray = PackedStringArray()
 
 	for id: int in Net.crew.keys():
@@ -905,13 +918,14 @@ func _fire_exfil() -> void:
 			on_pad = Vector2(pos.x - pad.x, pos.z - pad.z).length() <= Balance.EXFIL_PAD_RADIUS
 		if on_pad:
 			banked[peer] = buffered_of(peer)
+			escaped.append(peer)
 		else:
 			banked[peer] = 0
 			left_behind.append(Net.crew_name(peer))
 
-	print("[Run] exfiltration fired: banked=%s left_behind=[%s]" % [
-		str(banked), ", ".join(left_behind)])
-	_end_run.rpc(_summary("EXFILTRATED", true, banked))
+	print("[Run] exfiltration fired: banked=%s escaped=%s left_behind=[%s]" % [
+		str(banked), str(escaped), ", ".join(left_behind)])
+	_end_run.rpc(_summary("EXFILTRATED", true, banked, escaped))
 
 
 func _uplink_position() -> Vector3:
@@ -1050,7 +1064,12 @@ func _spawn_flare(flare_id: int, peer_id: int, origin: Vector3, velocity: Vector
 ## The lash every peer sees. The shooter has already drawn its own (locally,
 ## the frame it pulled the trigger) and only wants the kill confirmation.
 @rpc("authority", "call_local", "reliable")
-func _breaker_shot(peer_id: int, origin: Vector3, endpoint: Vector3, killed: bool) -> void:
+func _breaker_shot(peer_id: int, origin: Vector3, endpoint: Vector3, killed: bool,
+		kind: String = "") -> void:
+	if killed:
+		# Every peer hears about every kill; who fired is in the packet, so the
+		# listener decides whether it was theirs.
+		process_deleted.emit(peer_id, kind)
 	var player: Node = Net.get_player(peer_id)
 	if player == null or not is_instance_valid(player):
 		return
@@ -1081,6 +1100,7 @@ func _restored(peer_id: int, by_peer: int) -> void:
 	integrity[peer_id] = Balance.RESTORE_INTEGRITY
 	corruption_changed.emit()
 	integrity_changed.emit()
+	restored.emit(peer_id, by_peer)
 	notice.emit("%s RESTORED BY %s" % [Net.crew_name(peer_id), Net.crew_name(by_peer)])
 
 
@@ -1172,11 +1192,15 @@ func _end_run(summary: Dictionary) -> void:
 
 
 ## The debrief payload. Built host-side so every peer shows the same numbers.
-func _summary(reason: String, success: bool, banked: Dictionary) -> Dictionary:
+func _summary(reason: String, success: bool, banked: Dictionary,
+		escaped: Array = []) -> Dictionary:
 	return {
 		"reason": reason,
 		"success": success,
 		"banked": banked,
+		"escaped": escaped,
+		"crew": Net.crew.size(),
+		"deleted": deleted.keys().size(),
 		"layers": deepest_layer,
 		"start_layer": 1,
 		"siphons": siphons_drained,

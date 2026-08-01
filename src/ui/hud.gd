@@ -30,6 +30,7 @@ const GHOST_DECAY: float = 0.55
 @onready var _pause: Control = %PauseOverlay
 @onready var _resume_button: Button = %ResumeButton
 @onready var _leave_button: Button = %LeaveButton
+@onready var _invite_button: Button = %InviteButton
 
 @onready var _cycles_ring: ArcMeter = %CyclesRing
 @onready var _cycles_value: Label = %CyclesValue
@@ -83,6 +84,7 @@ func _ready() -> void:
 	Run.damaged.connect(_on_damaged)
 	_resume_button.pressed.connect(_set_paused.bind(false))
 	_leave_button.pressed.connect(_on_leave_pressed)
+	_invite_button.pressed.connect(func() -> void: SteamHub.open_invite_overlay())
 	_summary_button.pressed.connect(_on_leave_pressed)
 
 	_pause.visible = false
@@ -450,7 +452,12 @@ func _show_notice(message: String) -> void:
 
 func _set_paused(paused: bool) -> void:
 	_pause.visible = paused
-	if DisplayServer.get_name() == "headless":
+	# Join-in-progress is the whole point of a Steam lobby: the pause console is
+	# where a host reaches the overlay's invite dialog mid-intrusion. Hidden
+	# entirely on the DIRECT transport, where there is nothing to invite into.
+	_invite_button.visible = paused and SteamHub.live \
+			and Net.transport == Net.Transport.STEAM and SteamHub.lobby != 0
+	if DisplayServer.get_name() == "headless" or Debug.automated:
 		return
 	Input.set_mouse_mode(
 			Input.MOUSE_MODE_VISIBLE if paused else Input.MOUSE_MODE_CAPTURED)
@@ -482,14 +489,20 @@ func _on_run_ended(summary: Dictionary) -> void:
 	# Per-player banked data: the crew reads the same table on every screen, and
 	# whose buffer made it out is the whole story of the run.
 	var banked: Dictionary = summary.get("banked", {}) as Dictionary
+	# Who stood on the pad is a different question from who had anything to bank:
+	# an agent can get out empty-handed, and that is not the same as being left
+	# inside with the uplink shut behind them.
+	var escaped: Array = summary.get("escaped", []) as Array
 	if success:
 		var ids: Array = banked.keys()
 		ids.sort()
 		for id: int in ids:
 			var peer: int = int(id)
 			var amount: int = int(banked[peer])
-			lines.append("%-14s %s" % [Net.crew_name(peer),
-				"BANKED %d DATA" % amount if amount > 0 else "LEFT BEHIND"])
+			var fate: String = "LEFT BEHIND"
+			if escaped.has(peer):
+				fate = "BANKED %d DATA" % amount if amount > 0 else "OUT, EMPTY BUFFER"
+			lines.append("%-14s %s" % [Net.crew_name(peer), fate])
 		lines.append("")
 		lines.append("ARCHIVE  %d DATA" % GameState.archive)
 	else:

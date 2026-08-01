@@ -93,9 +93,9 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 theme_override_constants/margin_left = 64
-theme_override_constants/margin_top = 56
+theme_override_constants/margin_top = 42
 theme_override_constants/margin_right = 64
-theme_override_constants/margin_bottom = 56
+theme_override_constants/margin_bottom = 42
 
 [node name="Column" type="VBoxContainer" parent="Margin"]
 layout_mode = 2
@@ -106,9 +106,9 @@ alignment = 1
 layout_mode = 2
 theme_override_colors/font_color = Color(0.88, 0.95, 1, 1)
 theme_override_colors/font_outline_color = Color(0.24, 0.62, 0.95, 0.28)
-theme_override_constants/outline_size = 14
+theme_override_constants/outline_size = 10
 theme_override_fonts/font = ExtResource("3_title")
-theme_override_font_sizes/font_size = 88
+theme_override_font_sizes/font_size = 58
 text = "NULLVOID"
 horizontal_alignment = 1
 
@@ -126,7 +126,7 @@ text = "INTRUSION  //  MOTHER  //  LAYER 01"
 horizontal_alignment = 1
 
 [node name="Gap" type="Control" parent="Margin/Column"]
-custom_minimum_size = Vector2(0, 34)
+custom_minimum_size = Vector2(0, 16)
 layout_mode = 2
 
 [node name="Console" type="PanelContainer" parent="Margin/Column"]
@@ -136,7 +136,7 @@ size_flags_horizontal = 4
 
 [node name="Fields" type="VBoxContainer" parent="Margin/Column/Console"]
 layout_mode = 2
-theme_override_constants/separation = 10
+theme_override_constants/separation = 8
 
 [node name="CallsignLabel" type="Label" parent="Margin/Column/Console/Fields"]
 layout_mode = 2
@@ -177,17 +177,84 @@ text = "INJECTION POINT"
 unique_name_in_owner = true
 layout_mode = 2
 
-[node name="HostRow" type="HBoxContainer" parent="Margin/Column/Console/Fields"]
+[node name="Rule2" type="ColorRect" parent="Margin/Column/Console/Fields"]
+custom_minimum_size = Vector2(0, 1)
+layout_mode = 2
+color = Color(0.36, 0.78, 1, 0.14)
+
+[node name="TransportRow" type="HBoxContainer" parent="Margin/Column/Console/Fields"]
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="HostButton" type="Button" parent="Margin/Column/Console/Fields/HostRow"]
+[node name="SteamModeButton" type="Button" parent="Margin/Column/Console/Fields/TransportRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+toggle_mode = true
+text = "STEAM"
+
+[node name="DirectModeButton" type="Button" parent="Margin/Column/Console/Fields/TransportRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+toggle_mode = true
+text = "DIRECT"
+
+[node name="SteamSection" type="VBoxContainer" parent="Margin/Column/Console/Fields"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="SteamHostButton" type="Button" parent="Margin/Column/Console/Fields/SteamSection"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "HOST INTRUSION  ·  FRIENDS ONLY"
+
+[node name="LobbyRow" type="HBoxContainer" parent="Margin/Column/Console/Fields/SteamSection"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="LobbySelect" type="OptionButton" parent="Margin/Column/Console/Fields/SteamSection/LobbyRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="ScanButton" type="Button" parent="Margin/Column/Console/Fields/SteamSection/LobbyRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "SCAN"
+
+[node name="SteamJoinButton" type="Button" parent="Margin/Column/Console/Fields/SteamSection"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "JOIN FRIEND'S CREW"
+
+[node name="SteamHint" type="Label" parent="Margin/Column/Console/Fields/SteamSection"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.3, 0.36, 0.44, 1)
+theme_override_font_sizes/font_size = 11
+text = "INVITES ARRIVE THROUGH THE STEAM OVERLAY"
+horizontal_alignment = 1
+autowrap_mode = 2
+
+[node name="DirectSection" type="VBoxContainer" parent="Margin/Column/Console/Fields"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HostRow" type="HBoxContainer" parent="Margin/Column/Console/Fields/DirectSection"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="HostButton" type="Button" parent="Margin/Column/Console/Fields/DirectSection/HostRow"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 text = "HOST INTRUSION"
 
-[node name="PortEdit" type="LineEdit" parent="Margin/Column/Console/Fields/HostRow"]
+[node name="PortEdit" type="LineEdit" parent="Margin/Column/Console/Fields/DirectSection/HostRow"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(96, 0)
 layout_mode = 2
@@ -196,18 +263,18 @@ placeholder_text = "PORT"
 alignment = 1
 max_length = 5
 
-[node name="JoinRow" type="HBoxContainer" parent="Margin/Column/Console/Fields"]
+[node name="JoinRow" type="HBoxContainer" parent="Margin/Column/Console/Fields/DirectSection"]
 layout_mode = 2
 theme_override_constants/separation = 10
 
-[node name="IpEdit" type="LineEdit" parent="Margin/Column/Console/Fields/JoinRow"]
+[node name="IpEdit" type="LineEdit" parent="Margin/Column/Console/Fields/DirectSection/JoinRow"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 text = "127.0.0.1"
 placeholder_text = "HOST ADDRESS"
 
-[node name="JoinButton" type="Button" parent="Margin/Column/Console/Fields/JoinRow"]
+[node name="JoinButton" type="Button" parent="Margin/Column/Console/Fields/DirectSection/JoinRow"]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(140, 0)
 layout_mode = 2
@@ -223,7 +290,7 @@ horizontal_alignment = 1
 autowrap_mode = 2
 
 [node name="Gap2" type="Control" parent="Margin/Column"]
-custom_minimum_size = Vector2(0, 22)
+custom_minimum_size = Vector2(0, 12)
 layout_mode = 2
 
 [node name="QuitButton" type="Button" parent="Margin/Column"]
@@ -249,7 +316,7 @@ grow_vertical = 0
 mouse_filter = 2
 theme_override_colors/font_color = Color(0.22, 0.27, 0.34, 1)
 theme_override_font_sizes/font_size = 11
-text = "M3 // THE SYSTEM BITES"
+text = "M3.5 // STEAMWORKS"
 horizontal_alignment = 2
 
 [node name="Post" type="ColorRect" parent="."]

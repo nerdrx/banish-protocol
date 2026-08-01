@@ -1,0 +1,20 @@
+[configuration]
+entry_symbol = "godotsteam_init"
+compatibility_minimum = "4.4"
+
+; NULLVOID keeps only the platforms it ships (Linux x86_64 + Windows x86_64).
+; The upstream zip also carries android/arm64/macos/x86_32 binaries; they are
+; ~77 MB of dead weight in a repo that commits its binaries, so they are not
+; vendored. Re-add them from the GodotSteam 4.21 GDExtension zip if those
+; targets are ever needed.
+
+[libraries]
+linux.debug.x86_64 = "res://addons/godotsteam/linux64/libgodotsteam.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://addons/godotsteam/linux64/libgodotsteam.linux.template_release.x86_64.so"
+windows.debug.x86_64 = "res://addons/godotsteam/win64/libgodotsteam.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://addons/godotsteam/win64/libgodotsteam.windows.template_release.x86_64.dll"
+
+[dependencies]
+linux.x86_64 = { "res://addons/godotsteam/linux64/libsteam_api.so": "" }
+windows.x86_64 = { "res://addons/godotsteam/win64/steam_api64.dll": "" }
+

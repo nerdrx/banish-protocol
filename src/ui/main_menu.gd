@@ -1,9 +1,22 @@
 class_name MainMenu
 extends Control
-## Crew assembly screen: pick a callsign and shell marker, then host or join.
+## Crew assembly screen: pick a callsign and shell marker, choose a transport,
+## then host or join.
 ##
 ## Every failure path ends here with a readable message rather than a hang —
 ## `Net.connect_failed` is the single funnel for "we could not get you in".
+##
+## M3.5 splits the bottom half of the console in two (DESIGN.md "Steam
+## Integration"):
+##
+##   STEAM  — default whenever the API came up. Host opens a friends-only lobby;
+##            joining is a friends-list scan, an overlay invite, or a
+##            `+connect_lobby` launch. No address is ever shown or typed.
+##   DIRECT — M1's ENet console, untouched: address and port, for LAN and for the
+##            dedicated server.
+##
+## Steam being unavailable is not an error state here. The toggle locks to DIRECT
+## and says why.
 
 @onready var _name_edit: LineEdit = %NameEdit
 @onready var _ip_edit: LineEdit = %IpEdit
@@ -15,8 +28,25 @@ extends Control
 @onready var _color_row: HBoxContainer = %ColorRow
 @onready var _injection_select: OptionButton = %InjectionSelect
 
+@onready var _steam_mode: Button = %SteamModeButton
+@onready var _direct_mode: Button = %DirectModeButton
+@onready var _steam_section: VBoxContainer = %SteamSection
+@onready var _direct_section: VBoxContainer = %DirectSection
+@onready var _steam_host_button: Button = %SteamHostButton
+@onready var _steam_join_button: Button = %SteamJoinButton
+@onready var _lobby_select: OptionButton = %LobbySelect
+@onready var _scan_button: Button = %ScanButton
+@onready var _steam_hint: Label = %SteamHint
+
+const COLOUR_IDLE: Color = Color(0.38, 0.44, 0.52)
+const COLOUR_BUSY: Color = Color(0.5, 0.8, 1.0)
+const COLOUR_BAD: Color = Color(0.95, 0.45, 0.4)
+const COLOUR_CARRIED: Color = Color(0.95, 0.55, 0.35)
+
 var _swatches: Array[Button] = []
 var _color_index: int = 0
+## Friend lobbies from the last scan, index-aligned with `_lobby_select`.
+var _lobbies: Array = []
 
 
 func _ready() -> void:
@@ -25,7 +55,7 @@ func _ready() -> void:
 
 	_build_swatches()
 	_build_injection_points()
-	_name_edit.text = GameState.local_name
+	_name_edit.text = _default_name()
 	_port_edit.text = str(Net.DEFAULT_PORT)
 	_ip_edit.text = "127.0.0.1"
 
@@ -35,11 +65,34 @@ func _ready() -> void:
 	_ip_edit.text_submitted.connect(func(_t: String) -> void: _on_join_pressed())
 	Net.connect_failed.connect(_on_connect_failed)
 
+	_steam_mode.pressed.connect(_select_transport.bind(Net.Transport.STEAM))
+	_direct_mode.pressed.connect(_select_transport.bind(Net.Transport.DIRECT))
+	_steam_host_button.pressed.connect(_on_steam_host_pressed)
+	_steam_join_button.pressed.connect(_on_steam_join_pressed)
+	_scan_button.pressed.connect(_scan_lobbies)
+	# An overlay invite, a friends-list join and a `+connect_lobby` launch all
+	# land here as the same signal.
+	SteamHub.join_requested.connect(_on_steam_join_requested)
+	SteamHub.friend_lobbies_updated.connect(_fill_lobby_list)
+
+	_select_transport(Net.Transport.STEAM if SteamHub.live else Net.Transport.DIRECT)
+	_steam_mode.disabled = not SteamHub.live
+	if SteamHub.live:
+		_scan_lobbies()
+
 	var carried: String = GameState.consume_status()
 	if carried.is_empty():
-		_set_status("AWAITING ORDERS", Color(0.38, 0.44, 0.52))
+		_set_status("AWAITING ORDERS", COLOUR_IDLE)
 	else:
-		_set_status(carried, Color(0.95, 0.55, 0.35))
+		_set_status(carried, COLOUR_CARRIED)
+
+
+## Your Steam persona is a better default callsign than "AGENT" — but only until
+## you have typed one of your own.
+func _default_name() -> String:
+	if GameState.local_name != "AGENT" or not SteamHub.live:
+		return GameState.local_name
+	return GameState.sanitize_name(SteamHub.suggested_name())
 
 
 # ------------------------------------------------------------------ swatches --
@@ -93,7 +146,74 @@ func _build_injection_points() -> void:
 	_injection_select.disabled = _injection_select.item_count <= 1
 
 
-# ------------------------------------------------------------------- actions --
+# ----------------------------------------------------------------- transport --
+
+func _select_transport(mode: Net.Transport) -> void:
+	var steam: bool = mode == Net.Transport.STEAM and SteamHub.live
+	_steam_mode.button_pressed = steam
+	_direct_mode.button_pressed = not steam
+	_steam_section.visible = steam
+	_direct_section.visible = not steam
+	if steam:
+		_steam_hint.text = "SIGNED IN AS %s  ·  INVITE VIA OVERLAY" \
+				% SteamHub.persona.to_upper()
+	else:
+		_steam_hint.text = SteamHub.status
+
+
+# ------------------------------------------------------------- steam actions --
+
+func _on_steam_host_pressed() -> void:
+	_apply_identity()
+	_set_busy(true)
+	_set_status("OPENING A FRIENDS-ONLY LOBBY...", COLOUR_BUSY)
+	Net.host_steam()
+
+
+func _on_steam_join_pressed() -> void:
+	var index: int = _lobby_select.selected
+	if index < 0 or index >= _lobbies.size():
+		_set_status("NO CREW SELECTED — SCAN FOR FRIENDS FIRST", COLOUR_BAD)
+		return
+	var entry: Dictionary = _lobbies[index] as Dictionary
+	_apply_identity()
+	_set_busy(true)
+	_set_status("HAILING %s..." % String(entry.get("name", "CREW")).to_upper(), COLOUR_BUSY)
+	Net.join_steam(int(entry.get("lobby", 0)))
+
+
+## Overlay invite / friends-list join / `+connect_lobby`: the player has already
+## said yes somewhere else, so this goes straight in rather than asking again.
+func _on_steam_join_requested(lobby_id: int) -> void:
+	if not is_inside_tree() or Net.is_online:
+		return
+	_apply_identity()
+	_set_busy(true)
+	_set_status("ACCEPTING INVITE...", COLOUR_BUSY)
+	Net.join_steam(lobby_id)
+
+
+## Friends-only lobbies are invisible to a lobby-list query by design, so the
+## friends list is the scan: whoever is sitting in a NULLVOID lobby right now.
+func _scan_lobbies() -> void:
+	if not SteamHub.live:
+		return
+	SteamHub.refresh_friend_lobbies()
+
+
+func _fill_lobby_list(lobbies: Array) -> void:
+	_lobbies = lobbies
+	_lobby_select.clear()
+	for entry: Dictionary in lobbies:
+		_lobby_select.add_item(String(entry.get("name", "CREW")).to_upper())
+	var empty: bool = lobbies.is_empty()
+	if empty:
+		_lobby_select.add_item("NO FRIENDS RUNNING NULLVOID")
+	_lobby_select.disabled = empty
+	_steam_join_button.disabled = empty
+
+
+# ------------------------------------------------------------ direct actions --
 
 func _apply_identity() -> void:
 	GameState.local_name = GameState.sanitize_name(_name_edit.text)
@@ -110,29 +230,32 @@ func _port() -> int:
 func _on_host_pressed() -> void:
 	_apply_identity()
 	_set_busy(true)
-	_set_status("OPENING DOCK ON PORT %d..." % _port(), Color(0.5, 0.8, 1.0))
+	_set_status("OPENING DOCK ON PORT %d..." % _port(), COLOUR_BUSY)
 	Net.host(_port(), false)
 
 
 func _on_join_pressed() -> void:
 	var address: String = _ip_edit.text.strip_edges()
 	if address.is_empty():
-		_set_status("ENTER A HOST ADDRESS", Color(0.95, 0.45, 0.4))
+		_set_status("ENTER A HOST ADDRESS", COLOUR_BAD)
 		return
 	_apply_identity()
 	_set_busy(true)
-	_set_status("HAILING %s..." % address, Color(0.5, 0.8, 1.0))
+	_set_status("HAILING %s..." % address, COLOUR_BUSY)
 	Net.join(address, _port())
 
 
 func _on_connect_failed(reason: String) -> void:
 	_set_busy(false)
-	_set_status(reason, Color(0.95, 0.45, 0.4))
+	_set_status(reason, COLOUR_BAD)
 
 
 func _set_busy(busy: bool) -> void:
 	_host_button.disabled = busy
 	_join_button.disabled = busy
+	_steam_host_button.disabled = busy
+	_steam_join_button.disabled = busy or _lobbies.is_empty()
+	_scan_button.disabled = busy
 
 
 func _set_status(message: String, color: Color) -> void:

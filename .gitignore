@@ -1,6 +1,11 @@
 # Godot 4+ engine cache / imported assets
 .godot/
 
+# Dev-only Steam app id (480 = Valve's Spacewar test app). Never shipped: the
+# game passes its app id to steamInitEx explicitly, this file is only what the
+# Steam client itself reads when the game is launched outside Steam.
+steam_appid.txt
+
 # Exports
 /build/
 /export/

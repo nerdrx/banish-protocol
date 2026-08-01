@@ -7,13 +7,13 @@ You are an invading program. The dungeon is a rogue AI. Its antivirus is hunting
 
 [![Godot](https://img.shields.io/badge/Godot-4.7-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org)
 [![Language](https://img.shields.io/badge/GDScript-static%20typed-355570)](#architecture)
-[![Multiplayer](https://img.shields.io/badge/multiplayer-ENet%20%C2%B7%201–4%20players-1de9b6)](#multiplayer)
+[![Multiplayer](https://img.shields.io/badge/multiplayer-Steam%20%C2%B7%20ENet%20%C2%B7%201–4%20players-1de9b6)](#multiplayer)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows-2e4f63)](#getting-started)
-[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M1%20in%20development-ff2d78)](#roadmap)
+[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M3.5%20complete-ff2d78)](#roadmap)
 
 [The Pitch](#the-pitch) · [Features](#features) · [The Loop](#the-loop) ·
 [Progression](#progression) · [Bestiary](#bestiary) · [Getting Started](#getting-started) ·
-[Multiplayer](#multiplayer) · [Architecture](#architecture) · [Roadmap](#roadmap)
+[Multiplayer](#multiplayer) · [Steam](#steam) · [Architecture](#architecture) · [Roadmap](#roadmap)
 
 </div>
 
@@ -55,7 +55,7 @@ something you can see. And the data only counts if you make it out.
 | 🚪 **Backdoors, not checkpoints** | Every 5th layer hides a dormant maintenance node. Root it and you've *permanently compromised* MOTHER — future runs inject straight to it. Facing layer-16 security the second you spawn is the price. |
 | 🧬 **You are software** | Modules compiled into your source survive deletion, extraction, everything. Dying costs the data in your buffers — never your build. |
 | 💾 **Bank it or lose it** | Buffered data spends at Compilers mid-run, banks to your archive on exfiltration, and evaporates on a wipe. One more ring? |
-| 👥 **1–4 player co-op** | Host-authoritative ENet multiplayer. One player hosts, the crew joins by IP. Solo diving is fully supported (and terrifying). |
+| 👥 **1–4 player co-op** | Host-authoritative multiplayer over Steam lobbies *or* direct ENet. One player hosts, the crew joins by invite or IP. Solo diving is fully supported (and terrifying). |
 | 🎛️ **Expensive feel** | Volumetric haze, real-time shadows, bloom/grain/glitch post stack, positional audio, screen shake. Pre-alpha, but the mood ships first. |
 
 ## The Loop
@@ -98,14 +98,14 @@ member to have installed it. No account, no server, your character is yours.
 | Process | Class | Behavior |
 |---|---|---|
 | **Scrubber** | Disposable cleaner | Fast pack hunters. Weak, numerous, allergic to decryption beams — they swarm from exactly where you aren't looking. |
-| **Sentinel** | Quarantine process | Slow, heavy, beam-immune. Guards data vaults and announces itself with a red scan sweep. You don't fight a Sentinel; you negotiate geometry with it. |
+| **Sentinel** | Quarantine process | Slow, heavy, armored — but killable: its core drops shielding exactly when it attacks. Guards data vaults, announces itself with a red scan sweep, and pays out a shard burst if your crew wins the argument. |
 | *…deeper processes* | `[REDACTED]` | The bottom rings run code MOTHER wrote for herself. Nobody has exfiltrated footage. |
 
 ## Getting Started
 
-> ⚠️ **Pre-alpha.** Milestone 1 (multiplayer foundation + vertical slice of the
-> art direction) is in active development. No packaged releases yet — for now
-> you run from source.
+> ⚠️ **Pre-alpha.** A full intrusion is playable and Steamworks is wired
+> (M3.5); the art overhaul is next. No packaged releases yet — for now you run
+> from source.
 
 **Requirements:** [Godot 4.7+](https://godotengine.org/download) · Linux or Windows
 
@@ -130,15 +130,64 @@ other **Join** → `127.0.0.1`.
 
 ## Multiplayer
 
-- **Host-authoritative listen server** — one player hosts, up to 3 more join by
-  IP (LAN, [Tailscale](https://tailscale.com), or a port-forward). The host's
-  simulation owns all world state: Cycles, antivirus, data, doors.
+- **Host-authoritative listen server** — one player hosts, up to 3 more join.
+  The host's simulation owns all world state: Cycles, antivirus, data, doors.
+- **Two transports, one code path** — the handshake, spawner, synchronizers and
+  every RPC sit on Godot's high-level multiplayer, so they run unchanged over
+  either peer:
+
+| | **STEAM** | **DIRECT** |
+|---|---|---|
+| Peer | `SteamMultiplayerPeer` over a Steam lobby | `ENetMultiplayerPeer` |
+| Joining | friends list, overlay invite, `+connect_lobby` | IP + port |
+| Visibility | friends-only lobby, max 4 | LAN, [Tailscale](https://tailscale.com), port-forward |
+| Needs Steam | yes | never |
+
 - **Deterministic layers** — the host rolls the seed; every peer generates
   identical geometry locally. Only dynamic state crosses the wire.
-- **Dedicated server** — headless mode is a first-class citizen from M1:
+- **Dedicated server** — headless mode is a first-class citizen from M1, and
+  stays ENet-only: it never touches the Steam API.
 
 ```bash
 godot --headless --path . -- --server --port 7777
+```
+
+## Steam
+
+Steam is a *transport and a shop window*, never a dependency. With no Steam
+client — or headless, or `--no-steam`, or a failed init — the menu locks to
+DIRECT and the game plays exactly as it did before M3.5.
+
+- **Plugin** — [GodotSteam GDExtension 4.21](https://codeberg.org/godotsteam/godotsteam)
+  (Steamworks SDK 1.65), vendored in `addons/godotsteam/` for Linux x86_64 and
+  Windows x86_64. It ships `SteamMultiplayerPeer`, so no separate peer addon is
+  needed.
+- **Lobbies & invites** — hosting opens a friends-only lobby (max 4);
+  crewmates arrive from the friends list, from the overlay's invite dialog
+  (pause console → *INVITE CREW*), or from a `+connect_lobby` launch when Steam
+  starts the game for them. Join-in-progress works because the ENet-era
+  handshake already did: a joiner registers, gets the world config, then spawns.
+  No IP is ever shown or typed on this path.
+- **Rich presence** — `IDLE // NO INTRUSION`, `ASSEMBLING CREW // 2/4`,
+  `DESCENDING // LAYER 07 // 3/4 CREW`, updated on every descent and crew change.
+- **Achievements** — the twelve in
+  [DESIGN.md](DESIGN.md#achievement-list-v1). Local-first: `user://achievements.json`
+  is the source of truth and is written with or without Steam; unlocks are
+  mirrored to Steam and the whole set is retro-synced at boot when the API is
+  live. An in-game toast fires either way.
+- **Dev app ID: 480** (Valve's Spacewar). Lobbies, P2P sockets, presence and the
+  stats pipe all work on it; NULLVOID's *achievement IDs* do not exist in Valve's
+  test app, so `SetAchievement` is refused server-side until NULLVOID has its own
+  Steam Direct page. That is expected, logged, and harmless — the local file
+  already holds the truth, and uploading the definitions makes it all catch up.
+  `steam_appid.txt` is dev-only and git-ignored; the game passes its app ID to
+  `steamInitEx` explicitly.
+
+```bash
+godot --path . -- --steamhost --steam-selftest   # host a lobby, print it back
+godot --path . -- --no-steam                     # ENet-only, Steam untouched
+godot --path . -- --grant COLD_BOOT              # toast an achievement
+godot --path . -- --reset-achievements           # wipe local unlocks
 ```
 
 ## Architecture
@@ -162,7 +211,7 @@ flowchart TB
 
 ```text
 src/
-  core/       autoloads — Net, GameState, Rng, Debug
+  core/       autoloads — Net, GameState, Rng, Debug, SteamHub, Achievements
   player/     first-person controller, beam, interaction
   world/      layer procgen, room kit, props, siphons, backdoors
   creatures/  antivirus AI state machines
@@ -180,7 +229,7 @@ fiction-earns-the-mechanics reasoning, art direction language.
 - [x] **M1 — Skeleton crew** · ENet host/join, first-person controller with real feel, decryption beam, moody greybox layer, dedicated server mode
 - [x] **M2 — The dark** · procgen layers + drop shafts, layer-scaled generation, Cycles + siphon taps, HUD
 - [x] **M3 — The system bites** · Scrubbers + Sentinels, combat, corrupted/restore, data shards, backdoor nodes, exfiltration — *a full intrusion, playable*
-- [ ] **M3.5 — Steamworks** *(in development)* · Steam lobbies, invites, achievements, rich presence
+- [x] **M3.5 — Steamworks** · GodotSteam GDExtension, SteamMultiplayerPeer beside ENet, friends-only lobbies + overlay invites + join-in-progress, rich presence, local-first achievements (dev app 480)
 - [ ] **M3.7 — Embodiment & Overhaul** *(art in production)* · creature models, beveled architecture kit, wet-floor SSR, the Expensive pass
 - [ ] **M4 — The long game** · Compilers, permanent modules, per-player saves, backdoor injection lobby, economy balancing
 - [ ] **M5 — Expensive** · glitch post stack, positional audio, kill cams, low-Cycles presentation, menu polish, Linux + Windows exports

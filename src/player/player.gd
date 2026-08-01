@@ -266,6 +266,10 @@ func _unhandled_input(event: InputEvent) -> void:
 func _capture_mouse() -> void:
 	if DisplayServer.get_name() == "headless":
 		return
+	# An automated run shares the desktop with a human who is doing something
+	# else. Stealing their cursor is as rude as stealing their focus.
+	if Debug.automated:
+		return
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 

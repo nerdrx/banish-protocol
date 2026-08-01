@@ -60,8 +60,31 @@ extends Node
 ##   --no-antivirus      generate the layer but buy nothing hostile
 ##   --log-ai            per-second census of every process and its state, plus
 ##                       a line on every state transition and every tap ping
+##
+## M3.5 (Steam) flags:
+##   --no-steam          never touch the Steam API, even with the client running.
+##                       The ENet-only regression path on a Steam machine.
+##   --app-id N          initialise against N instead of 480 (Spacewar).
+##   --steamhost         host over the Steam transport (lobby + SteamMultiplayer-
+##                       Peer) instead of ENet, and drop into the layer.
+##   --steamjoin ID      join Steam lobby ID directly, the way an overlay invite
+##                       would.
+##   --steam-selftest    print SteamID, persona, lobby id, lobby metadata and the
+##                       rich-presence readback a few seconds in. Pairs with
+##                       --steamhost to prove a lobby is real without a second
+##                       account.
+##   --reset-achievements  wipe user://achievements.json (and clear our ids at
+##                       Steam) before anything else runs.
+##   --grant ID          unlock achievement ID at boot; repeatable. `--grant ALL`
+##                       unlocks the lot. Toasts exactly like the real thing.
 
 const BOOT_DELAY_FRAMES: int = 2
+
+## True whenever this process was launched to drive itself rather than to be
+## played. Automated runs share a live desktop with a human who is doing
+## something else, so they never take keyboard focus and never capture the
+## mouse — see `_stay_out_of_the_way`, Player._capture_mouse and Hud._set_paused.
+var automated: bool = false
 
 var screenshot_path: String = ""
 var screenshot_frames: int = 120
@@ -87,6 +110,16 @@ var no_antivirus: bool = false
 ## Read by the director and both state machines.
 var log_ai: bool = false
 
+# --- M3.5 Steam / achievements (read by SteamHub and Achievements) ----------
+## Hard off switch for the Steam API: the game runs its ENet paths untouched.
+var no_steam: bool = false
+## 0 means "use SteamHub.DEV_APP_ID" (480, Spacewar).
+var steam_app_id: int = 0
+## Print the Steam session back out of the API once it is up.
+var steam_selftest: bool = false
+var reset_achievements: bool = false
+var granted_achievements: PackedStringArray = PackedStringArray()
+
 # --- synthetic input (read by Player) ---------------------------------------
 var hold_interact: bool = false
 var hold_sprint: bool = false
@@ -103,6 +136,8 @@ var _color_index: int = 0
 
 var _dump_seed: int = 0
 var _dump_layer: int = 1
+## `--steamjoin` target.
+var _lobby_id: int = 0
 
 var _goto: String = ""
 var _goto_delay: float = 1.6
@@ -121,13 +156,31 @@ var _shot_taken: bool = false
 
 func _ready() -> void:
 	_parse_args(OS.get_cmdline_user_args())
+	automated = not _mode.is_empty() or not screenshot_path.is_empty() \
+			or auto_quit_after > 0.0 or steam_selftest
+	if automated:
+		_stay_out_of_the_way()
 	if _mode == "dump":
 		_dump_layer_graph.call_deferred()
 		return
-	if _mode.is_empty() and screenshot_path.is_empty() and auto_quit_after <= 0.0:
+	if _mode.is_empty() and screenshot_path.is_empty() and auto_quit_after <= 0.0 \
+			and not steam_selftest:
 		set_process(false)
 		return
 	_boot.call_deferred()
+
+
+## Automated runs are launched *next to* whatever the developer is actually
+## doing — often a full-screen game on the other monitor. A capture that steals
+## keyboard focus or grabs the cursor ruins both the desktop and the capture, so
+## an automated window is opened as a bystander: never focused, never focusable.
+## (Pair with Godot's own `--screen N` to choose which monitor it lands on, or
+## run the whole thing under `gamescope --backend headless` to have no window at
+## all.) The mouse half of this lives in Player._capture_mouse and Hud.
+func _stay_out_of_the_way() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_NO_FOCUS, true)
 
 
 func _parse_args(args: PackedStringArray) -> void:
@@ -144,6 +197,27 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
 					i += 1
 					_address = args[i]
+			"--steamhost":
+				_mode = "steamhost"
+			"--steamjoin":
+				_mode = "steamjoin"
+				if i + 1 < args.size():
+					i += 1
+					_lobby_id = args[i].to_int()
+			"--no-steam":
+				no_steam = true
+			"--app-id":
+				if i + 1 < args.size():
+					i += 1
+					steam_app_id = args[i].to_int()
+			"--steam-selftest":
+				steam_selftest = true
+			"--reset-achievements":
+				reset_achievements = true
+			"--grant":
+				if i + 1 < args.size():
+					i += 1
+					granted_achievements.append(args[i])
 			"--port":
 				if i + 1 < args.size():
 					i += 1
@@ -278,8 +352,54 @@ func _boot() -> void:
 			GameState.local_color = _pick_color(1)
 			print("[Debug] autojoin %s:%d as %s" % [_address, _port, GameState.local_name])
 			Net.join(_address, _port)
+		"steamhost":
+			GameState.local_name = GameState.sanitize_name(
+					_name_override if not _name_override.is_empty()
+					else SteamHub.suggested_name())
+			GameState.local_color = _pick_color(0)
+			print("[Debug] steam host as %s" % GameState.local_name)
+			Net.host_steam()
+		"steamjoin":
+			GameState.local_name = GameState.sanitize_name(
+					_name_override if not _name_override.is_empty()
+					else SteamHub.suggested_name())
+			GameState.local_color = _pick_color(1)
+			print("[Debug] steam join lobby %d as %s" % [_lobby_id, GameState.local_name])
+			Net.join_steam(_lobby_id)
 		_:
 			pass
+
+	if steam_selftest:
+		_steam_selftest()
+
+
+## `--steam-selftest`. Reads the session back *out of the Steam API* rather than
+## trusting what we asked it to do: the ID and persona, the lobby we own, its
+## metadata as Steam stores it, and the rich presence string a friend would see.
+## This is how a Steam lobby is verified without a second Steam account.
+func _steam_selftest() -> void:
+	await get_tree().create_timer(4.0).timeout
+	print("[SelfTest] ---- steam ----")
+	print("[SelfTest] live=%s status=%s" % [str(SteamHub.live), SteamHub.status])
+	if not SteamHub.live:
+		return
+	print("[SelfTest] app=%d id=%d persona=%s overlay=%s" % [
+		Steam.getAppID(), SteamHub.steam_id, SteamHub.persona,
+		str(Steam.isOverlayEnabled())])
+	print("[SelfTest] transport=%s online=%s crew=%d" % [
+		"STEAM" if Net.transport == Net.Transport.STEAM else "DIRECT",
+		str(Net.is_online), Net.crew.size()])
+	print("[SelfTest] lobby=%d owner=%s members=%d" % [
+		SteamHub.lobby, str(SteamHub.is_lobby_owner), SteamHub.lobby_member_count()])
+	print("[SelfTest] lobby data=%s" % str(SteamHub.lobby_data()))
+	print("[SelfTest] rich presence readback='%s'" % SteamHub.presence_readback())
+	print("[SelfTest] peer=%s" % (
+		"none" if Net.multiplayer.multiplayer_peer == null
+		else Net.multiplayer.multiplayer_peer.get_class()))
+	print("[SelfTest] achievements=%d/%d counters=%s" % [
+		Achievements.earned.size(), Achievements.DEFINITIONS.size(),
+		str(Achievements.counters)])
+	print("[SelfTest] ---------------")
 
 
 func _pick_color(fallback_index: int) -> Color:
