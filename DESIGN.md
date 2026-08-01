@@ -167,6 +167,13 @@ gun is useless," only as "shooting is one of several competing options."
   Hostile events tint the architecture red (scan sweeps, purge alarms).
   Deeper = older = corrupted: z-fighting shimmer zones, dead-pixel clusters,
   geometry that repeats wrong.
+- **Decals — MOTHER talks to her processes**: wall signage seeded by procgen
+  (2-5/room, deterministic). Propaganda to her own daemons ("EVERY CYCLE
+  ACCOUNTED", "QUARANTINE IS MERCY"), wayfinding ("TRUNK 04 →", "VAULT
+  ACCESS"), hazard warnings, and — in deep layers — corrupted remnants of the
+  humans who built her ("NORTHCAIRN SYSTEMS · MOTHER SERVES"), increasingly
+  glitched with depth. Dim albedo + restrained emissive, weathered; invented
+  glyph-blocks mixed among readable text. Never glowing billboards.
 - **Post** (WorldEnvironment + CanvasLayer shader): glow/bloom, vignette, film
   grain, subtle chromatic aberration; low-Cycles and damage push these into
   **glitch** territory — datamosh smears, scanline tears, brief palette
