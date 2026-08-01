@@ -244,7 +244,13 @@ nullvoid/
 - **M3.5 — Steamworks**: GodotSteam GDExtension, Steam lobbies + invites +
   join-in-progress, SteamMultiplayerPeer transport beside ENet, rich presence,
   Achievements autoload (local-first, Steam-mirrored), dev on App ID 480.
-- **M3.7 — Embodiment** (user-provided assets in `/mnt/.../3dprops/`):
+- **M3.7 — Embodiment & Overhaul** (the Expensive pass, pulled forward from M5
+  by user priority; merges two parallel out-of-tree workstreams: the creature
+  models in `nullvoid-art/` — Scrubber v2, Sentinel dressing kit, Hound
+  concept — and the `nullvoid-lookdev/` graphics kit: beveled modular
+  architecture, roughness-varied PBR, wet-floor SSR, light projectors,
+  SSAO/SSIL, animated emissive flow, post shader v2. User assets below
+  integrate in the same pass.) (user-provided assets in `/mnt/.../3dprops/`):
   **Gun_Surge.fbx** → the breaker: first-person viewmodel + third-person prop
   socketed to crewmate hands, muzzle-anchored beam-lash VFX, NULLVOID material
   pass (matte black + teal emissive slots), 0.01 import scale fix.
