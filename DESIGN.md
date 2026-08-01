@@ -336,3 +336,21 @@ prey): invisible rubber-banding that reads as lore, not difficulty settings.
   your screen breaking is the radar.
 - MOTHER addresses players by callsign through glyph panels. Rarely. She has
   always known.
+
+## Future backlog (user ideas, post-M6)
+
+- **The Partition (hub area)**: a sector of MOTHER the crew has permanently
+  carved out — the place you exist between intrusions. Starts as a bare
+  compromised maintenance bay; grows with the crew. **The hub IS the menu**
+  (interactive/diegetic): walk to the injection rig to pick a backdoor and
+  launch, the Compiler terminal to spend, the Assembler to craft, a roster
+  panel to invite friends — crewmates physically stand in the room with you
+  while you ready up. Traditional menus reduce to a thin fallback.
+- **Decoration**: place salvaged objects from the deep — trophies (a dead
+  Scrubber shell), legacy human artifacts, light fixtures, banners of
+  captured propaganda. Per-crew persistence.
+- **Crafting bench ("the Assembler")**: the Compiler's big sibling in the hub.
+  Crafts cosmetics, tools, maybe flare variants from found resources.
+- **Resources beyond data**: rare material drops found in-world (clean RAM,
+  legacy components, intact glyph panels) that fuel the Assembler — a second,
+  optional collection layer that rewards exploration over speed.
