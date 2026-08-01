@@ -90,6 +90,14 @@ func apply_channel(progress: float) -> void:
 	set_channel_visual(progress)
 
 
+## How long this channel takes *for the local player*, which is not always
+## `channel_time`: M4's Servos track shortens a restore, and the module tiers
+## that shorten it belong to the rescuer rather than to the thing being aimed at.
+## Everything else answers with its authored time.
+func channel_seconds() -> float:
+	return channel_time
+
+
 ## Whether a channel may start at all. A refusal still shows `prompt()`, so the
 ## HUD can explain *why* it is refusing (e.g. "CREW IN SHAFT 2/3").
 func available() -> bool:

@@ -16,6 +16,7 @@ config/quit_on_go_back=false
 [autoload]
 
 Rng="*res://src/core/rng.gd"
+Modules="*res://src/core/modules.gd"
 GameState="*res://src/core/game_state.gd"
 Net="*res://src/core/net.gd"
 Run="*res://src/core/run_state.gd"

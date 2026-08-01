@@ -27,6 +27,20 @@ signal unlocked(id: String, definition: Dictionary)
 const SAVE_PATH: String = "user://achievements.json"
 const SAVE_VERSION: int = 1
 
+## Whether this session is running a program the player did not actually earn.
+##
+## M4's `--modules` / `--archive` / `--backdoor` put GameState into sandbox mode:
+## the program file is not written, and neither is this one. The same principle
+## as M3.8's `synthetic` debrief flag, applied to the other direction — that flag
+## protects against a fabricated *run*, this protects against a fabricated
+## *build*. Unlocking DEEP_STATE on a program that was handed backdoor 15 by a
+## command-line switch would be a lie in a file the player keeps.
+## A dedicated server is covered too: it has no player to earn anything, and
+## before M4 it counted an intrusion every time a crew started one on it.
+func fabricated() -> bool:
+	return not GameState.scoring()
+
+
 ## The DESIGN.md table, verbatim, plus the counter each trigger needs.
 ## `id` is the Steamworks API name; `name` is what the toast shows.
 const DEFINITIONS: Array[Dictionary] = [
@@ -133,6 +147,8 @@ func _process(delta: float) -> void:
 
 func _on_run_configured() -> void:
 	_reset_run()
+	if fabricated():
+		return
 	counters["runs"] = int(counters.get("runs", 0)) + 1
 	_note_deepest(Run.layer_number)
 	save_state()
@@ -191,6 +207,8 @@ func _on_run_ended(summary: Dictionary) -> void:
 	# really show — but it is not a legitimate thing to do to a save file. An
 	# achievement is a claim about something the player did.
 	if bool(summary.get("synthetic", false)):
+		return
+	if fabricated():
 		return
 
 	var me: int = Net.local_id()
@@ -255,6 +273,9 @@ func definition(id: String) -> Dictionary:
 ## best-effort push at Steam. Already-earned ids are silently ignored.
 func unlock(id: String) -> bool:
 	if earned.has(id):
+		return false
+	if fabricated():
+		print("[Achievements] %s not scored: this session's program is fabricated" % id)
 		return false
 	var entry: Dictionary = definition(id)
 	if entry.is_empty():

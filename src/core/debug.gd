@@ -107,11 +107,50 @@ extends Node
 ##         decompile hold the menu's dive transition open at its midpoint — the
 ##                   0.8 s glitch dissolve that takes the screen apart on the way
 ##                   into a layer.
+##         refused   (M4) pin the Compiler panel's refusal glitch on. Half a
+##                   second of corrupted price and a shaking row is not a state a
+##                   shutter lands in by luck, and it is the frame that proves the
+##                   panel speaks the same glitch vocabulary as everything else.
+##                   Pair it with `--compiler`.
 ##
 ##       `full`/`warn`/`low` are shorthand for `--cycles N`: they set the real
 ##       pool the host starts with, so the colour, the heartbeat, the shader
 ##       degradation and the interface decay are all the genuine article rather
 ##       than a HUD-local lie.
+##
+## M4 flags. The module economy has two curves in it (threat and power) and the
+## only honest way to tune them is to be able to put an arbitrary build into an
+## arbitrary layer and measure what happens. These are permanent dev tools, not
+## scaffolding:
+##   --modules "runtime:3,optics:2"
+##       Force the local program's module tiers for this session. Never written
+##       to the save file: it is a measuring instrument, not a cheat that sticks.
+##       Track ids are Balance.MODULE_TRACKS; an unknown one warns and is
+##       ignored. Applies on the host and on a client independently, which is how
+##       "each peer's modules apply to the right player" gets tested.
+##   --archive N
+##       Start the session with N data in the wallet, so a Compiler capture does
+##       not need sixty runs behind it.
+##
+##   --backdoor N
+##       Announce N as this program's deepest rooted backdoor. `--backdoor 0` is
+##       a program that has never rooted anything, which is the second instance
+##       the injection gate has to turn away — the only way to test DESIGN.md's
+##       "all present crew must have installed it" rule without two save files.
+##
+##       Any of the three above puts the program file in SANDBOX mode for the
+##       whole session: `GameState.save_progress` becomes a no-op, so a capture
+##       that buys four modules to photograph them cannot spend the developer's
+##       real archive or leave tiers behind in their save.
+##   --log-modules
+##       Print every peer's resolved loadout on boot and after every purchase.
+##       This is the flag that turns "the effect measurably applied" into a
+##       number in a log rather than a claim about a screenshot.
+##   --compiler [delay]
+##       Walk to the layer's Compiler and open its panel at `delay` seconds.
+##   --buy TRACK [delay]
+##       Purchase one tier of TRACK through the real request path (the host
+##       validates funds, stock and proximity) once the panel is up. Repeatable.
 ##
 ## M3.5 (Steam) flags:
 ##   --no-steam          never touch the Steam API, even with the client running.
@@ -165,6 +204,17 @@ var hud_state: String = ""
 ## mid-type. Later than this and it just looks like the finished HUD.
 var hud_boot_phase: float = 0.35
 
+# --- M4 modules / economy ----------------------------------------------------
+## `--modules`, applied to Modules once the autoloads are standing.
+var module_spec: String = ""
+## `--archive`. Negative means "use whatever the program file holds".
+var start_archive: int = -1
+## `--log-modules`.
+var log_modules: bool = false
+## `--backdoor`. Negative means "use the program file's own". Zero is a program
+## that has never rooted anything — the crewmate the injection gate turns away.
+var forced_backdoor: int = -1
+
 # --- M3 world/AI selection ---------------------------------------------------
 ## Generate the layer with no antivirus in it, for isolating everything else.
 var no_antivirus: bool = false
@@ -213,6 +263,14 @@ var _fire_delay: float = -1.0
 var _flare_delay: float = -1.0
 var _exfil_delay: float = -1.0
 var _grab_count: int = 0
+var _compiler_delay: float = -1.0
+## `--buy` targets, in the order they were given.
+var _buy_tracks: PackedStringArray = PackedStringArray()
+var _buy_delay: float = 1.2
+
+## How far back `--goto compiler` stands. Far enough that the lectern and its
+## cowl both fit in frame, close enough that the readout rows still resolve.
+const COMPILER_STANDOFF: float = 2.9
 
 ## Seconds of shader-compilation and layer-build time excluded from the census.
 const FPS_WARMUP: float = 4.0
@@ -230,6 +288,10 @@ var _shot_taken: bool = false
 
 func _ready() -> void:
 	_parse_args(OS.get_cmdline_user_args())
+	# Before anything reads a tier or a wallet: Net announces the program the
+	# instant it hosts or joins, and a forced build that arrives after that
+	# announcement is a build the host never hears about.
+	_apply_program_overrides()
 	automated = not _mode.is_empty() or not screenshot_path.is_empty() \
 			or auto_quit_after > 0.0 or steam_selftest
 	if automated:
@@ -246,6 +308,53 @@ func _ready() -> void:
 	# menu -> layer scene change and every descent after it.
 	set_process(true)
 	_boot.call_deferred()
+
+
+## `--modules` and `--archive`. Both are session-only by construction: the tier
+## override lives in Modules and is never written back, and the archive is
+## poked into GameState in memory without a save. A dev tool that edits the
+## player's program file would be a dev tool nobody could safely run twice.
+func _apply_program_overrides() -> void:
+	if module_spec.is_empty() and start_archive < 0 and forced_backdoor < 0:
+		return
+	# Either override makes this session's program a fabrication, and a
+	# fabrication must never be written back over the real one — including by the
+	# purchases a capture makes while photographing the Compiler.
+	GameState.sandboxed = true
+	print("[Debug] program file is SANDBOXED for this session: nothing will be saved")
+	if not module_spec.is_empty():
+		Modules.force_tiers(module_spec)
+	if start_archive >= 0:
+		print("[Debug] --archive: wallet forced to %d" % start_archive)
+		GameState.archive = start_archive
+	if forced_backdoor >= 0:
+		print("[Debug] --backdoor: deepest backdoor forced to %d" % forced_backdoor)
+		GameState.deepest_backdoor = forced_backdoor
+	if log_modules:
+		Modules.purchased.connect(_log_purchase)
+
+
+func _log_purchase(peer_id: int, track: String, tier: int,
+		from_buffer: int, from_archive: int) -> void:
+	print("[Modules] %s -> %s tier %d (paid %d buffered + %d archive)" % [
+		Net.crew_name(peer_id), track.to_upper(), tier, from_buffer, from_archive])
+	print("[Modules]   %s" % Modules.describe_loadout(peer_id))
+
+
+## Every peer's resolved build, once the crew is standing. `--log-modules` prints
+## this at the top of a run so a before/after pair around a purchase is two lines
+## in the same log rather than two screenshots.
+func _log_loadouts() -> void:
+	if not log_modules:
+		return
+	print("[Modules] --- loadouts ---")
+	for id: int in Net.crew.keys():
+		print("[Modules] %-14s [%s]" % [
+			Net.crew_name(int(id)), Modules.describe(Modules.tiers_of(int(id)))])
+		print("[Modules]   %s" % Modules.describe_loadout(int(id)))
+	print("[Modules] pool ceiling %.0f for %d crew" % [
+		Modules.crew_pool_max(), Net.crew.size()])
+	print("[Modules] ----------------")
 
 
 ## Automated runs are launched *next to* whatever the developer is actually
@@ -372,6 +481,34 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
 					i += 1
 					_fps_window = maxf(args[i].to_float(), 1.0)
+			"--modules":
+				if i + 1 < args.size():
+					i += 1
+					module_spec = args[i]
+			"--archive":
+				if i + 1 < args.size():
+					i += 1
+					start_archive = maxi(args[i].to_int(), 0)
+			"--log-modules":
+				log_modules = true
+			"--backdoor":
+				if i + 1 < args.size():
+					i += 1
+					forced_backdoor = maxi(args[i].to_int(), 0)
+			"--compiler":
+				_compiler_delay = 2.4
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_compiler_delay = args[i].to_float()
+				if _goto.is_empty():
+					_goto = "compiler"
+			"--buy":
+				if i + 1 < args.size():
+					i += 1
+					_buy_tracks.append(args[i].strip_edges().to_lower())
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_buy_delay = args[i].to_float()
 			"--no-antivirus":
 				no_antivirus = true
 			"--aim":
@@ -461,7 +598,7 @@ func _apply_hud_state() -> void:
 			start_cycles = 45.0
 		"low":
 			start_cycles = 10.0
-		"boot", "damage", "debrief", "decompile":
+		"boot", "damage", "debrief", "decompile", "refused":
 			pass
 		_:
 			push_warning("[Debug] unknown --hud-state '%s'" % hud_state)
@@ -511,8 +648,13 @@ func _boot() -> void:
 		_quit_after(auto_quit_after)
 	if not _goto.is_empty() or _hold_delay >= 0.0 or _decompile_at >= 0.0 \
 			or _fire_delay >= 0.0 or _flare_delay >= 0.0 or _exfil_delay >= 0.0 \
-			or _grab_count > 0:
+			or _grab_count > 0 or _compiler_delay >= 0.0:
 		_arm_automation()
+	if log_modules:
+		# On the roster rather than on the spawn: a client spawns before the crew
+		# packet lands, so a census taken at spawn reports "0 crew" and none of the
+		# builds it exists to print.
+		Net.crew_changed.connect(_log_loadouts)
 	if hud_state == "debrief":
 		Net.local_player_spawned.connect(
 				func(_p: Node) -> void: _fake_debrief(), CONNECT_ONE_SHOT)
@@ -622,6 +764,8 @@ func _on_automation_player_ready(_player: Node) -> void:
 	# reached; see `_on_automation_layer`.
 	if _exfil_delay >= 0.0 and not _auto_descend:
 		_run_exfil(_exfil_delay)
+	if _compiler_delay >= 0.0:
+		_run_compiler(_compiler_delay)
 
 
 func _decompile_later(seconds: float) -> void:
@@ -732,6 +876,39 @@ func _teleport_local(where: String) -> void:
 		# The node is channelled from its +Z face, same convention as the shaft.
 		avatar.teleport_to(target + Vector3(lateral, 0.35, 3.4), 0.0, _pitch_for(0.0))
 		print("[Debug] teleported to %s %s" % [where, str(target)])
+	elif where == "compiler" or where == "sanctuary":
+		# Stood off the plate at reading distance, facing it. The terminal's own
+		# yaw points its screen into the room, so the reader stands on that side
+		# and looks back — the same reasoning as `--goto decal`. `sanctuary` picks
+		# the backdoor room's guaranteed terminal instead of the hidden one.
+		var terminals: Array = layer.get("compiler_positions")
+		if terminals.is_empty():
+			push_warning("[Debug] no compiler on this layer")
+			return
+		var pick: int = (terminals.size() - 1) if where == "sanctuary" \
+				else (index % terminals.size())
+		var machine: CompilerTerminal = CompilerTerminal.find(get_tree(), pick)
+		var spot: Vector3 = terminals[pick]
+		var facing: Vector3 = Vector3(0.0, 0.0, 1.0) if machine == null \
+				else -machine.global_transform.basis.z
+		# Straight out from the plate is usually right and occasionally puts a rib
+		# column between the lens and the machine. Fan a few angles and take the
+		# first with a genuine sightline, the same way `--goto crew` probes for a
+		# clear side to stand on.
+		var view: Dictionary = _clear_view(spot, facing, COMPILER_STANDOFF)
+		var out: Vector3 = view["direction"]
+		var stand: Vector3 = spot + out * float(view["distance"])
+		avatar.teleport_to(Vector3(stand.x, 0.35, stand.z),
+				atan2(out.x, out.z), _pitch_for(-0.14))
+		# Re-aim from where the body actually ended up. A teleport into a tight
+		# spot is depenetrated by the next `move_and_slide`, and a yaw computed
+		# from the position we *asked* for then points a metre past the machine —
+		# which is a whole afternoon of "why is the prop off the edge of frame".
+		_look_at_after_settling(avatar, spot + Vector3.UP * 1.3)
+		print("[Debug] teleported to compiler %d at %s (stand %s, %s)" % [
+			pick, str(spot.snapped(Vector3.ONE * 0.1)),
+			str(stand.snapped(Vector3.ONE * 0.1)),
+			"sanctuary" if machine != null and machine.sanctuary else "hidden"])
 	elif where == "decal":
 		# Art-direction probe: stand off a wall sign and look at it. Signage that
 		# cannot be read at three metres is not signage, and there is no other way
@@ -871,6 +1048,48 @@ func _run_exfil(delay: float) -> void:
 	print("[Debug] exfiltration called; standing on the pad")
 
 
+## `--compiler` and `--buy`, end to end through the real paths: walk to the
+## terminal, open its panel the way holding E does, then drive the panel's own
+## purchase button. Nothing here reaches past the panel into Modules — a dev flag
+## that skipped the panel would be proving the wrong thing.
+func _run_compiler(delay: float) -> void:
+	await get_tree().create_timer(delay).timeout
+	var player: Node = Net.get_player(Net.local_id())
+	if player == null or not is_instance_valid(player):
+		push_warning("[Debug] --compiler: no local player")
+		return
+	var terminal: CompilerTerminal = CompilerTerminal.nearest(
+			get_tree(), (player as Node3D).global_position)
+	if terminal == null:
+		push_warning("[Debug] --compiler: nothing in reach; is --goto compiler set?")
+		return
+	print("[Debug] opening compiler %d (stock tier %d)" % [
+		terminal.compiler_index, terminal.stock_tier])
+	var panel: CompilerPanel = CompilerPanel.open_for(terminal)
+	if panel == null or _buy_tracks.is_empty():
+		return
+
+	for track: String in _buy_tracks:
+		await get_tree().create_timer(_buy_delay).timeout
+		if not is_instance_valid(panel):
+			return
+		if not Modules.is_track(track):
+			push_warning("[Debug] --buy: no module track '%s'" % track)
+			continue
+		print("[Debug] --buy %s: before  %s" % [
+			track.to_upper(), Modules.describe_loadout(Net.local_id())])
+		panel.select(track)
+		panel.buy_selected()
+		# The purchase is a round trip even on a listen host (the request is
+		# `call_local`), so the "after" line waits for the tier to actually move
+		# rather than for a timer.
+		var was: int = Modules.tier_of(Net.local_id(), track)
+		await _wait_until(func() -> bool:
+			return Modules.tier_of(Net.local_id(), track) > was, 4.0)
+		print("[Debug] --buy %s: after   %s" % [
+			track.to_upper(), Modules.describe_loadout(Net.local_id())])
+
+
 ## Polls `test` until it passes or `limit` seconds go by. Returns whether it
 ## passed; a run that has already ended stops waiting immediately.
 func _wait_until(test: Callable, limit: float) -> bool:
@@ -883,6 +1102,71 @@ func _wait_until(test: Callable, limit: float) -> bool:
 		await get_tree().create_timer(0.2).timeout
 		waited += 0.2
 	return false
+
+
+## Points the lens at `target` once the physics step has had a chance to shove
+## the avatar out of anything it was teleported into. Two frames, because the
+## depenetration happens on the physics callback and the yaw has to be written
+## after it.
+func _look_at_after_settling(avatar: Player, target: Vector3) -> void:
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	if not is_instance_valid(avatar):
+		return
+	var eye: Vector3 = avatar.global_position + Vector3.UP * 1.62
+	var to_target: Vector3 = target - eye
+	if to_target.length_squared() < 0.04:
+		return
+	avatar.teleport_to(avatar.global_position, atan2(-to_target.x, -to_target.z),
+			_pitch_for(atan2(to_target.y, Vector2(to_target.x, to_target.z).length())))
+
+
+## Where to stand to photograph `prop`: {direction, distance}.
+##
+## Fans candidate angles around `preferred` and measures how much open space each
+## one has, casting **from the prop outward** rather than from the camera in.
+## `intersect_ray` does not report a shape it starts inside, so a ray fired from a
+## stand point buried in a siphon hall's hero pillar exits cleanly and calls the
+## angle fine — which is how the first version of this kept photographing the
+## inside of a column. The prop is known to be in open space (the generator insets
+## it), so that way round is the test that cannot lie about its own origin.
+##
+## The measurement is along the **sightline a lens would use** — eye height at
+## the stand point, down to the prop's reading height — not along the floor: a
+## rib column a knee-high ray slides past still fills the middle of the picture.
+## An angle with room for the full standoff wins immediately; otherwise the
+## roomiest one is taken and the camera stands as far back as it fits, which is
+## the difference between a cramped photograph and one of the inside of a wall.
+func _clear_view(prop: Vector3, preferred: Vector3, wanted: float) -> Dictionary:
+	var fallback: Dictionary = {"direction": preferred, "distance": wanted}
+	var tree_layer: Node = get_tree().get_first_node_in_group("layer")
+	if tree_layer == null:
+		return fallback
+	var space: PhysicsDirectSpaceState3D = \
+			(tree_layer as Node3D).get_world_3d().direct_space_state
+	if space == null:
+		return fallback
+
+	var target: Vector3 = prop + Vector3.UP * 1.35
+	var best: Dictionary = {"direction": preferred, "distance": 0.0}
+	for degrees: float in [0.0, 20.0, -20.0, 40.0, -40.0, 65.0, -65.0,
+			95.0, -95.0, 135.0, -135.0, 180.0]:
+		var direction: Vector3 = preferred.rotated(Vector3.UP, deg_to_rad(degrees))
+		var eye: Vector3 = prop + direction * wanted + Vector3.UP * 1.97
+		var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+				target, eye)
+		query.collision_mask = 1
+		query.hit_from_inside = true
+		var hit: Dictionary = space.intersect_ray(query)
+		if hit.is_empty():
+			return {"direction": direction, "distance": wanted}
+		var clearance: float = target.distance_to(Vector3(hit["position"]))
+		if clearance > float(best["distance"]):
+			best = {"direction": direction, "distance": clearance}
+	# Nothing had the full standoff. Stand just short of whatever was roomiest,
+	# and never so close that the prop is a wall of its own casing.
+	best["distance"] = clampf(float(best["distance"]) - 0.7, 1.6, wanted)
+	return best
 
 
 ## An offset from `body` with nothing solid in it. A shard-grabbing avatar tends

@@ -52,7 +52,13 @@ static func of(layer_number: int) -> Dictionary:
 		"scrubber_speed": lerpf(1.0, 1.55, depth),
 		"sentinel_count": 0 if n < 3 else 1 + int(depth * 2.0),
 		"data_multiplier": 1.0 + float(n - 1) * 0.35,
-		"compiler_tier": 1 + int(depth * 3.0),
+		# What the Compiler on this layer will sell you (M4). Four layers per
+		# tier, so tier 5 is stocked from layer 17 down — or from the layer-15
+		# sanctuary, which stocks one above its layer. Deliberately NOT tied to
+		# `depth`, which bottoms out at DEPTH_FLOOR: the light and the room count
+		# stop getting worse at 14, and the top module tier has to stay somewhere
+		# past the point where everything else has already flattened.
+		"compiler_tier": clampi(1 + (n - 1) / 4, 1, Balance.MODULE_MAX_TIER),
 		# Every 5th layer ends in a hand-authored backdoor node room (M3).
 		"has_backdoor": n % 5 == 0,
 	}

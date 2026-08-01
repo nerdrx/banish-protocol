@@ -773,6 +773,24 @@ func _place_furniture() -> void:
 	for i: int in graph.shard_points.size():
 		_fixtures.add_child(DataShard.create(i, graph.shard_points[i], worth))
 
+	# Compilers. Faced toward the middle of the room they stand in, so a terminal
+	# tucked against a wall presents its plate to the space the crew walks
+	# through rather than to the masonry behind it.
+	for i: int in graph.compiler_points.size():
+		var at: Vector3 = graph.compiler_points[i]
+		var toward: Vector3 = graph.centre_of(graph.compiler_rooms[i]) - at
+		var yaw: float = 0.0 if toward.length_squared() < 0.01 \
+				else atan2(-toward.x, -toward.z)
+		var terminal: CompilerTerminal = CompilerTerminal.create(i, at, yaw,
+				graph.compiler_tiers[i], graph.compiler_sanctuary[i])
+		_fixtures.add_child(terminal)
+		# A hidden Compiler is hidden, not invisible: one feeble practical under
+		# the cowl, so a beam sweeping the room finds a shape rather than nothing.
+		LightRig.practical(_fixtures, at + Vector3(0.0, 2.3, -0.3),
+				0.5 * light_scale, 5.0,
+				LightRig.AMBER if graph.compiler_sanctuary[i]
+				else Color(0.3, 0.85, 1.0)).name = "Practical_compiler_%d" % i
+
 	if not graph.is_backdoor:
 		return
 	_fixtures.add_child(BackdoorNode.create(graph.backdoor_point))
@@ -791,3 +809,7 @@ func siphon_positions() -> Array[Vector3]:
 
 func shaft_position() -> Vector3:
 	return graph.shaft_point
+
+
+func compiler_positions() -> Array[Vector3]:
+	return graph.compiler_points

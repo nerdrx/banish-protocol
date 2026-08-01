@@ -9,10 +9,50 @@ extends RefCounted
 ##
 ## Never instantiated — this is a constant namespace.
 
+# --- the intended curve (M4) ------------------------------------------------
+#
+# Two curves run against each other and the whole game lives in the gap between
+# them: the **threat curve** (LayerParams — more processes, faster, darker, per
+# layer) and the **power curve** (the module tracks below, bought with data the
+# threat curve is guarding). M4's job was to make the second one exist; this
+# comment is the shape they are tuned to.
+#
+#   layers  1-5    A fresh program, no modules at all, comfortably learns the
+#                  game. Two siphons a layer, Scrubbers only until 3, one
+#                  Sentinel after that. A careful 1->5 run banks roughly
+#                  500-800 data, which is the first two or three module tiers.
+#   layers  6-10   Siphons halve (LayerParams.siphon_count drops to 1 at 7) and
+#                  the antivirus budget roughly doubles. Playable bare, but the
+#                  pool is now the binding constraint: this band is asking for
+#                  Runtime 1-2 and whichever of Breaker/Optics your crew fights
+#                  or sneaks with. Banks ~900-1400.
+#   layers 11-15   The ambient light and room-light curves have bottomed out and
+#                  the Sentinel count is at its ceiling. Expect most tracks
+#                  touched at tier 1-3 and two of them at 3-4. Banks ~1800-2600,
+#                  so this is also where the tier-4 prices start being payable.
+#   layers 16+     Honest endgame. Nothing new is generated — the depth floor is
+#                  layer 14 — so the difficulty is purely that the numbers keep
+#                  scaling while your build is finite. Tier 5 exists for here.
+#
+# Prices are set so the first tier of anything lands inside one or two surface
+# runs and the fifth tier of anything costs about ten deep ones. Maxing every
+# track is ~133,000 data: sixty-plus runs, which is the point.
+#
+# Two rules keep this honest and both are load-bearing:
+#   1. **Modules never touch world generation.** Every value below is applied to
+#      a player, per player, at simulation time. The determinism dump cannot see
+#      any of it.
+#   2. **The host owns every number that matters.** A client's tiers are
+#      announced (Net.crew) and the host resolves them; nothing here is applied
+#      from a client's own say-so except the purely cosmetic half of Optics.
+
 # --- the pool ---------------------------------------------------------------
 
 ## Base pool contributed by each crew member at injection. Four agents inject
 ## with 400 Cycles; one agent injects with 100 and is on a much shorter leash.
+## M4: this is the *base* share — Runtime tiers add to it per player, so a crew
+## of four with different builds no longer has a pool that is a multiple of one
+## number (see `Modules.crew_pool_max`).
 const CYCLES_PER_CREW: float = 100.0
 
 ## Per living player, per second, just for existing. 100 / 0.6 = ~166 s of
@@ -230,18 +270,154 @@ const POOL_SYNC_INTERVAL: float = 0.2
 const INTEGRITY_SYNC_INTERVAL: float = 0.25
 
 
-## Pool ceiling for a crew of `crew_size`.
+## Pool ceiling for a crew of `crew_size` with no modules compiled. Kept for the
+## offline/editor path and for anything that wants the un-modified number;
+## `Modules.crew_pool_max()` is what the host actually bills against.
 static func pool_max(crew_size: int) -> float:
 	return CYCLES_PER_CREW * float(maxi(crew_size, 1))
 
 
-## Movement multiplier for a buffer holding `shards` shards.
-static func carry_multiplier(shards: int) -> float:
-	var over: float = float(maxi(shards - CARRY_FREE_SHARDS, 0))
-	return 1.0 - CARRY_MAX_PENALTY * clampf(over / CARRY_PENALTY_SPAN, 0.0, 1.0)
+## Movement multiplier for a buffer holding `shards` shards. `free` and
+## `penalty` come from the carrier's Buffer tier (Modules.loadout), so a Mule
+## build genuinely carries more before it starts to drag.
+static func carry_multiplier(shards: int, free: int = CARRY_FREE_SHARDS,
+		penalty: float = CARRY_MAX_PENALTY) -> float:
+	var over: float = float(maxi(shards - free, 0))
+	return 1.0 - penalty * clampf(over / CARRY_PENALTY_SPAN, 0.0, 1.0)
 
 
 ## What one shard is worth on `layer_number`.
 static func shard_value(layer_number: int) -> int:
 	var params: Dictionary = LayerParams.of(layer_number)
 	return maxi(int(round(float(SHARD_BASE_VALUE) * float(params["data_multiplier"]))), 1)
+
+
+# --- modules (M4) -----------------------------------------------------------
+#
+# The eight permanent tracks from DESIGN.md's meta-progression section. Every
+# number the economy and the effects run on is here; `Modules` (autoload) owns
+# the *behaviour* — resolving a set of tiers into a loadout, pricing a purchase,
+# and replicating who has what.
+#
+# Shape of a track:
+#   name/glyph/note   what the Compiler panel prints
+#   prices[i]         cost of buying tier i+1 (so `prices` has TIERS entries)
+#   <effect>[t]       the value at tier t, with index 0 = "no module at all".
+#                     Effect arrays therefore have TIERS+1 entries and index 0
+#                     always repeats the bare constant above.
+#
+# Tier counts are deliberately uneven (DESIGN.md says 3-5). A track with three
+# tiers is one you finish; a track with five is one you commit a build to.
+
+## Order the Compiler panel and the menu's program readout list them in. Roughly
+## "keeps you alive" -> "kills things" -> "carries the haul".
+const MODULE_TRACKS: Array[String] = [
+	"runtime", "threading", "checksum", "breaker",
+	"optics", "servos", "buffer", "cache",
+]
+
+const MODULES: Dictionary = {
+	# --- Runtime: the clock ------------------------------------------------
+	# The default track. 100 Cycles at 0.6/s is 166 s of solo runtime; a maxed
+	# Runtime is 180 at 0.42/s, which is 428 s — two and a half times the leash,
+	# and the reason a layer-18 sweep is possible at all.
+	"runtime": {
+		"name": "RUNTIME",
+		"glyph": "◉",
+		"note": "CYCLES SHARE ↑  ·  PASSIVE DRAIN ↓",
+		"prices": [300, 800, 2200, 5900, 16000],
+		"share": [0.0, 12.0, 26.0, 42.0, 60.0, 80.0],
+		"drain": [1.0, 0.94, 0.88, 0.82, 0.76, 0.70],
+	},
+	# --- Threading: the sprint ---------------------------------------------
+	# Three tiers, because "sprinting is expensive" is a rule the game needs to
+	# keep. At tier 3 a sprint bills 1.55x instead of 2.5x — cheaper, never free.
+	"threading": {
+		"name": "THREADING",
+		"glyph": "≡",
+		"note": "SPRINT COST ↓",
+		"prices": [260, 780, 2300],
+		"sprint": [2.5, 2.15, 1.85, 1.55],
+	},
+	# --- Checksum: the health ----------------------------------------------
+	# A Scrubber lunge is 9 and a Sentinel arc is 26. At tier 5 (224) a purge
+	# costs you 12% instead of 26%, which is the difference between "we back off"
+	# and "we finish it".
+	"checksum": {
+		"name": "CHECKSUM",
+		"glyph": "▣",
+		"note": "MAX INTEGRITY ↑",
+		"prices": [300, 820, 2300, 6200, 17000],
+		"integrity": [100.0, 118.0, 138.0, 162.0, 190.0, 224.0],
+	},
+	# --- Breaker: the cutter -----------------------------------------------
+	# Scrubber HP is 100, so damage tiers read as a shot count: 3 hits bare, 2 at
+	# tier 2, 1 at tier 5. Range matters as much — eight metres is inside a
+	# lunge, fifteen is not.
+	"breaker": {
+		"name": "BREAKER",
+		"glyph": "⌁",
+		"note": "CUTTER DAMAGE ↑  ·  REACH ↑",
+		"prices": [320, 880, 2400, 6300, 17000],
+		"damage": [42.0, 50.0, 60.0, 72.0, 86.0, 104.0],
+		"range": [8.0, 9.0, 10.2, 11.6, 13.2, 15.0],
+	},
+	# --- Optics: buying vision ---------------------------------------------
+	# The one track whose purchase you can SEE the instant it lands, which is
+	# why the Compiler applies live rather than at the next injection. The
+	# exposure cone the Scrubbers flee from is derived from the same numbers
+	# (Modules.loadout), so a wider beam genuinely holds more of them off.
+	"optics": {
+		"name": "OPTICS",
+		"glyph": "◇",
+		"note": "BEAM WIDTH ↑  ·  BRIGHTNESS ↑  ·  REACH ↑",
+		"prices": [280, 780, 2200, 6100, 17000],
+		"angle": [26.0, 30.0, 34.5, 39.5, 45.0, 51.0],
+		"energy": [6.6, 7.5, 8.6, 9.9, 11.4, 13.0],
+		"reach": [30.0, 34.0, 38.5, 43.5, 49.0, 55.0],
+	},
+	# --- Servos: the legs --------------------------------------------------
+	# Small movement numbers on purpose: the avatar's feel was tuned in M1 and a
+	# 22% top-speed swing is the most it takes before the bob, the dip and the
+	# camera lag stop matching the body. The restore half is the real reason to
+	# buy it — three seconds stood still next to a downed crewmate is a long time.
+	"servos": {
+		"name": "SERVOS",
+		"glyph": "⋔",
+		"note": "MOVE SPEED ↑  ·  RESTORE SPEED ↑",
+		"prices": [340, 980, 2900, 8200],
+		"move": [1.0, 1.05, 1.10, 1.16, 1.22],
+		"restore": [1.0, 0.88, 0.77, 0.66, 0.56],
+	},
+	# --- Buffer: the haul --------------------------------------------------
+	# Cheapest track to start, because "who carries the haul" should be a
+	# decision a new crew can act on. Tier 4 carries 46 chips free and barely
+	# notices the rest.
+	"buffer": {
+		"name": "BUFFER",
+		"glyph": "▤",
+		"note": "CARRY CAPACITY ↑  ·  WEIGHT PENALTY ↓",
+		"prices": [240, 680, 1900, 5200],
+		"free": [10, 16, 24, 34, 46],
+		"penalty": [0.18, 0.145, 0.11, 0.08, 0.05],
+	},
+	# --- Cache: the flares -------------------------------------------------
+	# Three tiers and steep, because a flare is the answer to a Scrubber pack and
+	# eight of them would make the dark negotiable. Still costs the shared pool
+	# to burn one, which is what keeps the stock from being the whole answer.
+	"cache": {
+		"name": "CACHE",
+		"glyph": "✦",
+		"note": "FLARE STOCK ↑",
+		"prices": [300, 960, 3000],
+		"stock": [3, 4, 6, 8],
+	},
+}
+
+## Highest tier any track goes to. The Compiler stock gate is clamped to it.
+const MODULE_MAX_TIER: int = 5
+
+## Sanctuary Compilers stock one tier above the layer they stand on
+## (DESIGN.md: "Deeper Compilers stock higher tiers"), which is what makes a
+## backdoor room worth walking to even when you are not exfiltrating.
+const COMPILER_SANCTUARY_BONUS: int = 1

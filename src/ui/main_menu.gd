@@ -125,6 +125,8 @@ func _ready() -> void:
 	if SteamHub.live:
 		_scan_lobbies()
 
+	_build_program_panel()
+
 	var carried: String = GameState.consume_status()
 	if carried.is_empty():
 		_set_status("AWAITING ORDERS", COLOUR_IDLE)
@@ -316,17 +318,144 @@ func _paint_swatch(swatch: Button, color: Color, selected: bool) -> void:
 		swatch.add_theme_stylebox_override(state, style)
 
 
+# ------------------------------------------------------------------ program --
+#
+# DESIGN.md: "each player's program (module tiers, archive, deepest backdoor)
+# saves locally on their machine." Before M4 the menu never said what was in it,
+# which meant the only place a player could see their own build was by walking to
+# a Compiler two layers into a run — the one moment they are least able to plan
+# around it.
+#
+# Built in code rather than added to the scene for the same reason the HUD's crew
+# rows are: it is a list whose length is a constant in Balance, and a scene that
+# hard-codes eight rows is a scene that silently lies the day a ninth track is
+# added.
+
+## Narrow enough to sit clear of the injection console, which is centred and
+## about 630 px wide on a 1280 frame.
+const PROGRAM_WIDTH: float = 292.0
+
+func _build_program_panel() -> void:
+	var panel: Control = Control.new()
+	panel.name = "ProgramPanel"
+	panel.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
+	panel.position = Vector2(-PROGRAM_WIDTH - 22.0, -186.0)
+	panel.size = Vector2(PROGRAM_WIDTH, 372.0)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(panel)
+	# Behind the post grade, so the dive dissolve takes it apart with everything
+	# else rather than leaving a readout floating over a decompiling screen.
+	move_child(panel, _post.get_index())
+
+	var plate: ColorRect = ColorRect.new()
+	plate.color = Color(0.02, 0.055, 0.08, 0.72)
+	plate.set_anchors_preset(Control.PRESET_FULL_RECT)
+	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(plate)
+
+	var edge: ColorRect = ColorRect.new()
+	edge.color = Color(UiFx.SYSTEM.r, UiFx.SYSTEM.g, UiFx.SYSTEM.b, 0.4)
+	edge.set_anchors_preset(Control.PRESET_LEFT_WIDE)
+	edge.custom_minimum_size = Vector2(2.0, 0.0)
+	edge.offset_right = 2.0
+	edge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.add_child(edge)
+
+	var column: VBoxContainer = VBoxContainer.new()
+	column.set_anchors_preset(Control.PRESET_FULL_RECT)
+	column.offset_left = 18.0
+	column.offset_right = -14.0
+	column.offset_top = 14.0
+	column.add_theme_constant_override("separation", 3)
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.add_child(column)
+
+	_program_line(column, "YOUR PROGRAM", 15, UiFx.SYSTEM)
+	_program_line(column, "COMPILED  ·  SURVIVES DELETION", 10, UiFx.DIM)
+	column.add_child(_program_rule())
+
+	for track: String in Balance.MODULE_TRACKS:
+		var row: HBoxContainer = HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		column.add_child(row)
+
+		# Through Modules rather than straight off the file, so `--modules` shows
+		# the build the session is actually running with — the menu must never
+		# disagree with the Compiler panel about what you have compiled.
+		var tier: int = Modules.tier_of(Net.local_id(), track)
+		var total: int = Modules.tier_count(track)
+		var lit: Color = UiFx.SYSTEM if tier > 0 else UiFx.DIM
+		_program_cell(row, Modules.glyph(track), 13, lit, 20.0)
+		_program_cell(row, Modules.display_name(track), 12,
+				UiFx.TEXT if tier > 0 else UiFx.DIM, 106.0)
+		var pips: String = ""
+		for t: int in total:
+			pips += "●" if t < tier else "○"
+		_program_cell(row, pips, 13, lit, 0.0)
+
+	column.add_child(_program_rule())
+	_program_line(column, "ARCHIVE           %d DATA" % GameState.archive, 12, UiFx.TEXT)
+	_program_line(column, "DEEPEST BACKDOOR  %s" % (
+			"NONE" if GameState.deepest_backdoor <= 0
+			else "LAYER %02d" % GameState.deepest_backdoor), 12, UiFx.TEXT)
+	column.add_child(_program_rule())
+	_program_line(column, "INTRUSIONS        %d" % GameState.stat("runs"), 11, UiFx.DIM)
+	_program_line(column, "EXFILTRATIONS     %d" % GameState.stat("exfils"), 11, UiFx.DIM)
+	_program_line(column, "PROCESSES DELETED %d" % GameState.stat("deletions"), 11, UiFx.DIM)
+	_program_line(column, "DATA BANKED       %d" % GameState.stat("data_banked"), 11, UiFx.DIM)
+
+	# Rewriting somebody's save file is a thing to admit to, once, plainly.
+	if GameState.migrated_from > 0:
+		column.add_child(_program_rule())
+		_program_line(column, "PROGRAM FILE MIGRATED v%d → v%d" % [
+			GameState.migrated_from, GameState.SAVE_VERSION], 10, UiFx.WARNING)
+		_program_line(column, "BACKUP: user://save.json.bak", 10, UiFx.DIM)
+
+
+func _program_line(parent: Control, text: String, size: int, colour: Color) -> Label:
+	var label: Label = Label.new()
+	label.text = text
+	label.add_theme_font_size_override("font_size", size)
+	label.add_theme_color_override("font_color", colour)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(label)
+	return label
+
+
+func _program_cell(parent: Control, text: String, size: int, colour: Color,
+		width: float) -> Label:
+	var label: Label = _program_line(parent, text, size, colour)
+	label.custom_minimum_size = Vector2(width, 0.0)
+	return label
+
+
+func _program_rule() -> Control:
+	var line: ColorRect = ColorRect.new()
+	line.custom_minimum_size = Vector2(0.0, 1.0)
+	line.color = Color(UiFx.SYSTEM.r, UiFx.SYSTEM.g, UiFx.SYSTEM.b, 0.22)
+	line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return line
+
+
 # ----------------------------------------------------------------- injection --
 
 ## DESIGN.md lobby step 1: "layer 1, or any backdoor every present crew member
-## has installed". M3 ships the single-machine half of that — this menu offers
-## the ring below the deepest node *this* machine has rooted. Checking it against
-## the whole crew's saves is M4's lobby.
+## has installed". M3 shipped the single-machine half — this menu offers the ring
+## below the deepest node *this* machine has rooted. M4 adds the crew half, and
+## it lives at the door rather than here: there is no separate lobby scene to
+## check a roster in, so the host's `_register_crew` turns away any program that
+## has not installed the backdoor the run started at, and both sides are told
+## exactly who and why (Net's injection gate, Hud's gate panel).
+##
+## The dropdown therefore says what it is committing the crew to, and does not
+## pretend to know who is going to join.
 func _build_injection_points() -> void:
 	_injection_select.clear()
 	for layer: int in GameState.injection_choices():
 		_injection_select.add_item("LAYER %02d%s" % [
-			layer, "" if layer == 1 else "  ·  BACKDOOR"], layer)
+			layer, "" if layer == 1
+			else "  ·  NEEDS BACKDOOR %02d" % (layer - 1)], layer)
 	_injection_select.select(_injection_select.item_count - 1)
 	# One choice is not a choice; do not offer a dropdown that cannot change.
 	_injection_select.disabled = _injection_select.item_count <= 1

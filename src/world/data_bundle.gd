@@ -16,7 +16,11 @@ const COLOUR: Color = Color(1.0, 0.72, 0.3)
 const REST_HEIGHT: float = 0.55
 
 var bundle_id: int = 0
+## Chips in the pile — what it costs to carry.
 var amount: int = 0
+## And what they are worth. Two numbers for the same reason Run keeps two (see
+## `Run.buffered_value`): weight and money stopped being the same thing in M4.
+var worth: int = 0
 
 var _material: StandardMaterial3D = null
 var _light: OmniLight3D = null
@@ -25,11 +29,12 @@ var _taken: bool = false
 var _fade: float = 1.0
 
 
-static func create(id: int, where: Vector3, shards: int) -> DataBundle:
+static func create(id: int, where: Vector3, shards: int, value: int) -> DataBundle:
 	var bundle: DataBundle = DataBundle.new()
 	bundle.name = "DataBundle%d" % id
 	bundle.bundle_id = id
 	bundle.amount = shards
+	bundle.worth = maxi(value, shards)
 	bundle.position = Vector3(where.x, REST_HEIGHT, where.z)
 	bundle._assemble()
 	return bundle

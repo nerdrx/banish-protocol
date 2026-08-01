@@ -71,9 +71,20 @@ var corrupted: Dictionary = {}
 ## peer id -> true. Present means deleted for the rest of the run.
 var deleted: Dictionary = {}
 
-## peer id -> shards held. Lost on deletion, banked on exfiltration.
+## peer id -> shards held. This is a **count of chips**, and it is what the
+## carry-weight rule reads: what slows you down is how much you are holding, not
+## what it happens to be worth.
 var buffered: Dictionary = {}
-## peer id -> flares in stock.
+## peer id -> data units held. This is the **value** of that buffer — the number
+## DESIGN.md's "every layer deeper multiplies the haul" is about, the number a
+## Compiler spends, and the number that banks to the archive on exfiltration.
+##
+## M3 conflated the two (it banked the chip count and used the per-layer worth
+## for nothing but the pickup readout), which meant a layer-15 haul was worth
+## exactly as much as a layer-1 haul. M4 needs a real price curve, so the two are
+## separate: `buffered` is weight, `buffered_value` is money.
+var buffered_value: Dictionary = {}
+## peer id -> flares in stock. Ceiling is the carrier's Cache tier.
 var flares: Dictionary = {}
 
 ## Tap indices already drained on the current layer. Cleared on descent.
@@ -132,6 +143,7 @@ func begin(layer: int, test_layer: bool) -> void:
 	corrupted.clear()
 	deleted.clear()
 	buffered.clear()
+	buffered_value.clear()
 	flares.clear()
 	descending = false
 	run_over = false
@@ -140,7 +152,7 @@ func begin(layer: int, test_layer: bool) -> void:
 	exfil_remaining = 0.0
 	siphons_drained = 0
 	_run_started_msec = Time.get_ticks_msec()
-	cycles_max = Balance.pool_max(maxi(Net.crew.size(), 1))
+	cycles_max = Modules.crew_pool_max()
 	cycles = cycles_max
 	if Debug.start_cycles >= 0.0:
 		cycles = minf(Debug.start_cycles, cycles_max)
@@ -186,14 +198,17 @@ func on_crew_changed() -> void:
 
 	for id: int in Net.crew.keys():
 		var peer: int = int(id)
+		var loadout: Dictionary = Modules.loadout(peer)
 		if not integrity.has(peer):
-			integrity[peer] = Balance.INTEGRITY_MAX
+			integrity[peer] = float(loadout["integrity"])
 		if not buffered.has(peer):
 			buffered[peer] = 0
+		if not buffered_value.has(peer):
+			buffered_value[peer] = 0
 		if not flares.has(peer):
-			flares[peer] = Balance.FLARE_STOCK
+			flares[peer] = int(loadout["flares"])
 
-	var updated: float = Balance.pool_max(maxi(Net.crew.size(), 1))
+	var updated: float = Modules.crew_pool_max()
 	if updated > cycles_max:
 		cycles += updated - cycles_max
 	cycles_max = updated
@@ -212,12 +227,13 @@ func on_crew_left(peer_id: int) -> void:
 	corrupted.erase(peer_id)
 	deleted.erase(peer_id)
 	buffered.erase(peer_id)
+	buffered_value.erase(peer_id)
 	flares.erase(peer_id)
 	if not configured:
 		return
 	if multiplayer.has_multiplayer_peer() and not multiplayer.is_server():
 		return
-	cycles_max = Balance.pool_max(maxi(Net.crew.size(), 1))
+	cycles_max = Modules.crew_pool_max()
 	cycles = clampf(cycles, 0.0, cycles_max)
 	_dirty_health = true
 	_dirty_buffers = true
@@ -236,6 +252,7 @@ func reset() -> void:
 	corrupted.clear()
 	deleted.clear()
 	buffered.clear()
+	buffered_value.clear()
 	flares.clear()
 	spent_siphons.clear()
 	taken_shards.clear()
@@ -302,6 +319,18 @@ func buffered_of(peer_id: int) -> int:
 	return int(buffered.get(peer_id, 0))
 
 
+## What that buffer is worth. The number a Compiler spends and the archive banks.
+func buffered_value_of(peer_id: int) -> int:
+	return int(buffered_value.get(peer_id, 0))
+
+
+## `peer_id`'s integrity ceiling, which their Checksum tier raises. Everything
+## that used to read Balance.INTEGRITY_MAX for a specific player goes through
+## here instead — the regen clamp, the HUD's percentage, and the restore.
+func integrity_max_of(peer_id: int) -> float:
+	return float(Modules.loadout(peer_id)["integrity"])
+
+
 func flares_of(peer_id: int) -> int:
 	return int(flares.get(peer_id, 0))
 
@@ -324,6 +353,10 @@ func local_corrupted() -> bool:
 
 func local_buffered() -> int:
 	return buffered_of(Net.local_id())
+
+
+func local_buffered_value() -> int:
+	return buffered_value_of(Net.local_id())
 
 
 ## Peer ids currently down, for the HUD's crewmate alert.
@@ -356,7 +389,13 @@ func is_shard_taken(index: int) -> bool:
 ## (DESIGN.md: "buffered weight slows you slightly — who carries the haul?").
 func speed_multiplier() -> float:
 	var multiplier: float = Balance.STARVED_SPEED_MULT if starved() else 1.0
-	return multiplier * Balance.carry_multiplier(local_buffered())
+	# Buffer tiers raise what you carry free and soften what the rest costs;
+	# Servos raise the top speed the whole thing is multiplying. Both are read
+	# off the local program because movement is client-authoritative — the host
+	# is not simulating this player's velocity, it is only billing for it.
+	var loadout: Dictionary = Modules.local_loadout()
+	return multiplier * float(loadout["move"]) * Balance.carry_multiplier(
+			local_buffered(), int(loadout["carry_free"]), float(loadout["carry_penalty"]))
 
 
 ## 0..1 "how badly is this process failing", driving the post-process glitch and
@@ -372,7 +411,8 @@ func degradation() -> float:
 		# Corrupted: the process is coming apart and you are watching it happen,
 		# so this is the worst the screen ever gets.
 		return 0.85
-	var hurt: float = 1.0 - clampf(local_integrity() / Balance.INTEGRITY_MAX, 0.0, 1.0)
+	var hurt: float = 1.0 - clampf(
+			local_integrity() / maxf(integrity_max_of(Net.local_id()), 1.0), 0.0, 1.0)
 	var starving: float = 0.0
 	if starved():
 		# Ramp in over the first few seconds of an empty pool rather than
@@ -437,7 +477,7 @@ func _process(delta: float) -> void:
 	if _dirty_buffers and _buffer_clock <= 0.0:
 		_buffer_clock = Balance.INTEGRITY_SYNC_INTERVAL
 		_dirty_buffers = false
-		_push_buffers.rpc(buffered, flares)
+		_push_buffers.rpc(buffered, buffered_value, flares)
 
 
 ## Passive drain per running player, plus a sprint surcharge. Sprint is inferred
@@ -451,12 +491,17 @@ func _drain(delta: float) -> void:
 	for id: int in Net.crew.keys():
 		if not is_running(int(id)):
 			continue
-		var rate: float = Balance.PASSIVE_DRAIN
+		# Runtime lowers what existing costs you; Threading lowers what sprinting
+		# adds on top. Both are resolved from the tiers this peer announced, on
+		# the host, which is the only copy of them the billing is allowed to
+		# believe.
+		var loadout: Dictionary = Modules.loadout(int(id))
+		var rate: float = float(loadout["drain"])
 		var player: Node = Net.get_player(int(id))
 		if player != null and is_instance_valid(player):
 			var speed: float = float(player.get("sync_speed"))
 			if speed >= Balance.SPRINT_BILLING_SPEED:
-				rate *= Balance.SPRINT_DRAIN_MULT
+				rate *= float(loadout["sprint"])
 		drain += rate
 
 	if drain <= 0.0:
@@ -478,11 +523,12 @@ func _degrade(delta: float) -> void:
 		if not is_running(peer):
 			continue
 		var value: float = integrity_of(peer)
+		var ceiling: float = integrity_max_of(peer)
 
 		if empty:
 			value = maxf(value - Balance.STARVED_INTEGRITY_DRAIN * delta, 0.0)
-		elif value < Balance.INTEGRITY_MAX:
-			value = minf(value + Balance.INTEGRITY_REGEN * delta, Balance.INTEGRITY_MAX)
+		elif value < ceiling:
+			value = minf(value + Balance.INTEGRITY_REGEN * delta, ceiling)
 		else:
 			continue  # untouched and full: nothing to write or replicate.
 
@@ -526,7 +572,7 @@ func _log_telemetry() -> void:
 			"*" if speed >= Balance.SPRINT_BILLING_SPEED else ""])
 	print("[Run] layer=%d pool=%.1f/%.0f crew=[%s] integrity=%s corrupted=%s buffered=%s" % [
 		layer_number, cycles, cycles_max, ", ".join(speeds), str(integrity),
-		str(corrupted.keys()), str(buffered)])
+		str(corrupted.keys()), str(buffered_value)])
 
 
 ## A wipe is every crew member off their feet at once — deleted, corrupted, or
@@ -618,6 +664,7 @@ func _delete(peer_id: int, message: String) -> void:
 	deleted[peer_id] = true
 	integrity[peer_id] = 0.0
 	buffered[peer_id] = 0
+	buffered_value[peer_id] = 0
 	_dirty_health = true
 	_dirty_buffers = true
 	_decompile.rpc(peer_id, message)
@@ -632,12 +679,15 @@ func _spill_buffer(peer_id: int) -> void:
 	var player: Node = Net.get_player(peer_id)
 	if player == null or not is_instance_valid(player):
 		return
+	var value: int = buffered_value_of(peer_id)
 	buffered[peer_id] = 0
+	buffered_value[peer_id] = 0
 	_dirty_buffers = true
 	var id: int = _next_bundle_id
 	_next_bundle_id += 1
-	print("[Run] %s spilled %d data" % [Net.crew_name(peer_id), amount])
-	_spawn_bundle.rpc(id, (player as Node3D).global_position, amount)
+	print("[Run] %s spilled %d chips worth %d data" % [
+		Net.crew_name(peer_id), amount, value])
+	_spawn_bundle.rpc(id, (player as Node3D).global_position, amount, value)
 
 
 # -------------------------------------------------------------------- salvage --
@@ -650,6 +700,7 @@ func take_shard(index: int, peer_id: int, worth: int) -> void:
 		return
 	taken_shards[index] = true
 	buffered[peer_id] = buffered_of(peer_id) + 1
+	buffered_value[peer_id] = buffered_value_of(peer_id) + maxi(worth, 1)
 	_dirty_buffers = true
 	_apply_shard.rpc(index, peer_id, worth)
 
@@ -662,6 +713,8 @@ func drop_salvage(where: Vector3, shards: int, pieces: int) -> void:
 	if not multiplayer.is_server() or shards <= 0:
 		return
 	var count: int = maxi(pieces, 1)
+	# What a Sentinel was standing on is worth what this layer's chips are worth.
+	var worth: int = Balance.shard_value(layer_number)
 	for i: int in count:
 		# Integer split, remainder onto the first piles, so nothing is lost to
 		# rounding and no pile is empty.
@@ -671,9 +724,34 @@ func drop_salvage(where: Vector3, shards: int, pieces: int) -> void:
 		var angle: float = TAU * float(i) / float(count)
 		var id: int = _next_bundle_id
 		_next_bundle_id += 1
-		_spawn_bundle.rpc(id, where + Vector3(cos(angle), 0.0, sin(angle)) * 1.4, amount)
-	print("[Run] dropped %d data across %d bundles at %s" % [
-		shards, count, str(where.snapped(Vector3.ONE * 0.1))])
+		_spawn_bundle.rpc(id, where + Vector3(cos(angle), 0.0, sin(angle)) * 1.4,
+				amount, amount * worth)
+	print("[Run] dropped %d chips worth %d data across %d bundles at %s" % [
+		shards, shards * worth, count, str(where.snapped(Vector3.ONE * 0.1))])
+
+
+## A Compiler took `amount` data out of `peer_id`'s buffer (Modules validated the
+## purchase; this is the debit). The chip count comes down with it, in
+## proportion: what you handed the Compiler was chips, and chips are the heavy
+## half of a haul — a purchase should visibly lighten you.
+##
+## Runs on every peer. The host's copy is authoritative and will be pushed out
+## with the next buffer packet; a client applies the same arithmetic immediately
+## so the panel it is looking at does not sit on a stale number for 250 ms.
+func spend_buffer(peer_id: int, amount: int) -> void:
+	if amount <= 0:
+		return
+	var value: int = buffered_value_of(peer_id)
+	var chips: int = buffered_of(peer_id)
+	var spent: int = mini(amount, value)
+	if value > 0 and chips > 0:
+		# Ceil, so spending everything always empties the buffer rather than
+		# leaving one weightless chip behind.
+		buffered[peer_id] = maxi(chips - int(ceil(float(chips) * float(spent)
+				/ float(value))), 0)
+	buffered_value[peer_id] = maxi(value - spent, 0)
+	_dirty_buffers = true
+	buffers_changed.emit()
 
 
 ## Host-side, called by a bundle a player has walked over.
@@ -802,11 +880,16 @@ func _restore_request(peer_id: int) -> void:
 		return
 
 	corrupted.erase(peer_id)
-	integrity[peer_id] = Balance.RESTORE_INTEGRITY
+	# You come back on the same fraction of your own ceiling, so a Checksum build
+	# is restored to more absolute integrity and not to a flat 40 that shrinks
+	# into irrelevance as the track goes up.
+	integrity[peer_id] = integrity_max_of(peer_id) \
+			* (Balance.RESTORE_INTEGRITY / Balance.INTEGRITY_MAX)
 	_dirty_health = true
 	print("[Run] %s restored %s at %d%% integrity" % [
-		Net.crew_name(sender), Net.crew_name(peer_id), int(Balance.RESTORE_INTEGRITY)])
-	_restored.rpc(peer_id, sender)
+		Net.crew_name(sender), Net.crew_name(peer_id),
+		int(round(100.0 * Balance.RESTORE_INTEGRITY / Balance.INTEGRITY_MAX))])
+	_restored.rpc(peer_id, sender, integrity_of(peer_id))
 
 
 @rpc("any_peer", "call_local", "reliable")
@@ -832,14 +915,20 @@ func _breaker_request(origin: Vector3, direction: Vector3) -> void:
 		push_warning("[Run] breaker shot refused: peer %d fired from %s" % [sender, str(origin)])
 		return
 
-	var endpoint: Vector3 = origin + direction.normalized() * Balance.BREAKER_RANGE
+	# Breaker tiers are resolved here and nowhere else: the shooter drew a lash
+	# on its own screen a round trip ago, but what the shot is *worth* and how far
+	# it reaches are decided against the tiers the host has for that peer.
+	var loadout: Dictionary = Modules.loadout(sender)
+	var reach: float = float(loadout["range"])
+	var endpoint: Vector3 = origin + direction.normalized() * reach
 	var killed: bool = false
 	## Which kind of process died, for the kill feed and the achievement hooks.
 	## Empty on a miss or a survivor.
 	var kind: String = ""
-	var creature: Antivirus = Antivirus.pick_target(get_tree(), _layer_space(), origin, direction)
+	var creature: Antivirus = Antivirus.pick_target(
+			get_tree(), _layer_space(), origin, direction, reach)
 	if creature != null:
-		var damage: float = creature.breaker_damage(origin)
+		var damage: float = creature.breaker_damage(origin, float(loadout["damage"]))
 		endpoint = creature.aim_point()
 		creature.take_damage(damage, origin)
 		killed = damage > 0.0 and creature.health <= 0.0
@@ -917,7 +1006,7 @@ func _fire_exfil() -> void:
 			var pos: Vector3 = (player as Node3D).global_position
 			on_pad = Vector2(pos.x - pad.x, pos.z - pad.z).length() <= Balance.EXFIL_PAD_RADIUS
 		if on_pad:
-			banked[peer] = buffered_of(peer)
+			banked[peer] = buffered_value_of(peer)
 			escaped.append(peer)
 		else:
 			banked[peer] = 0
@@ -997,8 +1086,9 @@ func _push_health(values: Dictionary, down: Dictionary, gone: Dictionary) -> voi
 
 
 @rpc("authority", "call_remote", "reliable")
-func _push_buffers(values: Dictionary, stock: Dictionary) -> void:
+func _push_buffers(values: Dictionary, worth: Dictionary, stock: Dictionary) -> void:
 	buffered = values
+	buffered_value = worth
 	flares = stock
 	buffers_changed.emit()
 
@@ -1024,6 +1114,7 @@ func _apply_shard(index: int, peer_id: int, worth: int) -> void:
 	taken_shards[index] = true
 	if not multiplayer.is_server():
 		buffered[peer_id] = buffered_of(peer_id) + 1
+		buffered_value[peer_id] = buffered_value_of(peer_id) + maxi(worth, 1)
 	shard_taken.emit(index, peer_id, worth)
 	buffers_changed.emit()
 
@@ -1033,24 +1124,27 @@ func _apply_bundle(bundle_id: int, peer_id: int) -> void:
 	# The bundle knows its own size; the host reads it back off the node so the
 	# amount never has to be trusted from anywhere else.
 	var amount: int = 0
+	var worth: int = 0
 	for node: Node in get_tree().get_nodes_in_group("data_bundles"):
 		var bundle: DataBundle = node as DataBundle
 		if bundle != null and is_instance_valid(bundle) and bundle.bundle_id == bundle_id:
 			amount = bundle.amount
+			worth = bundle.worth
 			break
 	buffered[peer_id] = buffered_of(peer_id) + amount
+	buffered_value[peer_id] = buffered_value_of(peer_id) + worth
 	bundle_taken.emit(bundle_id, peer_id)
 	buffers_changed.emit()
 	if peer_id == Net.local_id():
-		notice.emit("BUNDLE RECOVERED  ·  +%d DATA" % amount)
+		notice.emit("BUNDLE RECOVERED  ·  +%d DATA" % worth)
 
 
 @rpc("authority", "call_local", "reliable")
-func _spawn_bundle(bundle_id: int, where: Vector3, amount: int) -> void:
+func _spawn_bundle(bundle_id: int, where: Vector3, amount: int, value: int) -> void:
 	var root: Node = _dynamic_root()
 	if root == null:
 		return
-	root.add_child(DataBundle.create(bundle_id, where, amount))
+	root.add_child(DataBundle.create(bundle_id, where, amount, value))
 
 
 @rpc("authority", "call_local", "reliable")
@@ -1095,9 +1189,9 @@ func _corrupt_notice(peer_id: int) -> void:
 
 
 @rpc("authority", "call_local", "reliable")
-func _restored(peer_id: int, by_peer: int) -> void:
+func _restored(peer_id: int, by_peer: int, value: float) -> void:
 	corrupted.erase(peer_id)
-	integrity[peer_id] = Balance.RESTORE_INTEGRITY
+	integrity[peer_id] = value
 	corruption_changed.emit()
 	integrity_changed.emit()
 	restored.emit(peer_id, by_peer)

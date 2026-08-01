@@ -36,6 +36,13 @@ const COLOUR_AMBER: Color = UiFx.WARNING
 const COLOUR_DIM: Color = UiFx.DIM
 const COLOUR_TEXT: Color = UiFx.TEXT
 
+## Width the flare-pip row has to live inside, and the gap between pips. A maxed
+## Cache carries eight flares; at the M3 pip width that row would have run out of
+## the kit cluster and across the buffered-data readout, so the pips are sized to
+## the capacity rather than the capacity being sized to the pips.
+const PIP_TRACK: float = 92.0
+const PIP_GAP: float = 3.0
+
 ## How long the ring keeps blooming after a siphon lands.
 const PULSE_DECAY: float = 1.6
 ## How fast the "where it was" ghost arc collapses onto the real value.
@@ -102,6 +109,8 @@ var _player: Player = null
 var _damage_flash: float = 0.0
 var _damage_local: Vector2 = Vector2.ZERO
 var _pips: Array[ColorRect] = []
+## Capacity the current pip widths were computed for.
+var _pip_capacity: int = -1
 
 # --- boot -------------------------------------------------------------------
 ## Seconds since the shell started compiling. A frozen value is how
@@ -141,6 +150,13 @@ var _sheens: Array[ShaderMaterial] = []
 var _ember: float = 0.0
 var _surge_clock: float = -1.0
 
+# --- injection gate (M4) ----------------------------------------------------
+## Seconds the gate panel stays up after the last refusal. Negative = hidden.
+var _gate_clock: float = -1.0
+var _gate_panel: Control = null
+var _gate_body: Label = null
+var _gate_title: Label = null
+
 # --- debrief ----------------------------------------------------------------
 var _debrief_clock: float = -1.0
 var _debrief_lines: int = 0
@@ -150,6 +166,7 @@ var _banked_to: int = 0
 
 func _ready() -> void:
 	Net.crew_changed.connect(_rebuild_crew)
+	Net.injection_gate.connect(_show_gate)
 	Net.notice.connect(_show_notice)
 	Net.local_player_spawned.connect(_on_local_player)
 	Run.notice.connect(_show_notice)
@@ -181,6 +198,7 @@ func _ready() -> void:
 
 	_install_depth()
 	_install_glitch_rig()
+	_build_gate_panel()
 	_begin_boot()
 
 	# The host already has a player when the HUD loads; clients get the signal.
@@ -224,6 +242,7 @@ func _process(delta: float) -> void:
 	_update_alerts()
 	_update_damage(delta)
 
+	_update_gate(delta)
 	_update_boot(delta)
 	_update_degradation()
 	_update_glitch(delta)
@@ -420,7 +439,10 @@ func _on_layer_changed(number: int) -> void:
 
 func _update_integrity() -> void:
 	var value: float = Run.local_integrity()
-	var fraction: float = clampf(value / Balance.INTEGRITY_MAX, 0.0, 1.0)
+	# Against your OWN ceiling, which Checksum raises. A tier-5 program sitting at
+	# 150 integrity is at 67%, not at "150%", and the bar has to say so.
+	var fraction: float = clampf(
+			value / maxf(Run.integrity_max_of(Net.local_id()), 1.0), 0.0, 1.0)
 	var full: float = float(_integrity_fill.get_parent_control().size.x)
 	_integrity_fill.size.x = full * fraction
 
@@ -469,28 +491,40 @@ func _update_channel() -> void:
 
 # ----------------------------------------------------------------------- kit --
 
-## One pip per flare in the crew's default stock. Built once: the stock size is a
-## constant until M4's Cache modules raise it, and a rebuilt row would flicker.
+## One pip per flare the local program can hold. Built to the *ceiling* of the
+## Cache track rather than to the current tier, and the pips past your own
+## capacity are simply hidden: buying Cache mid-run then has to light a pip, not
+## rebuild the row — and a rebuilt row would flicker in the corner of the screen
+## at the exact moment the player is looking at a Compiler panel instead.
 func _build_pips() -> void:
 	for child: Node in _flare_pips.get_children():
 		child.queue_free()
 	_pips.clear()
-	for i: int in Balance.FLARE_STOCK:
+	_flare_pips.add_theme_constant_override("separation", int(PIP_GAP))
+	var ceiling: int = int(Modules.value_at("cache", "stock",
+			Modules.tier_count("cache")))
+	for i: int in ceiling:
 		var pip: ColorRect = ColorRect.new()
-		pip.custom_minimum_size = Vector2(18.0, 8.0)
+		pip.custom_minimum_size = Vector2(PIP_TRACK, 8.0)
 		pip.color = COLOUR_OK
 		_flare_pips.add_child(pip)
 		_pips.append(pip)
+	_size_pips(Balance.FLARE_STOCK)
 
 
 ## Buffered data, breaker heat and flare stock — everything the local agent is
 ## carrying, in one corner.
 func _update_kit() -> void:
-	var carried: int = Run.local_buffered()
+	# What the buffer is WORTH, because that is what a Compiler spends and what an
+	# exfiltration banks. The chip count is the weight, and it lives behind the
+	# amber rather than on the face of the readout — "how much money am I
+	# carrying" is the number the greed pillar is actually about.
+	var carried: int = Run.local_buffered_value()
 	_data_value.text = "%03d" % carried
 	# The readout turns amber once the haul is heavy enough to be slowing you
-	# down: the weight rule is invisible otherwise.
-	var heavy: bool = carried > Balance.CARRY_FREE_SHARDS
+	# down: the weight rule is invisible otherwise, and Buffer tiers move the
+	# threshold, so it is read off the local loadout rather than off Balance.
+	var heavy: bool = Run.local_buffered() > int(Modules.local_loadout()["carry_free"])
 	_data_value.add_theme_color_override("font_color",
 			Color(1.0, 0.72, 0.3) if heavy else Color(0.42, 0.95, 1.0))
 
@@ -508,15 +542,30 @@ func _update_kit() -> void:
 			COLOUR_WARNING if locked else COLOUR_DIM)
 
 	var stock: int = Run.flares_of(Net.local_id())
+	var capacity: int = int(Modules.local_loadout()["flares"])
+	if capacity != _pip_capacity:
+		_size_pips(capacity)
 	for i: int in _pips.size():
-		var lit: bool = i < stock
-		_pips[i].color = Color(0.62, 0.95, 1.0) if lit else Color(0.12, 0.18, 0.24, 0.9)
+		_pips[i].visible = i < capacity
+		_pips[i].color = Color(0.62, 0.95, 1.0) if i < stock \
+				else Color(0.12, 0.18, 0.24, 0.9)
 
 
 # -------------------------------------------------------------------- alerts --
 
 ## Corrupted crewmates and the exfil countdown. Both are the kind of thing you
 ## must not be able to miss while looking at something else.
+## Divides the fixed track between however many flares this program can hold.
+func _size_pips(capacity: int) -> void:
+	_pip_capacity = capacity
+	var count: int = maxi(capacity, 1)
+	var width: float = clampf(
+			(PIP_TRACK - PIP_GAP * float(count - 1)) / float(count), 5.0, 18.0)
+	for pip: ColorRect in _pips:
+		pip.custom_minimum_size.x = width
+		pip.size.x = width
+
+
 func _update_alerts() -> void:
 	var down: Array[int] = Run.corrupted_crew()
 	if down.is_empty():
@@ -848,7 +897,7 @@ func _refresh_link() -> void:
 		var gauge: ColorRect = row.get_node_or_null("Integrity") as ColorRect
 		if gauge != null:
 			var fraction: float = clampf(
-					Run.integrity_of(id) / Balance.INTEGRITY_MAX, 0.0, 1.0)
+					Run.integrity_of(id) / maxf(Run.integrity_max_of(id), 1.0), 0.0, 1.0)
 			gauge.custom_minimum_size.x = maxf(26.0 * fraction, 1.0)
 			gauge.color = COLOUR_WARNING if fraction <= 0.0 else \
 					(COLOUR_AMBER if fraction < 0.4 else COLOUR_OK)
@@ -884,6 +933,99 @@ func _refresh_link() -> void:
 		elif ping > 60:
 			quality = Color(0.95, 0.75, 0.35)
 		_link_label.add_theme_color_override("font_color", quality)
+
+
+# ----------------------------------------------------------- injection gate --
+#
+# DESIGN.md's lobby rule: "Backdoor injection requires all present crew to have
+# installed it." NULLVOID has no separate lobby scene — the crew assembles inside
+# the layer, join-in-progress — so the rule is enforced at the door (Net's
+# `_register_crew` refuses the peer and tells them why) and *shown* here.
+#
+# The host is the one who needs this panel. From the refused player's side the
+# answer arrives as a menu status line, which is the right place for it because
+# the fix is "go and root that node". From the host's side, somebody just
+# bounced off their session and the only useful thing an interface can say is
+# **which crew member is missing which backdoor** — otherwise a crew spends the
+# evening guessing why their fourth cannot get in.
+
+func _build_gate_panel() -> void:
+	_gate_panel = Control.new()
+	_gate_panel.name = "InjectionGate"
+	_gate_panel.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_gate_panel.position = Vector2(-260.0, 96.0)
+	_gate_panel.custom_minimum_size = Vector2(520.0, 0.0)
+	_gate_panel.size = Vector2(520.0, 150.0)
+	_gate_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_gate_panel.visible = false
+	$Fixed.add_child(_gate_panel)
+
+	var plate: ColorRect = ColorRect.new()
+	plate.color = Color(0.05, 0.015, 0.02, 0.9)
+	plate.set_anchors_preset(Control.PRESET_FULL_RECT)
+	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_gate_panel.add_child(plate)
+
+	var edge: ColorRect = ColorRect.new()
+	edge.color = Color(COLOUR_WARNING.r, COLOUR_WARNING.g, COLOUR_WARNING.b, 0.7)
+	edge.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	edge.custom_minimum_size = Vector2(0.0, 2.0)
+	edge.offset_bottom = 2.0
+	edge.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.add_child(edge)
+
+	var column: VBoxContainer = VBoxContainer.new()
+	column.set_anchors_preset(Control.PRESET_FULL_RECT)
+	column.offset_left = 16.0
+	column.offset_right = -16.0
+	column.offset_top = 12.0
+	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.add_child(column)
+
+	_gate_title = Label.new()
+	_gate_title.add_theme_font_size_override("font_size", 15)
+	_gate_title.add_theme_color_override("font_color", COLOUR_WARNING)
+	_gate_title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(_gate_title)
+
+	_gate_body = Label.new()
+	_gate_body.add_theme_font_size_override("font_size", 13)
+	_gate_body.add_theme_color_override("font_color", COLOUR_TEXT)
+	_gate_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	column.add_child(_gate_body)
+
+
+## `entries` is Net.gate_roster(): every program the gate has looked at, in join
+## order, with the crew that got in first and everyone it turned away after.
+func _show_gate(entries: Array) -> void:
+	if _gate_panel == null:
+		return
+	var needed: int = 0
+	var lines: PackedStringArray = PackedStringArray()
+	for row: Dictionary in entries:
+		needed = maxi(needed, int(row.get("needed", 0)))
+		var theirs: int = int(row.get("theirs", 0))
+		lines.append("%-14s BACKDOOR %s   %s" % [
+			String(row.get("name", "AGENT")),
+			"--" if theirs <= 0 else "%02d" % theirs,
+			"OK" if bool(row.get("ok", false)) else "MISSING  ·  TURNED AWAY"])
+	_gate_title.text = "INJECTION GATE  ·  LAYER %02d  ·  BACKDOOR %02d REQUIRED" % [
+		Run.layer_number, needed]
+	_gate_body.text = "\n".join(lines)
+	_gate_panel.visible = true
+	_gate_clock = 12.0
+
+
+func _update_gate(delta: float) -> void:
+	if _gate_clock < 0.0:
+		return
+	_gate_clock -= delta
+	# Held solid, then let go. A panel that fades the whole time is a panel you
+	# read while it is disappearing.
+	_gate_panel.modulate.a = clampf(_gate_clock / 1.5, 0.0, 1.0)
+	if _gate_clock <= 0.0:
+		_gate_clock = -1.0
+		_gate_panel.visible = false
 
 
 func _show_notice(message: String) -> void:
@@ -954,6 +1096,18 @@ func _on_run_ended(summary: Dictionary) -> void:
 			lines.append("%-14s %s" % [Net.crew_name(peer), fate])
 	else:
 		lines.append("BUFFERED DATA LOST. COMPILED MODULES INTACT.")
+
+	# The archive delta, spelled out. Run has already banked by the time this
+	# runs, so "what it was" is the archive minus what came home — and printing
+	# the sum rather than only the new total is the whole point: a debrief should
+	# answer "was that run worth it" without arithmetic.
+	var before: int = maxi(GameState.archive - (mine if success else 0), 0)
+	lines.append("")
+	if success and mine > 0:
+		lines.append("ARCHIVE           %d  →  %d   (+%d)" % [
+			before, GameState.archive, mine])
+	else:
+		lines.append("ARCHIVE           %d   (UNCHANGED)" % GameState.archive)
 
 	_summary_body.text = "\n".join(lines)
 	_summary_body.visible_ratio = 0.0

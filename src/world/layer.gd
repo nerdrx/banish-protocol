@@ -34,6 +34,10 @@ var siphon_approaches: Array[Vector3] = []
 ## by Run when it decides who was stood on the pad.
 var backdoor_position: Vector3 = Vector3.ZERO
 var uplink_position: Vector3 = Vector3.ZERO
+## Every Compiler on the layer (M4). Empty on the hand-authored test layer.
+## `--goto compiler` walks to the first one, which on a backdoor layer is the
+## hidden one rather than the sanctuary's.
+var compiler_positions: Array[Vector3] = []
 ## Where the layer's data vault is, for `--goto vault`, and its first Scrubber
 ## nest, for `--goto nest` — the two rooms M3's verification runs care about.
 var vault_position: Vector3 = Vector3.ZERO
@@ -123,6 +127,7 @@ func _rebuild() -> void:
 		siphon_approaches = graph.siphon_approaches
 		backdoor_position = graph.backdoor_point
 		uplink_position = graph.uplink_point
+		compiler_positions = graph.compiler_points
 		vault_position = graph.centre_of(graph.vault_index)
 		nest_position = graph.centre_of(
 				graph.nest_rooms[0] if not graph.nest_rooms.is_empty() else -1)
@@ -191,6 +196,10 @@ func _clear_dynamic() -> void:
 
 func _adopt_test_layer_furniture() -> void:
 	shaft_position = LayerBuilder.TEST_SHAFT
+	# The hand-authored greybox predates every M3/M4 fixture and has none of them.
+	compiler_positions = []
+	backdoor_position = Vector3.ZERO
+	uplink_position = Vector3.ZERO
 	siphon_positions = LayerBuilder.TEST_SIPHONS
 	siphon_approaches = []
 	for tap: Vector3 in LayerBuilder.TEST_SIPHONS:

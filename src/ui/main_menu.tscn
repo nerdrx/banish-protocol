@@ -352,7 +352,7 @@ grow_vertical = 0
 mouse_filter = 2
 theme_override_colors/font_color = Color(0.22, 0.27, 0.34, 1)
 theme_override_font_sizes/font_size = 11
-text = "M3.8 // INTERFACE"
+text = "M4 // THE LONG GAME"
 horizontal_alignment = 2
 
 [node name="Post" type="ColorRect" parent="."]

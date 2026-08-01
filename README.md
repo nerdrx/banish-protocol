@@ -78,20 +78,37 @@ An intrusion runs **15–30 minutes**. The crew argues the whole time. This is b
 
 ## Progression
 
-Eight permanent **module tracks**, 3–5 tiers each, bought at Compilers with data
-(one hidden per layer, one guaranteed per backdoor — deeper Compilers stock
-higher tiers):
+Eight permanent **module tracks**, bought at **Compilers** — one hidden
+somewhere on every layer, one guaranteed in every backdoor sanctuary. Deeper
+Compilers stock higher tiers, and a sanctuary terminal stocks one tier deeper
+than the ring it stands on:
 
-| Module | Effect | Module | Effect |
+| Module | Tiers | Effect at tier 1 → max | Tier 1 |
 |---|---|---|---|
-| **Runtime** | Max Cycles share ↑, passive drain ↓ | **Servos** | Move + restore speed ↑ |
-| **Threading** | Sprint cost ↓ | **Buffer** | Carry capacity ↑, weight penalty ↓ |
-| **Breaker** | Cutter damage / range ↑ | **Cache** | Flare count ↑ |
-| **Optics** | Beam width + brightness ↑ — *literally buying vision* | **Checksum** | Max integrity ↑ |
+| **Runtime** | 5 | Cycles share 100 → 180, drain 0.60 → 0.42/s | 300 |
+| **Threading** | 3 | Sprint cost ×2.5 → ×1.55 | 260 |
+| **Checksum** | 5 | Max integrity 100 → 224 | 300 |
+| **Breaker** | 5 | Cutter 42 → 104 damage, 8 → 15 m reach | 320 |
+| **Optics** | 5 | Beam 26° → 51°, 30 → 55 m — *literally buying vision* | 280 |
+| **Servos** | 4 | Move ×1.22, restore 3.0 → 1.7 s | 340 |
+| **Buffer** | 4 | Free carry 10 → 46 chips, drag 18% → 5% | 240 |
+| **Cache** | 3 | Flares 3 → 8 | 300 |
 
-Your program — modules, banked archive, deepest backdoor — saves **locally on
-your machine**, whoever hosts. Backdoor injection requires every present crew
-member to have installed it. No account, no server, your character is yours.
+Prices roughly triple per tier: the first tier of anything lands inside a run or
+two, and maxing every track is ~133,000 data — sixty-plus intrusions. Buying is
+**immediate**: purchase Optics at a Compiler on layer 9 and your beam is wider
+before you turn around.
+
+Data is worth more the deeper it was stolen from (a chip on layer 15 is worth
+six on layer 1), buffered data spends at Compilers *before* your archive does,
+and every layer's Compiler is a real argument about whether to spend the haul
+now or carry it to the uplink.
+
+Your **program file** — module tiers, archive, deepest backdoor, lifetime
+stats — saves locally on your machine, whoever hosts, and is announced to the
+host when you join. A backdoor injection requires *every present crew member's*
+program to have rooted it; the host turns away anyone whose has not, and says
+who and why. No account, no server, your character is yours.
 
 ## Bestiary
 
@@ -196,6 +213,15 @@ godot --path . -- --grant COLD_BOOT              # toast an achievement
 godot --path . -- --reset-achievements           # wipe local unlocks
 ```
 
+Dev tools for the progression layer (all of these **sandbox** the program file —
+nothing they do is ever written to your save):
+
+```bash
+godot --path . -- --autohost --modules "runtime:3,optics:2" --log-modules
+godot --path . -- --autohost --archive 5000 --goto compiler --compiler --buy optics
+godot --path . -- --autojoin 127.0.0.1 --backdoor 0     # the crewmate the gate refuses
+```
+
 ## Architecture
 
 ```mermaid
@@ -208,7 +234,7 @@ flowchart TB
     subgraph PEER["Each peer"]
         CTRL[Local player controller<br/>client-authoritative movement]
         RENDER[Rendering · VFX · audio<br/>generates identical layers from seed]
-        SAVE[(Local save<br/>modules · archive · backdoors)]
+        SAVE[(Program file<br/>modules · archive · backdoors · stats)]
     end
     NET <-->|"MultiplayerSpawner + Synchronizer<br/>RPCs: flare · siphon · restore"| CTRL
     GEN -->|seed| RENDER
@@ -217,9 +243,9 @@ flowchart TB
 
 ```text
 src/
-  core/       autoloads — Net, GameState, Rng, Debug, SteamHub, Achievements
+  core/       autoloads — Net, GameState, Modules, Rng, Debug, SteamHub, Achievements
   player/     first-person controller, beam, interaction
-  world/      layer procgen, room kit, props, siphons, backdoors
+  world/      layer procgen, room kit, props, siphons, backdoors, Compilers
   creatures/  antivirus AI state machines
   ui/         menus, lobby, HUD
 assets/       materials, sfx, fonts
@@ -237,7 +263,7 @@ fiction-earns-the-mechanics reasoning, art direction language.
 - [x] **M3 — The system bites** · Scrubbers + Sentinels, combat, corrupted/restore, data shards, backdoor nodes, exfiltration — *a full intrusion, playable*
 - [x] **M3.5 — Steamworks** · GodotSteam GDExtension, SteamMultiplayerPeer beside ENet, friends-only lobbies + overlay invites + join-in-progress, rich presence, local-first achievements (dev app 480)
 - [x] **M3.7 — Embodiment & Overhaul** · authored Scrubber + Sentinel, beveled modular architecture kit on a 4 m lattice, four-layer light rig with gobo projectors, SSR/SSIL WorldEnvironment, post v2, the Surge breaker in your hands, crew avatars, and MOTHER's signage on the walls
-- [ ] **M4 — The long game** · Compilers, permanent modules, per-player saves, backdoor injection lobby, economy balancing
+- [x] **M4 — The long game** · Compiler terminals in the world + a diegetic purchase panel, eight permanent module tracks resolved per player and applied host-side, the per-player program file (versioned, atomic writes, migrated from M3), the backdoor injection gate, the archive economy with depth-scaled data value, and the threat/power curve tuned across layers 1–18
 - [ ] **M5 — Expensive** · glitch post stack, positional audio, kill cams, low-Cycles presentation, menu polish, Linux + Windows exports
 
 ## Screenshots

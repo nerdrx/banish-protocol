@@ -53,6 +53,10 @@ const MAX_HALF: float = 9.0
 ## perpendicular overlap of two adjacent rooms is always wide enough for a door.
 const JITTER: float = 1.5
 
+## How far out of a room's middle a Compiler is pushed. Comfortably clear of the
+## siphon room's hero pillar and of the crossing every doorway path uses.
+const CENTRE_CLEARANCE: float = 5.0
+
 ## Half-extent of a backdoor node room, which is built on its cell centre with no
 ## jitter. 13 + a neighbour's worst case 10.5 = 23.5 < CELL, so the sanctuary is
 ## nearly three times the floor area of a normal room and still cannot touch
@@ -126,6 +130,21 @@ var uplink_point: Vector3 = Vector3.ZERO
 ## Salvage, parallel arrays: shard i sits at `shard_points[i]` in `shard_rooms[i]`.
 var shard_points: Array[Vector3] = []
 var shard_rooms: Array[int] = []
+
+## Compiler terminals (M4). DESIGN.md: "one hidden on every layer, one
+## guaranteed per backdoor node". Parallel arrays: compiler i stands at
+## `compiler_points[i]` in `compiler_rooms[i]` and stocks up to
+## `compiler_tiers[i]`, with `compiler_sanctuary[i]` marking the guaranteed one.
+##
+## These are **seeded content**, exactly like the shards and the Sentinel posts.
+## Nothing about a Compiler crosses the wire — the host and every client resolve
+## the same terminal in the same corner from (run_seed, layer), which is what lets
+## a purchase RPC carry an index instead of a position and lets the host check
+## that a buyer is genuinely stood at the machine they claim to be using.
+var compiler_points: Array[Vector3] = []
+var compiler_rooms: Array[int] = []
+var compiler_tiers: Array[int] = []
+var compiler_sanctuary: Array[bool] = []
 
 ## Antivirus slots. The host buys from these with the layer's antivirus budget;
 ## every peer knows them, so a spawn packet is just an index.
@@ -655,6 +674,11 @@ func _place_furniture() -> void:
 
 	_place_shards()
 	_place_antivirus_slots()
+	# Deliberately last in the stream. Everything above it draws from `_rng` in
+	# the order M2 and M3 established, so adding Compilers in M4 appends lines to
+	# the determinism dump instead of moving every shard on every layer — the
+	# dump for a given (seed, layer) is unchanged above this point.
+	_place_compilers()
 
 
 ## Salvage. Vaults are rich, everything else is loose change; the drop-shaft room
@@ -706,6 +730,67 @@ func _place_antivirus_slots() -> void:
 				vault_centre.x + side * (Vector2(vault["max"]).x - vault_centre.x - 3.5),
 				0.0, vault_centre.y))
 		sentinel_post_rooms.append(vault_index)
+
+
+## Compiler terminals. One hidden somewhere on the layer that is not the vault
+## (the vault already has a Sentinel and the haul; putting the shop in it would
+## make one room the whole layer), plus the guaranteed sanctuary one on every
+## backdoor layer.
+##
+## "Hidden" means it goes in a bus hall or a siphon junction, unlit ones
+## included — the Compiler is worth walking into the dark for, and a nest with a
+## terminal in it is a genuine argument.
+func _place_compilers() -> void:
+	var base_tier: int = int(params["compiler_tier"])
+
+	var candidates: Array[int] = []
+	for room: Dictionary in rooms:
+		var archetype: String = String(room["archetype"])
+		if archetype == BUS or archetype == SIPHON:
+			candidates.append(int(room["index"]))
+	# A tiny layer where every room is spoken for still gets its Compiler; the
+	# arrival room is the last resort because it is the one place the crew is
+	# guaranteed to stand, and a shop you cannot miss is not hidden.
+	if candidates.is_empty():
+		for room: Dictionary in rooms:
+			if String(room["archetype"]) != VAULT:
+				candidates.append(int(room["index"]))
+	if not candidates.is_empty():
+		var pick: int = candidates[_rng.randi_range(0, candidates.size() - 1)]
+		compiler_points.append(_clear_of_centre(rooms[pick], _scatter_point(rooms[pick], 3.4)))
+		compiler_rooms.append(pick)
+		compiler_tiers.append(base_tier)
+		compiler_sanctuary.append(false)
+
+	if not is_backdoor:
+		return
+	# The fourth station in the sanctuary's triangle: shaft north, node east,
+	# uplink south, Compiler west. It stocks one tier above its layer, which is
+	# the reason to walk to a backdoor room even on a run you are not banking.
+	var trunk: Vector2 = _centre_of(rooms[shaft_index])
+	compiler_points.append(Vector3(trunk.x - BACKDOOR_HALF * 0.52, 0.0, trunk.y + 1.0))
+	compiler_rooms.append(shaft_index)
+	compiler_tiers.append(mini(base_tier + Balance.COMPILER_SANCTUARY_BONUS,
+			Balance.MODULE_MAX_TIER))
+	compiler_sanctuary.append(true)
+
+
+## Pushes a point out of a room's central crossing, the same rule the loose
+## furniture follows. A siphon junction stands its hero conduit trunk on the room
+## centre and every room's doorway-to-doorway path runs through it, so a Compiler
+## that rolled the middle would be standing inside the plumbing.
+func _clear_of_centre(room: Dictionary, point: Vector3) -> Vector3:
+	var centre: Vector2 = _centre_of(room)
+	var away: Vector2 = Vector2(point.x - centre.x, point.z - centre.y)
+	if away.length() >= CENTRE_CLEARANCE:
+		return point
+	if away.length_squared() < 0.01:
+		away = Vector2(1.0, 0.0)
+	var pushed: Vector2 = centre + away.normalized() * CENTRE_CLEARANCE
+	var lo: Vector2 = room["min"]
+	var hi: Vector2 = room["max"]
+	return Vector3(clampf(pushed.x, lo.x + 3.0, hi.x - 3.0), 0.0,
+			clampf(pushed.y, lo.y + 3.0, hi.y - 3.0))
 
 
 ## A point inside a room, `inset` clear of its walls.
@@ -840,5 +925,10 @@ func to_text() -> String:
 		lines.append("  post %02d room=%d (%.3f,%.3f,%.3f)" % [
 			i, sentinel_post_rooms[i], sentinel_posts[i].x, sentinel_posts[i].y,
 			sentinel_posts[i].z])
+	for i: int in compiler_points.size():
+		lines.append("  compiler %02d room=%d tier=%d sanctuary=%d (%.3f,%.3f,%.3f)" % [
+			i, compiler_rooms[i], compiler_tiers[i],
+			1 if compiler_sanctuary[i] else 0,
+			compiler_points[i].x, compiler_points[i].y, compiler_points[i].z])
 
 	return "\n".join(lines)

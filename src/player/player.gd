@@ -140,6 +140,17 @@ var _corrupt_light: OmniLight3D = null
 var _shake: float = 0.0
 var _shake_seed: float = 0.0
 
+# --- optics (M4) ------------------------------------------------------------
+## The beam this avatar was authored with, captured before any module widens it.
+## Optics multiplies against these rather than against last frame's values, or a
+## purchase applied twice would double the cone.
+var _beam_base_angle: float = 26.0
+var _beam_base_reach: float = 30.0
+var _cone_base_z: float = -4.95
+## Last Optics tier applied, so the reconcile is free on the frames nothing has
+## changed (which is all of them except the frame after a purchase).
+var _optics_applied: int = -1
+
 # --- remote smoothing -------------------------------------------------------
 var _remote_velocity: Vector3 = Vector3.ZERO
 var _last_sync_position: Vector3 = Vector3.ZERO
@@ -191,10 +202,63 @@ func _ready() -> void:
 		set_physics_process(true)
 
 	_dress_beam()
+	_capture_beam_baseline()
+	apply_modules()
+	# Every peer's copy of every avatar re-resolves on a purchase: the buyer sees
+	# their own beam widen on the spot, and the rest of the crew sees theirs.
+	Modules.loadouts_changed.connect(apply_modules)
 	_set_beam_state(sync_beam)
 	if _is_local:
 		Run.damaged.connect(_on_damaged)
 	Net.notify_player_ready(self)
+
+
+## The authored numbers from player.tscn, read once. Nothing else in the game
+## needs to know them, and hard-coding a copy in Balance would mean the scene and
+## the constants could quietly disagree.
+func _capture_beam_baseline() -> void:
+	_beam_base_angle = beam.spot_angle
+	_beam_base_reach = beam.spot_range
+	_cone_base_z = beam_cone.position.z
+
+
+## Optics, made visible. DESIGN.md calls this track "literally buying vision",
+## and it is the one purchase whose effect you can see the instant it lands —
+## which is why the Compiler applies live rather than at the next injection.
+##
+## Three things move together: the light's cone angle, its energy and its range.
+## The volumetric cone mesh (which is what a *crewmate* sees of your beam, since
+## your own is hidden from your own lens) is scaled to match, or a widened beam
+## would light a cone the haze does not agree with.
+##
+## The exposure geometry the Scrubbers flee from is derived from the same
+## loadout, host-side, in Antivirus._in_player_light — so this method is purely
+## cosmetic and a client applying it early cannot gain anything by it.
+func apply_modules() -> void:
+	if beam == null or not is_instance_valid(beam):
+		return
+	var tier: int = Modules.tier_of(peer_id, "optics")
+	if tier == _optics_applied:
+		return
+	_optics_applied = tier
+	var loadout: Dictionary = Modules.loadout(peer_id)
+
+	var angle: float = float(loadout["beam_angle"])
+	var reach: float = float(loadout["beam_reach"])
+	beam.spot_angle = angle
+	beam.light_energy = float(loadout["beam_energy"])
+	beam.spot_range = reach
+
+	# The cone is a stylised prop rather than a solved frustum, so it is scaled by
+	# the same ratios instead of being rebuilt from the angle: whatever the art
+	# pass chose to make it look like stays true at every tier.
+	var widen: float = tan(deg_to_rad(angle)) / tan(deg_to_rad(_beam_base_angle))
+	var lengthen: float = reach / maxf(_beam_base_reach, 0.01)
+	beam_cone.scale = Vector3(widen, lengthen, widen)
+	beam_cone.position.z = _cone_base_z * lengthen
+	if tier > 0:
+		print("[Player] %s optics tier %d: beam %.1f° / %.0f m" % [
+			player_name, tier, angle, reach])
 
 
 ## The crew shell. Built on every peer's copy of every player: a remote crewmate
@@ -471,7 +535,7 @@ func _simulate_local(delta: float) -> void:
 ## never frame a hit. Steers the same lens a player would, at a human rate.
 func _track_nearest_antivirus(delta: float) -> void:
 	var best: Node3D = null
-	var best_distance: float = Balance.BREAKER_RANGE + 4.0
+	var best_distance: float = _breaker_range() + 4.0
 	for node: Node in get_tree().get_nodes_in_group(Antivirus.GROUP):
 		var creature: Antivirus = node as Antivirus
 		if creature == null or not is_instance_valid(creature):
@@ -518,6 +582,13 @@ func _update_breaker(frozen: bool) -> void:
 	Run.request_breaker(from, direction)
 
 
+## This avatar's cutter reach, which its Breaker tier extends. Only ever used
+## for prediction and for `--aim`; the host re-resolves the same number from the
+## same announced tiers when it decides what actually died.
+func _breaker_range() -> float:
+	return float(Modules.loadout(peer_id)["range"])
+
+
 ## Where the lash leaves the avatar. The Surge's own emitter when we are holding
 ## one, so the streak and the muzzle flash come out of the same hole.
 func _muzzle_point(from: Vector3, basis: Basis) -> Vector3:
@@ -532,11 +603,12 @@ func _muzzle_point(from: Vector3, basis: Basis) -> Vector3:
 ## it. Same target selection the host runs, so the prediction is not a guess.
 func _breaker_endpoint(from: Vector3, direction: Vector3) -> Vector3:
 	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
-	var creature: Antivirus = Antivirus.pick_target(get_tree(), space, from, direction)
+	var creature: Antivirus = Antivirus.pick_target(
+			get_tree(), space, from, direction, _breaker_range())
 	if creature != null:
 		return creature.aim_point()
 
-	var reach: Vector3 = from + direction * Balance.BREAKER_RANGE
+	var reach: Vector3 = from + direction * _breaker_range()
 	if space == null:
 		return reach
 	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(from, reach)
@@ -618,7 +690,8 @@ func _update_interaction(delta: float) -> void:
 		return
 
 	_channel_elapsed += delta
-	channel_progress = clampf(_channel_elapsed / maxf(_focus.channel_time, 0.01), 0.0, 1.0)
+	channel_progress = clampf(
+			_channel_elapsed / maxf(_focus.channel_seconds(), 0.01), 0.0, 1.0)
 	_focus.apply_channel(channel_progress)
 
 	if channel_progress >= 1.0:

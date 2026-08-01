@@ -58,6 +58,13 @@ func available() -> bool:
 	return Run.is_corrupted(peer_id) and peer_id != Net.local_id() and Run.local_running()
 
 
+## Servos, on the *rescuer's* program. The channel runs on their machine and the
+## time it takes is the thing their build bought — being restored faster is not
+## something the casualty can buy for themselves.
+func channel_seconds() -> float:
+	return float(Modules.local_loadout()["restore"])
+
+
 func complete() -> void:
 	Run.request_restore(peer_id)
 

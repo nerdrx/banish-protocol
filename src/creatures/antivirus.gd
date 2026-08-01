@@ -376,11 +376,15 @@ func _in_player_light() -> bool:
 		if flare.global_position.distance_to(global_position) <= Balance.FLARE_REPEL_RADIUS:
 			return true
 
-	var limit: float = cos(deg_to_rad(Balance.BEAM_HALF_ANGLE_DEG))
+	# The cone is per player, because Optics buys it. A crewmate three tiers into
+	# the track is holding a visibly wider, longer beam, and this is where that
+	# purchase turns into "the pack will not come near them".
 	for id: int in Net.crew.keys():
 		var peer: int = int(id)
 		if not Run.is_running(peer):
 			continue
+		var loadout: Dictionary = Modules.loadout(peer)
+		var limit: float = cos(deg_to_rad(float(loadout["beam_cone_deg"])))
 		var node: Node = Net.get_player(peer)
 		if node == null or not is_instance_valid(node):
 			continue
@@ -391,7 +395,7 @@ func _in_player_light() -> bool:
 		var eye: Vector3 = player.global_position + Vector3.UP * PLAYER_EYE
 		var to_self: Vector3 = (global_position + Vector3.UP * 0.5) - eye
 		var distance: float = to_self.length()
-		if distance > Balance.BEAM_EXPOSURE_RANGE or distance < 0.01:
+		if distance > float(loadout["beam_expose"]) or distance < 0.01:
 			continue
 		if (to_self / distance).dot(_beam_direction(player)) < limit:
 			continue
@@ -417,8 +421,12 @@ static func _beam_direction(player: Player) -> Vector3:
 ## own lash the frame it fires) and the host (deciding what actually died), so
 ## the streak and the kill can never disagree about which creature was in the
 ## way. Walls win: nothing behind cover is cuttable.
+## `reach` is the shooter's Breaker range (Modules), passed in rather than read
+## from Balance so the shooter's predicted lash and the host's authoritative
+## re-cast use the same number for the same player.
 static func pick_target(tree: SceneTree, space: PhysicsDirectSpaceState3D,
-		origin: Vector3, direction: Vector3) -> Antivirus:
+		origin: Vector3, direction: Vector3,
+		reach: float = Balance.BREAKER_RANGE) -> Antivirus:
 	if tree == null:
 		return null
 	var aim: Vector3 = direction.normalized()
@@ -432,7 +440,7 @@ static func pick_target(tree: SceneTree, space: PhysicsDirectSpaceState3D,
 			continue
 		var to_creature: Vector3 = creature.aim_point() - origin
 		var distance: float = to_creature.length()
-		if distance > Balance.BREAKER_RANGE or distance < 0.01:
+		if distance > reach or distance < 0.01:
 			continue
 		var alignment: float = (to_creature / distance).dot(aim)
 		if alignment <= best_dot:
@@ -478,8 +486,8 @@ func kill() -> void:
 ## What one breaker shot from `from` does to this creature. Armoured processes
 ## override it to make where you are standing matter — nothing in NULLVOID is
 ## immune to the cutter, but not everything takes the same damage from it.
-func breaker_damage(_from: Vector3) -> float:
-	return Balance.BREAKER_DAMAGE
+func breaker_damage(_from: Vector3, base: float = Balance.BREAKER_DAMAGE) -> float:
+	return base
 
 
 ## Subclass hook: a hit landed (host only).

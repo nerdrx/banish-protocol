@@ -319,17 +319,17 @@ func _emissive(colour: Color, energy: float) -> StandardMaterial3D:
 ## is working. A shot into its back or into a dormant one chips at 1800 hit
 ## points; a shot into the exposed core does triple and turns the fight into
 ## something a crew can finish.
-func breaker_damage(from: Vector3) -> float:
+func breaker_damage(from: Vector3, base: float = Balance.BREAKER_DAMAGE) -> float:
 	if not core_exposed():
-		return Balance.BREAKER_DAMAGE
+		return base
 	var to_shooter: Vector3 = from - global_position
 	to_shooter.y = 0.0
 	if to_shooter.length_squared() < 0.01:
-		return Balance.BREAKER_DAMAGE
+		return base
 	var facing: Vector3 = Vector3(-sin(rotation.y), 0.0, -cos(rotation.y))
 	if to_shooter.normalized().dot(facing) < cos(deg_to_rad(Balance.SENTINEL_CORE_ARC_DEG)):
-		return Balance.BREAKER_DAMAGE
-	return Balance.BREAKER_DAMAGE * Balance.SENTINEL_CORE_MULTIPLIER
+		return base
+	return base * Balance.SENTINEL_CORE_MULTIPLIER
 
 
 ## Whether the shielding is down. Fiction and mechanic are the same thing here:

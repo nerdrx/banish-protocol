@@ -42,6 +42,10 @@ signal session_ended(reason: String)
 signal local_player_spawned(player: Node)
 ## Transient crew events ("X JOINED THE CREW"), surfaced by the HUD.
 signal notice(message: String)
+## M4. Host-side: somebody was turned away at the injection point because their
+## program has not installed the backdoor this intrusion started at. Carries the
+## roster line the HUD's gate panel prints.
+signal injection_gate(entries: Array)
 
 enum Transport {
 	DIRECT,  ## ENetMultiplayerPeer, host by address:port.
@@ -62,9 +66,23 @@ const LAYER_SCENE: String = "res://src/world/layer.tscn"
 const MENU_SCENE: String = "res://src/ui/main_menu.tscn"
 const PLAYER_SCENE: String = "res://src/player/player.tscn"
 
-## peer id -> {"name": String, "color": Color}. Untyped on purpose: this
+## peer id -> {"name": String, "color": Color, "modules": Dictionary,
+##             "archive": int, "backdoor": int}. Untyped on purpose: this
 ## dictionary goes over the wire and typed containers add needless friction.
+##
+## M4 widened the entry from identity into **the announced program**. DESIGN.md
+## keeps every player's build on their own machine and has them announce it to
+## the host on join, so this roster is the session's copy of everybody's program:
+## the host resolves module tiers off it to simulate with (Modules.loadout), the
+## clients read it to draw a crewmate's beam at the right width, and the lobby
+## gate reads `backdoor` to decide who is allowed at this depth.
 var crew: Dictionary = {}
+
+## Host-side. Everyone this session has turned away at the injection point, and
+## why — {name, needed, theirs}. Kept rather than only emitted so the HUD panel
+## can still be showing it a few seconds later, and so a second refusal adds a
+## line instead of replacing the screen.
+var refused_crew: Array = []
 
 var is_online: bool = false
 var is_dedicated: bool = false
@@ -235,12 +253,13 @@ func _become_host(peer: MultiplayerPeer, dedicated: bool) -> void:
 	_awaiting_server = false
 	is_dedicated = dedicated
 	crew.clear()
+	refused_crew.clear()
 	if Debug.forced_seed != 0:
 		Rng.set_run_seed(Debug.forced_seed)
 	else:
 		Rng.roll_new_seed()
 	if not dedicated:
-		crew[1] = {"name": GameState.local_name, "color": GameState.local_color}
+		crew[1] = local_crew_entry()
 	print("[Net] session seed %d" % Rng.run_seed)
 	# The host is the only peer that decides what world this is. Everything the
 	# clients need to reproduce it locally goes out in _register_crew's reply.
@@ -284,6 +303,7 @@ func leave(reason: String = "") -> void:
 	_steam_joining = false
 	_awaiting_server = false
 	crew.clear()
+	refused_crew.clear()
 	_spawner = null
 	_layer = null
 	# A Steam session's lobby dies with the session. Leaving as the owner hands
@@ -314,7 +334,7 @@ func world_ready(layer: Node, spawner: MultiplayerSpawner) -> void:
 		if not is_dedicated:
 			_spawn_for_peer(1)
 	else:
-		_register_crew.rpc_id(1, GameState.local_name, GameState.local_color)
+		_register_crew.rpc_id(1, local_crew_entry())
 
 
 ## Called by Player._ready() on every peer.
@@ -391,11 +411,17 @@ func _on_peer_disconnected(id: int) -> void:
 	var who: String = _display_name(id)
 	print("[Net] peer %d (%s) disconnected" % [id, who])
 	if multiplayer.is_server():
+		# A peer the injection gate turned away is disconnected on purpose and was
+		# never on the roster. The crew has already been told why it happened; a
+		# second notice reading "PEER 1867386995 LOST CONNECTION" is a bug report
+		# from the engine, not news.
+		var was_crew: bool = crew.has(id)
 		_despawn_peer(id)
 		crew.erase(id)
 		Run.on_crew_left(id)
 		_receive_crew.rpc(crew)
-		_crew_notice.rpc("%s LOST CONNECTION" % who)
+		if was_crew:
+			_crew_notice.rpc("%s LOST CONNECTION" % who)
 	crew_changed.emit()
 
 
@@ -470,14 +496,66 @@ func _cancel_connect_timeout() -> void:
 
 # ---------------------------------------------------------------------- rpcs --
 
+## The program this machine announces. Identity, plus everything about the build
+## that the host has to know to simulate this player and to decide whether they
+## are allowed at this depth (DESIGN.md: "each player's program ... announced to
+## the host on join").
+func local_crew_entry() -> Dictionary:
+	return {
+		"name": GameState.sanitize_name(GameState.local_name),
+		"color": GameState.local_color,
+		"modules": Modules.local_tiers().duplicate(),
+		"archive": GameState.archive,
+		"backdoor": GameState.deepest_backdoor,
+	}
+
+
+## Re-broadcasts the roster. Called by Modules after a purchase, which is the one
+## thing that changes an announced program mid-session.
+func push_crew() -> void:
+	if not multiplayer.has_multiplayer_peer() or not multiplayer.is_server():
+		return
+	_receive_crew.rpc(crew)
+	crew_changed.emit()
+
+
 @rpc("any_peer", "call_remote", "reliable")
-func _register_crew(player_name: String, color: Color) -> void:
+func _register_crew(entry: Dictionary) -> void:
 	if not multiplayer.is_server():
 		return
 	var id: int = multiplayer.get_remote_sender_id()
-	var clean: String = GameState.sanitize_name(player_name)
-	crew[id] = {"name": clean, "color": color}
-	print("[Net] crew registered: %d = %s" % [id, clean])
+	var clean: String = GameState.sanitize_name(String(entry.get("name", "AGENT")))
+	var theirs: int = maxi(int(entry.get("backdoor", 0)), 0)
+
+	# DESIGN.md's lobby rule, enforced at the only moment this architecture has
+	# to enforce it. There is no separate lobby scene — the crew assembles inside
+	# the layer, join-in-progress — so "a backdoor start requires every present
+	# crew member to have installed it" becomes a check at the door: an agent
+	# whose program never rooted this node cannot be injected here, because the
+	# fiction of the backdoor is that it is *their* compromised infrastructure,
+	# not the host's.
+	var needed: int = GameState.backdoor_for(Run.layer_number)
+	if theirs < needed:
+		print("[Net] injection refused for %s: backdoor %02d required, program has %02d" % [
+			clean, needed, theirs])
+		refused_crew.append({"name": clean, "needed": needed, "theirs": theirs})
+		injection_gate.emit(gate_roster())
+		_crew_notice.rpc("%s TURNED AWAY  ·  BACKDOOR %02d NOT INSTALLED" % [clean, needed])
+		_injection_refused.rpc_id(id, needed, theirs, Run.layer_number)
+		# Give the refusal packet a moment to leave before the socket goes.
+		_disconnect_later(id)
+		return
+
+	crew[id] = {
+		"name": clean,
+		"color": Color(entry.get("color", Color.WHITE)),
+		"modules": entry.get("modules", {}) as Dictionary,
+		"archive": maxi(int(entry.get("archive", 0)), 0),
+		"backdoor": theirs,
+	}
+	print("[Net] crew registered: %d = %s (archive %d, backdoor %02d, modules [%s])" % [
+		id, clean, int(crew[id]["archive"]), theirs,
+		Modules.describe(crew[id]["modules"] as Dictionary)])
 	Run.on_crew_changed()
 	# Config first, spawn second, both reliable on the same channel: the client
 	# builds its geometry from the seed before its avatar arrives to stand on it.
@@ -487,6 +565,48 @@ func _register_crew(player_name: String, color: Color) -> void:
 	_receive_crew.rpc(crew)
 	_crew_notice.rpc("%s JOINED THE CREW" % clean)
 	crew_changed.emit()
+
+
+## Every program the gate has looked at this session — the crew that got in, and
+## everybody it turned away. This is what the HUD's gate panel prints, so the
+## host can see *who* is missing the backdoor rather than only that somebody was.
+func gate_roster() -> Array:
+	var needed: int = GameState.backdoor_for(Run.layer_number)
+	var rows: Array = []
+	var ids: Array = crew.keys()
+	ids.sort()
+	for id: int in ids:
+		var entry: Dictionary = crew[id] as Dictionary
+		rows.append({
+			"name": String(entry.get("name", "AGENT")),
+			"theirs": int(entry.get("backdoor", 0)),
+			"needed": needed,
+			"ok": true,
+		})
+	for row: Dictionary in refused_crew:
+		rows.append({
+			"name": String(row.get("name", "AGENT")),
+			"theirs": int(row.get("theirs", 0)),
+			"needed": int(row.get("needed", needed)),
+			"ok": false,
+		})
+	return rows
+
+
+func _disconnect_later(id: int) -> void:
+	await get_tree().create_timer(0.35).timeout
+	if multiplayer.multiplayer_peer != null and multiplayer.is_server():
+		multiplayer.multiplayer_peer.disconnect_peer(id)
+
+
+## Client side of the gate. The menu is the right place to be told this, because
+## the fix is "go and root that node", which is a decision about the next run.
+@rpc("authority", "call_remote", "reliable")
+func _injection_refused(needed: int, theirs: int, layer: int) -> void:
+	var reason: String = "INJECTION REFUSED  ·  LAYER %02d NEEDS BACKDOOR %02d  ·  YOUR PROGRAM HAS %s" % [
+		layer, needed, "NONE" if theirs <= 0 else "%02d" % theirs]
+	push_warning("[Net] " + reason)
+	leave(reason)
 
 
 @rpc("authority", "call_remote", "reliable")
