@@ -30,10 +30,24 @@ func set_run_seed(value: int) -> void:
 
 
 ## Deterministic stream for a named subsystem, so adding a new consumer does not
-## shift every other consumer's sequence.
+## shift every other consumer's sequence. Cached: successive calls continue the
+## same sequence.
 func stream(label: String) -> RandomNumberGenerator:
 	if not _streams.has(label):
-		var rng: RandomNumberGenerator = RandomNumberGenerator.new()
-		rng.seed = hash(str(run_seed, ":", label))
-		_streams[label] = rng
+		_streams[label] = fresh(label)
 	return _streams[label]
+
+
+## Uncached stream. Every call returns a generator rewound to the same starting
+## state, which is what procgen needs: rebuilding layer 3 must produce the layer
+## 3 you already walked, not the next slice of a shared sequence.
+func fresh(label: String) -> RandomNumberGenerator:
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.seed = seed_for(label)
+	return rng
+
+
+## The 64-bit seed a named stream would use. Exposed so procgen can print it in
+## determinism dumps.
+func seed_for(label: String) -> int:
+	return hash(str(run_seed, ":", label))

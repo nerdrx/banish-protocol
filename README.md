@@ -178,8 +178,8 @@ fiction-earns-the-mechanics reasoning, art direction language.
 
 - [x] **M0 — Design** · concept, systems, fiction, art direction ([DESIGN.md](DESIGN.md))
 - [x] **M1 — Skeleton crew** · ENet host/join, first-person controller with real feel, decryption beam, moody greybox layer, dedicated server mode
-- [ ] **M2 — The dark** *(in development)* · procgen layers + drop shafts, layer-scaled generation, Cycles + siphon taps, HUD
-- [ ] **M3 — The system bites** · Scrubbers + Sentinels, combat, corrupted/restore, data shards, backdoor nodes, exfiltration — *a full intrusion, playable*
+- [x] **M2 — The dark** · procgen layers + drop shafts, layer-scaled generation, Cycles + siphon taps, HUD
+- [ ] **M3 — The system bites** *(in development)* · Scrubbers + Sentinels, combat, corrupted/restore, data shards, backdoor nodes, exfiltration — *a full intrusion, playable*
 - [ ] **M4 — The long game** · Compilers, permanent modules, per-player saves, backdoor injection lobby, economy balancing
 - [ ] **M5 — Expensive** · glitch post stack, positional audio, kill cams, low-Cycles presentation, menu polish, Linux + Windows exports
 
@@ -194,6 +194,14 @@ fiction-earns-the-mechanics reasoning, art direction language.
 *Layer architecture: monolith brutalism, hairline traces, a red scan sweep passing through:*
 
 ![Scan sweep](.github/assets/screenshots/layer.png)
+
+*A siphon tap in a procedurally generated layer — hold the channel, refill the crew's shared pool:*
+
+![Siphon tap](.github/assets/screenshots/siphon.png)
+
+*Cycles depleted — the world starts decompiling you:*
+
+![Cycles depleted](.github/assets/screenshots/depleted.png)
 
 *Injection console:*
 

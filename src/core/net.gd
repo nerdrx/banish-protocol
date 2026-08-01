@@ -9,11 +9,15 @@ extends Node
 ##   1. client connects  -> `connected_to_server`
 ##   2. client loads the layer scene; the layer calls `world_ready()`
 ##   3. client sends `_register_crew(name, color)` to the host
-##   4. host stores the roster entry, spawns the player via MultiplayerSpawner,
-##      replies with the run seed and broadcasts the new roster
+##   4. host stores the roster entry, replies with the world config (seed, layer,
+##      pool), spawns the player via MultiplayerSpawner, and broadcasts the roster
 ##
 ## Spawning only happens after step 2 so the client's MultiplayerSpawner always
 ## exists before any spawn packet arrives.
+##
+## Step 4's ordering is load-bearing for M2: the config carries the run seed the
+## client generates its layer geometry from, and it is sent *before* the spawn
+## packet on the same reliable channel, so the floor exists before the avatar.
 
 signal crew_changed
 signal connect_failed(reason: String)
@@ -26,7 +30,7 @@ const DEFAULT_PORT: int = 27015
 const MAX_CLIENTS: int = 4
 const CONNECT_TIMEOUT: float = 10.0
 
-const LAYER_SCENE: String = "res://src/world/test_layer.tscn"
+const LAYER_SCENE: String = "res://src/world/layer.tscn"
 const MENU_SCENE: String = "res://src/ui/main_menu.tscn"
 const PLAYER_SCENE: String = "res://src/player/player.tscn"
 
@@ -67,11 +71,18 @@ func host(port: int = DEFAULT_PORT, dedicated: bool = false) -> Error:
 	is_online = true
 	is_dedicated = dedicated
 	crew.clear()
-	Rng.roll_new_seed()
+	if Debug.forced_seed != 0:
+		Rng.set_run_seed(Debug.forced_seed)
+	else:
+		Rng.roll_new_seed()
 	if not dedicated:
 		crew[1] = {"name": GameState.local_name, "color": GameState.local_color}
 	print("[Net] hosting on port %d (%s), seed %d" % [
 		port, "dedicated" if dedicated else "listen", Rng.run_seed])
+	# The host is the only peer that decides what world this is. Everything the
+	# clients need to reproduce it locally goes out in _register_crew's reply.
+	Run.begin(Debug.start_layer, Debug.use_test_layer)
+	Run.on_crew_changed()
 	crew_changed.emit()
 	get_tree().change_scene_to_file(LAYER_SCENE)
 	return OK
@@ -107,6 +118,7 @@ func leave(reason: String = "") -> void:
 	crew.clear()
 	_spawner = null
 	_layer = null
+	Run.reset()
 	crew_changed.emit()
 	if not reason.is_empty():
 		GameState.report(reason)
@@ -207,6 +219,7 @@ func _on_peer_disconnected(id: int) -> void:
 	if multiplayer.is_server():
 		_despawn_peer(id)
 		crew.erase(id)
+		Run.on_crew_left(id)
 		_receive_crew.rpc(crew)
 		_crew_notice.rpc("%s LOST CONNECTION" % who)
 	crew_changed.emit()
@@ -260,7 +273,11 @@ func _register_crew(player_name: String, color: Color) -> void:
 	var clean: String = GameState.sanitize_name(player_name)
 	crew[id] = {"name": clean, "color": color}
 	print("[Net] crew registered: %d = %s" % [id, clean])
-	_receive_seed.rpc_id(id, Rng.run_seed)
+	Run.on_crew_changed()
+	# Config first, spawn second, both reliable on the same channel: the client
+	# builds its geometry from the seed before its avatar arrives to stand on it.
+	_receive_config.rpc_id(id, Rng.run_seed, Run.layer_number, Run.use_test_layer,
+			Run.cycles, Run.cycles_max)
 	_spawn_for_peer(id)
 	_receive_crew.rpc(crew)
 	_crew_notice.rpc("%s JOINED THE CREW" % clean)
@@ -273,9 +290,14 @@ func _receive_crew(roster: Dictionary) -> void:
 	crew_changed.emit()
 
 
+## The whole world in one packet: the seed every peer generates geometry from,
+## which layer we are on, whether the host is running the hand-authored test
+## layer, and the current pool so a joiner's HUD is right on its first frame.
 @rpc("authority", "call_remote", "reliable")
-func _receive_seed(value: int) -> void:
+func _receive_config(value: int, layer: int, test_layer: bool,
+		pool: float, pool_max: float) -> void:
 	Rng.set_run_seed(value)
+	Run.adopt(layer, test_layer, pool, pool_max)
 
 
 @rpc("authority", "call_local", "reliable")

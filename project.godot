@@ -18,6 +18,7 @@ config/quit_on_go_back=false
 Rng="*res://src/core/rng.gd"
 GameState="*res://src/core/game_state.gd"
 Net="*res://src/core/net.gd"
+Run="*res://src/core/run_state.gd"
 Debug="*res://src/core/debug.gd"
 
 [debug]
@@ -83,6 +84,7 @@ interact={
 
 3d_physics/layer_1="world"
 3d_physics/layer_2="players"
+3d_physics/layer_3="interact"
 3d_render/layer_1="default"
 3d_render/layer_2="local_hidden"
 

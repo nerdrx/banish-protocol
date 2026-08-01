@@ -38,6 +38,19 @@ const BEAM_SWAY: float = 0.045
 const NAMEPLATE_FULL_DISTANCE: float = 8.0
 const NAMEPLATE_FADE_DISTANCE: float = 15.0
 
+## How far you can reach an interactable, and the interact-layer mask the probe
+## ray tests against (project.godot [layer_names] 3d_physics/layer_3).
+const REACH: float = 3.4
+const INTERACT_MASK: int = 4
+## A channel is broken by moving, not just by releasing the key — DESIGN.md wants
+## siphoning to be a commitment. Well above the residual drift after a stop.
+const CHANNEL_MOVE_TOLERANCE: float = 0.35
+
+# --- spectator (decompiled) --------------------------------------------------
+const SPECTATE_DISTANCE: float = 3.4
+const SPECTATE_HEIGHT: float = 2.1
+const SPECTATE_LERP: float = 3.5
+
 # --- identity (set by Net._spawn_player on every peer before tree entry) -----
 var player_name: String = "AGENT"
 var player_color: Color = Color.WHITE
@@ -60,6 +73,20 @@ var _dip_velocity: float = 0.0
 var _was_on_floor: bool = true
 var _fall_speed: float = 0.0
 var _is_local: bool = false
+
+# --- interaction (local only; the HUD reads these off the local avatar) ------
+## 0..1 fill of the current channel, and the prompt for whatever is under the
+## crosshair. Not replicated: a channel is local feedback, and its *effect* is a
+## host-validated request (see Interactable).
+var channel_progress: float = 0.0
+var focus_prompt: String = ""
+var focus_available: bool = false
+
+var _focus: Interactable = null
+var _channel_elapsed: float = 0.0
+
+# --- decompiled -------------------------------------------------------------
+var _spectating: bool = false
 
 # --- remote smoothing -------------------------------------------------------
 var _remote_velocity: Vector3 = Vector3.ZERO
@@ -163,8 +190,6 @@ func _unhandled_input(event: InputEvent) -> void:
 
 	if event.is_action_pressed("beam"):
 		_set_beam_state(not sync_beam)
-	elif event.is_action_pressed("interact"):
-		interact()
 
 
 func _capture_mouse() -> void:
@@ -184,6 +209,12 @@ func _physics_process(delta: float) -> void:
 
 
 func _simulate_local(delta: float) -> void:
+	# Decompiled: the process is gone, the view stays. Nothing below this point
+	# should run — no movement, no interaction, no billing weight.
+	if not Run.local_alive():
+		_spectate(delta)
+		return
+
 	# Debug.lock_input freezes the avatar for reproducible automated captures.
 	var frozen: bool = Debug.lock_input
 	if not is_on_floor():
@@ -195,14 +226,21 @@ func _simulate_local(delta: float) -> void:
 	if not frozen:
 		input_dir = Input.get_vector(
 				"move_left", "move_right", "move_forward", "move_back")
+	# Synthetic forward, used by the automated Cycles-drain runs. Applied after
+	# the real input so a human at the keyboard can still steer during one.
+	if Debug.hold_forward:
+		input_dir.y = -1.0
 	var wish: Vector3 = (transform.basis * Vector3(input_dir.x, 0.0, input_dir.y))
 	wish.y = 0.0
 	if wish.length_squared() > 1.0:
 		wish = wish.normalized()
 
-	var sprinting: bool = not frozen \
-			and Input.is_action_pressed("sprint") and input_dir.y < -0.1
-	var top_speed: float = SPRINT_SPEED if sprinting else WALK_SPEED
+	var sprinting: bool = (Debug.hold_sprint or (not frozen
+			and Input.is_action_pressed("sprint"))) and input_dir.y < -0.1
+	# Starvation slows the avatar (DESIGN.md "framerate-of-self degrades"). It is
+	# applied to the top speed rather than the acceleration so the loss of pace
+	# is felt immediately rather than as sluggish handling.
+	var top_speed: float = (SPRINT_SPEED if sprinting else WALK_SPEED) * Run.speed_multiplier()
 	var target: Vector3 = wish * top_speed
 	var planar: Vector3 = Vector3(velocity.x, 0.0, velocity.z)
 
@@ -230,6 +268,142 @@ func _simulate_local(delta: float) -> void:
 	camera.fov = lerpf(camera.fov,
 			SPRINT_FOV if (sprinting and sync_speed > WALK_SPEED * 0.6) else BASE_FOV,
 			1.0 - exp(-FOV_LERP * delta))
+
+	_update_interaction(delta)
+
+
+# ------------------------------------------------------------- interaction --
+
+## Local-only. Finds what the crosshair is on, runs the channel, and hands the
+## completed channel to the interactable — which turns it into a host-validated
+## request. Nothing here is authoritative; it is the feel layer.
+func _update_interaction(delta: float) -> void:
+	var target: Interactable = _probe_interactable()
+	if target != _focus:
+		_focus = target
+		_reset_channel()
+
+	if _focus == null:
+		focus_prompt = ""
+		focus_available = false
+		return
+
+	focus_prompt = _focus.prompt()
+	focus_available = _focus.available()
+
+	# Debug.hold_interact deliberately ignores lock_input: an automated capture
+	# needs to freeze the avatar and still be mid-channel when the shutter fires.
+	var holding: bool = Debug.hold_interact \
+			or (not Debug.lock_input and Input.is_action_pressed("interact"))
+	if not holding or not focus_available:
+		_reset_channel()
+		return
+	if Vector3(velocity.x, 0.0, velocity.z).length() > CHANNEL_MOVE_TOLERANCE:
+		_reset_channel()
+		return
+
+	_channel_elapsed += delta
+	channel_progress = clampf(_channel_elapsed / maxf(_focus.channel_time, 0.01), 0.0, 1.0)
+	_focus.set_channel_visual(channel_progress)
+
+	if channel_progress >= 1.0:
+		var finished: Interactable = _focus
+		_reset_channel()
+		finished.complete()
+
+
+## Ray from the lens against the interact layer. Areas only: an interactable's
+## probe must never influence movement collision.
+func _probe_interactable() -> Interactable:
+	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
+	if space == null:
+		return null
+	var from: Vector3 = camera.global_position
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+			from, from - camera.global_transform.basis.z * REACH)
+	query.collision_mask = INTERACT_MASK
+	query.collide_with_areas = true
+	query.collide_with_bodies = false
+	var hit: Dictionary = space.intersect_ray(query)
+	if hit.is_empty():
+		return null
+	var collider: Node = hit["collider"] as Node
+	if collider == null:
+		return null
+	return collider.get_parent() as Interactable
+
+
+func _reset_channel() -> void:
+	if _focus != null and is_instance_valid(_focus):
+		_focus.set_channel_visual(0.0)
+	_channel_elapsed = 0.0
+	channel_progress = 0.0
+
+
+# -------------------------------------------------------------- decompiled --
+
+## Third-person chase cam on a living crewmate. Cheaper and more robust than
+## handing our viewport to their camera: their rig is authored for *their* head,
+## and re-parenting cameras across replicated nodes invites lifetime bugs.
+func _spectate(delta: float) -> void:
+	if not _spectating:
+		_spectating = true
+		velocity = Vector3.ZERO
+		collision_layer = 0
+		collision_mask = 0
+		beam.visible = false
+		beam_cone.visible = false
+		_reset_channel()
+		focus_prompt = ""
+
+	var subject: Node3D = _find_living_crewmate()
+	if subject == null:
+		return
+
+	var behind: Vector3 = subject.global_transform.basis.z * SPECTATE_DISTANCE
+	var target: Vector3 = subject.global_position + behind + Vector3.UP * SPECTATE_HEIGHT
+	var blend: float = 1.0 - exp(-SPECTATE_LERP * delta)
+	global_position = global_position.lerp(target, blend)
+
+	var look_at: Vector3 = subject.global_position + Vector3.UP * 1.2
+	var delta_v: Vector3 = look_at - global_position
+	if delta_v.length_squared() > 0.01:
+		rotation.y = atan2(-delta_v.x, -delta_v.z)
+		_pitch = clampf(atan2(delta_v.y,
+				Vector2(delta_v.x, delta_v.z).length()), -PITCH_LIMIT, PITCH_LIMIT)
+		head.rotation.x = _pitch
+
+	sync_position = global_position
+	sync_yaw = rotation.y
+	sync_pitch = _pitch
+	sync_speed = 0.0
+
+
+func _find_living_crewmate() -> Node3D:
+	var ids: Array = Net.crew.keys()
+	ids.sort()
+	for id: int in ids:
+		var peer: int = int(id)
+		if peer == Net.local_id() or not Run.is_alive(peer):
+			continue
+		var node: Node = Net.get_player(peer)
+		if node != null and is_instance_valid(node):
+			return node as Node3D
+	return null
+
+
+## Authority-side reposition, used by the drop-shaft rebuild. Clears the
+## dead-reckoning history too, or remote peers would smoothly slide the avatar
+## across the whole previous layer to its new home.
+func teleport_to(where: Vector3, yaw: float) -> void:
+	global_position = where
+	rotation.y = yaw
+	velocity = Vector3.ZERO
+	sync_position = where
+	sync_yaw = yaw
+	_last_sync_position = where
+	_remote_velocity = Vector3.ZERO
+	_reset_channel()
 
 
 ## Dead-reckon between packets, then exponentially smooth onto the result.
@@ -358,7 +532,3 @@ func on_footstep(_sprinting: bool) -> void:
 
 func on_landed(_strength: float) -> void:
 	pass  # M4: landing thud + screen shake.
-
-
-func interact() -> void:
-	pass  # M2/M3: siphon taps, data shards, gates.

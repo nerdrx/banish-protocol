@@ -1,0 +1,53 @@
+[gd_scene load_steps=7 format=3]
+
+; The played map. Identical rig to test_layer.tscn minus the LayerBuilder child:
+; geometry is generated at runtime from (run_seed, layer_number) by layer.gd, and
+; regenerated in place every time the crew rides the drop shaft down.
+
+[ext_resource type="Script" path="res://src/world/layer.gd" id="1_layer"]
+[ext_resource type="Environment" path="res://src/world/layer_environment.tres" id="2_env"]
+[ext_resource type="Shader" path="res://src/ui/post_process.gdshader" id="4_post"]
+[ext_resource type="PackedScene" path="res://src/ui/hud.tscn" id="5_hud"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_layer_post"]
+shader = ExtResource("4_post")
+shader_parameter/vignette_intensity = 0.92
+shader_parameter/vignette_inner = 0.3
+shader_parameter/vignette_outer = 0.85
+shader_parameter/grain_amount = 0.03
+shader_parameter/grain_shadow_bias = 0.7
+shader_parameter/aberration = 0.0016
+shader_parameter/stress = 0.0
+shader_parameter/degradation = 0.0
+shader_parameter/fade = 0.0
+
+[sub_resource type="CameraAttributesPractical" id="CameraAttributesPractical_layer"]
+exposure_multiplier = 1.0
+dof_blur_far_enabled = false
+
+[node name="Layer" type="Node3D"]
+script = ExtResource("1_layer")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = ExtResource("2_env")
+camera_attributes = SubResource("CameraAttributesPractical_layer")
+
+[node name="Players" type="Node3D" parent="."]
+
+[node name="PlayerSpawner" type="MultiplayerSpawner" parent="."]
+spawn_path = NodePath("../Players")
+
+[node name="Post" type="CanvasLayer" parent="."]
+layer = 1
+
+[node name="Grade" type="ColorRect" parent="Post"]
+material = SubResource("ShaderMaterial_layer_post")
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(1, 1, 1, 1)
+
+[node name="HUD" parent="." instance=ExtResource("5_hud")]
