@@ -23,15 +23,46 @@ the oxygen does.
    volumetric fog, bloom/grain/vignette, positional audio, screen shake, smooth
    60fps interpolated multiplayer.
 
-## Gameplay Loop (one run ≈ 15–25 min)
+## Gameplay Loop — roguelite descent (one dive ≈ 15–30 min)
 
-1. **Lobby** — crew of 1–4 readies up, picks loadout kit.
-2. **Drop** — dropship cutscene → Deck 1 breach point.
-3. **Dive** — explore procedurally generated decks: find salvage, activate O₂
-   beacons, fight/avoid creatures, find the shaft down to the next deck.
-4. **Pressure** — each deck is darker, richer, more hostile. Shared O₂ ticks down.
-5. **Extract** — call the dropship at any breach point. Salvage banks only on
-   successful extraction. Wipe = lose everything.
+The Husk is a vertical stack of **floors**. Each floor is one procedurally
+generated deck (rooms + corridors). **Floor number = threat level**: deeper
+floors spawn more, faster, tougher creatures — and richer salvage.
+
+1. **Lobby** — crew of 1–4 readies up. The host picks the starting floor: any
+   **Waystation** the crew has previously reached (floor 1, 6, 11, 16, …).
+2. **Descend** — clear a path through each floor to its **drop shaft**, then
+   ride it down. Salvage, beacons, fights, darkness.
+3. **Waystations every 5 floors** — floors 5, 10, 15, … end in a Waystation:
+   a lit, safe bay containing the extraction elevator and a Fabricator.
+   Reaching one **permanently unlocks it** as a future starting point.
+4. **Extract or push** — at a Waystation the crew chooses: extract (bank all
+   carried salvage) or keep descending toward the next one, 5 more floors down.
+5. **Wipe** — full crew death loses all *carried* salvage. Bought upgrades and
+   unlocked Waystations are never lost.
+
+## Meta-progression (persists across runs, per player)
+
+- **Salvage is the only currency.** Carried salvage is lost on wipe; extracting
+  banks it into your personal **wallet**, which persists across runs.
+- **Fabricators** — one hidden somewhere on every floor, plus one guaranteed in
+  each Waystation. Spend wallet + carried salvage on upgrades. Prices scale
+  with upgrade tier, and Fabricators deeper in the Husk stock higher tiers.
+- **Upgrades are permanent.** Once bought, an upgrade stays on your character
+  forever — through extraction, death, and future runs. Dying only costs you
+  the salvage in your pockets, never your build.
+- **Upgrade tracks** (each 3–5 tiers): Suit (max O₂ share / passive drain ↓),
+  Lungs (sprint cost ↓), Cutter (damage / range), Optics (flashlight width +
+  brightness), Servos (move + revive speed), Hold (carry capacity, weight
+  penalty ↓), Pouch (flare count), Plating (max health).
+- **Starting deeper is the real difficulty knob.** A fresh character starts at
+  floor 1; a veteran crew drops straight to Waystation 15 where floor-scaled
+  enemies demand the upgrades they've accumulated. Risk stays honest: deeper
+  start = deeper enemy level immediately.
+- **Persistence**: each player's character (upgrade tiers, wallet, deepest
+  Waystation reached) is saved locally on their own machine and announced to
+  the host on join. Waystation starts require every crew member present to have
+  unlocked that Waystation.
 
 ## Systems (v1 scope)
 
@@ -42,10 +73,13 @@ the oxygen does.
   makes noise → attracts creatures) refills a chunk of the pool.
 - At 0 O₂: screen closes in, health drains, crew has ~60s to extract.
 
-### Decks (procgen)
-- Room-and-corridor graph generation, seeded by server. 6–10 rooms per deck.
-- Room archetypes: salvage hold, beacon chamber, nest, machinery, shaft room.
-- Deck N modifiers: light density ↓, salvage value ↑, creature count ↑.
+### Floors (procgen)
+- Room-and-corridor graph generation, seeded by host. 6–10 rooms per floor.
+- Room archetypes: salvage hold, beacon chamber, nest, machinery, Fabricator
+  alcove, drop-shaft room. Every 5th floor ends in a hand-authored Waystation.
+- Floor N scaling (the threat curve): creature count ↑, creature speed/HP ↑,
+  light density ↓, salvage value ↑, Fabricator stock tier ↑.
+- Deeper floors drift from "spaceship" toward organic/wrong in palette + props.
 
 ### Creatures (v1: two species)
 - **Skitters** — fast pack hunters, weak, avoid flashlight cones, swarm in the dark.
@@ -59,8 +93,8 @@ the oxygen does.
 
 ### Salvage
 - Glowing pickups, auto-magnet on proximity. Carried weight slows you slightly
-  (tension: who carries the haul?). Banked on extraction → crew score + meta currency
-  (meta progression is post-v1).
+  (tension: who carries the haul?). Carried salvage is spendable at Fabricators
+  mid-run; banked into the persistent wallet only on extraction; lost on wipe.
 
 ## Multiplayer Architecture
 
@@ -116,10 +150,13 @@ voidfall/
 
 ## Milestones
 
-- **M1 — Skeleton crew**: monorepo, server tick + rooms, client connect, players
-  move on a test deck with prediction + interpolation. *Feels smooth with 2 clients.*
-- **M2 — The dark**: procgen decks, lighting rig, fog, oxygen system + beacons, HUD.
-- **M3 — The Husk bites**: creatures + AI, combat, downed/revive, salvage, descent
-  + extraction loop. *A full run is playable.*
-- **M4 — Expensive**: post-processing polish, audio, screen shake, lobby/menu flow,
-  kill cams, low-O₂ presentation, balancing pass.
+- **M1 — Skeleton crew**: Godot project, ENet host/join, first-person controller,
+  flashlight, moody greybox test deck. *Feels smooth with 2 clients.*
+- **M2 — The dark**: procgen floors + drop shafts, floor-scaled generation,
+  lighting rig, oxygen system + beacons, HUD.
+- **M3 — The Husk bites**: creatures + floor-scaled AI, combat, downed/revive,
+  salvage, Waystations, extraction. *A full dive is playable.*
+- **M4 — The long game**: Fabricators + permanent upgrade tracks, per-player save
+  files, Waystation-start lobby flow, wallet economy, balancing the threat curve.
+- **M5 — Expensive**: post-processing polish, audio, screen shake, kill cams,
+  low-O₂ presentation, menu/lobby polish, Linux + Windows export presets.
