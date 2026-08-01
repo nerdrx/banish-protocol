@@ -238,12 +238,19 @@ nullvoid/
   **Gun_Surge.fbx** → the breaker: first-person viewmodel + third-person prop
   socketed to crewmate hands, muzzle-anchored beam-lash VFX, NULLVOID material
   pass (matte black + teal emissive slots), 0.01 import scale fix.
-  **CyberSentinel.fbx** → the Sentinel: 94-bone rigged cyber-beast (no baked
-  anims — by design it does NOT walk: frictionless glide with glitch-stutter
-  on direction change, procedural head-track via eye/head bones so it watches
-  players, jaw bone for the scream, IK claw plants on lunge). Red antivirus
-  emissive; Armour/LightMetal slots go monolith-matte. FBX→glTF via Blender
-  5.2 headless (pipeline verified). Crew avatars stay circuit-seam shells.
+  **CyberSentinel.fbx** → used TWICE, palette-split for instant readability:
+  - **Sentinel (enemy)**: near-black matte body, RED glowing accents/emissive
+    (eyes, seams, Emiss slots). No baked anims — by design it does NOT walk:
+    frictionless glide with glitch-stutter on direction change, procedural
+    head-track via eye/head bones so it watches players, jaw bone for the
+    scream, IK claw plants on lunge.
+  - **Crew avatar (interim)**: same model, INVERTED — bright/pale shell with
+    blue glowing accents (default swatch bright blue; accent tint follows the
+    lobby shell-marker color so crewmates stay tellable-apart). Light
+    procedural locomotion only (movement lean, head look, subtle limb bob) —
+    an honest placeholder: user will supply a dedicated player model later,
+    at which point this variant retires.
+  FBX→glTF via Blender 5.2 headless (pipeline verified).
 - **M4 — The long game**: Compilers + permanent module tracks, per-player save
   files, backdoor-injection lobby flow, archive economy, threat-curve balancing.
 - **M5 — Expensive**: post/glitch polish, audio, screen shake, kill cams,
