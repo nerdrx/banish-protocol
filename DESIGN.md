@@ -64,41 +64,55 @@ the oxygen does.
 
 ## Multiplayer Architecture
 
-- **Authoritative server**: Node.js + `ws`, fixed 30Hz simulation tick.
-- **Client**: prediction for own movement, snapshot interpolation (~100ms buffer)
-  for everything else. Server reconciliation with input sequence numbers.
-- **Shared package**: all sim constants, types, and movement code shared between
-  client and server so prediction matches authority.
-- **Protocol**: binary-friendly design (typed message enums, flat arrays), JSON in
-  early milestones, binary (ArrayBuffer) once stabilized.
-- **Rooms**: lobby → room code (4 letters) → crew joins → server spawns a run
-  instance per room.
+- **Engine**: Godot 4.7, high-level multiplayer over ENet (UDP).
+- **Topology**: host-authoritative listen server — one player hosts, the crew
+  joins by IP (LAN or port-forward/tailscale). The host's simulation is the
+  authority: all game state (O₂, creatures, salvage, doors) lives server-side.
+- **Replication**: `MultiplayerSpawner` + `MultiplayerSynchronizer` for entities;
+  RPCs for events (flare thrown, beacon activated, revive). Client-side input →
+  server validates and simulates. Player movement uses client authority for
+  responsiveness with server sanity checks (v1 pragmatism; tighten later).
+- **Dedicated server**: headless export (`godot --headless -- --server`) kept
+  working from M1 so a rented box can host later.
+- **Lobby**: main menu → Host (pick port) or Join (IP:port) → crew lobby →
+  host starts the dive. Seeded procgen: host rolls the seed, replicates it,
+  every peer generates identical decks locally.
 
 ## Presentation
 
-- **View**: top-down-ish 3D (Three.js), camera slightly tilted, close to the crew.
-  Gameplay is on a 2D plane; the third dimension is for lighting and depth.
-- **Lighting**: near-black ambient. Per-player flashlight (spotlight + shadow),
-  flares (point light, flicker, finite life), emergency strips (dim, flicker).
-- **Post**: bloom, vignette, film grain, subtle chromatic aberration; low-O₂ and
-  damage states push these harder.
-- **Fog**: volumetric-feel layered fog planes / animated noise; dust motes in beams.
-- **Audio**: WebAudio positional — creature skitters in the walls, beacon hum,
-  your own breathing that tightens as O₂ drops. Music: sparse dark-ambient pads,
-  combat stingers.
-- **HUD**: diegetic-leaning — O₂ as a shared ring, health as suit glow, minimal text.
+- **View**: first-person. Your flashlight cone is your world; you cannot see
+  behind you. Crewmates are full 3D characters with visible flashlight beams.
+- **Rendering**: Forward+ renderer. Near-black ambient, volumetric fog on
+  (light shafts through dust), per-player SpotLight flashlights with shadows,
+  flares as flickering OmniLights, dim emergency strips on emissive materials.
+- **Post** (WorldEnvironment): glow/bloom, vignette + film grain (post shader),
+  subtle chromatic aberration; low-O₂ and damage states push these harder.
+- **Audio**: `AudioStreamPlayer3D` positional — creature skitters in the walls,
+  beacon hum, your own breathing that tightens as O₂ drops. Reverb zones per
+  room size. Music: sparse dark-ambient pads, combat stingers.
+- **HUD**: diegetic-leaning — O₂ as a shared ring, health as suit glow, minimal
+  text. Crewmate nameplates that fade with distance/darkness.
 
 ## Tech Stack
 
+- **Godot 4.7** (Forward+), GDScript, static typing everywhere.
+- Modular deck kit: corridor/room scenes assembled by seeded procgen at runtime.
+- GUT (or plain `--headless` script tests) for sim logic: procgen determinism,
+  O₂ math, AI state transitions.
+- Native exports: Linux + Windows from day one (export templates installed).
+
 ```
 voidfall/
-  packages/
-    shared/    TS — protocol, sim constants, movement, procgen (seeded)
-    server/    Node 20+, ws — authoritative sim, rooms, AI
-    client/    Vite + Three.js — rendering, prediction, VFX, audio, UI
+  project.godot
+  src/
+    core/       autoloads: Net, GameState, Rng
+    player/     controller, flashlight, interaction
+    world/      deck procgen, rooms kit, props, beacons
+    creatures/  AI state machines
+    ui/         menus, lobby, HUD
+  assets/       materials, sfx, fonts
+  tests/        headless sim tests
 ```
-
-TypeScript everywhere. npm workspaces. Vitest for sim tests.
 
 ## Milestones
 
