@@ -164,6 +164,43 @@ Steal the data. Reach a backdoor. Exfiltrate before the system decompiles you.
 - **HUD**: diegetic program-shell UI — shared Cycles ring, integrity as shell
   glow, buffered-data readout, crewmate tags that fade with distance/darkness.
 
+## Steam Integration
+
+- **Plugin**: GodotSteam GDExtension (4.21+, Steamworks SDK 1.65) + its
+  MultiplayerPeer — drops into Godot's high-level multiplayer, so the existing
+  Spawner/Synchronizer/RPC stack runs over Steam sockets unchanged.
+- **Transport abstraction**: the menu offers **STEAM** (default when Steam is
+  running: friend lobbies, invites, join-in-progress via overlay, no IPs ever)
+  and **DIRECT** (ENet by IP — LAN parties and the dedicated headless server
+  keep working forever; Steam is a transport, not a dependency).
+- **Lobby flow**: Host → Steam lobby (friends-only default) → invite via
+  overlay / join via friends list → SteamMultiplayerPeer handshake → existing
+  Net handshake unchanged. Rich presence: "Descending · LAYER 07 · 3/4 crew".
+- **Dev App ID**: 480 (Spacewar, Valve's public test app) until NULLVOID has
+  its own Steam Direct app page. `steam_appid.txt` is dev-only, never shipped.
+- **Achievements**: an `Achievements` autoload owns definitions + unlock state;
+  persists locally (user://) always, mirrors to Steam stats/achievements when
+  the API is live. On real-App-ID day the definitions upload to Steamworks and
+  everything retro-syncs on first boot. Cloud saves via Steam Auto-Cloud
+  (config-only) at ship time.
+
+### Achievement list (v1)
+
+| ID | Name | Trigger |
+|---|---|---|
+| `FIRST_DELETION` | Garbage Collection | Delete your first Scrubber |
+| `ROOTED` | Rooted | Install your first backdoor |
+| `NULL_AND_VOID` | Null and Void | Wipe with zero buffered data |
+| `ONE_MORE_RING` | One More Ring | Descend past a backdoor without exfiltrating |
+| `PACIFIST_PROTOCOL` | Pacifist Protocol | Exfiltrate without deleting a single process |
+| `LIGHTS_OUT` | Lights Out | Survive 60s at zero Cycles and still exfiltrate |
+| `NO_AGENT_LEFT` | No Agent Left Behind | Full 4-crew exfiltration, everyone alive |
+| `COLD_BOOT` | Cold Boot | Exfiltrate a solo intrusion |
+| `DEEP_STATE` | Deep State | Root the layer-15 backdoor |
+| `KERNEL_PANIC` | Kernel Panic | Reach layer 25 |
+| `HOARDER_BUFFER` | Buffer Overflow | Exfiltrate carrying 100+ data in one run |
+| `MOTHERS_FAVORITE` | Mother's Favorite | Get restored 3 times in one intrusion |
+
 ## Tech Stack
 
 - **Godot 4.7** (Forward+), GDScript, static typing everywhere.
@@ -194,6 +231,9 @@ nullvoid/
 - **M3 — The system bites**: antivirus + layer-scaled AI, combat, corrupted/
   restore, data shards, backdoor nodes, exfiltration. *A full intrusion is
   playable.*
+- **M3.5 — Steamworks**: GodotSteam GDExtension, Steam lobbies + invites +
+  join-in-progress, SteamMultiplayerPeer transport beside ENet, rich presence,
+  Achievements autoload (local-first, Steam-mirrored), dev on App ID 480.
 - **M4 — The long game**: Compilers + permanent module tracks, per-player save
   files, backdoor-injection lobby flow, archive economy, threat-curve balancing.
 - **M5 — Expensive**: post/glitch polish, audio, screen shake, kill cams,
