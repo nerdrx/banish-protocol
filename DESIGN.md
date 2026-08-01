@@ -128,9 +128,13 @@ gun is useless," only as "shooting is one of several competing options."
   countdown to deletion.
 
 ### Data (salvage)
-- Glowing shard pickups, auto-magnet on proximity. Buffered weight slows you
-  slightly (who carries the haul?). Spendable at Compilers mid-run; banked to
-  archive only on exfiltration; lost on deletion.
+- **Tokens on the ground**: flat hexagonal data chips (~10-15cm) lying on the
+  floor — mostly dark material, thin emissive circuit inlay, soft slow pulse,
+  small light pool beneath (wet-floor reflections carry visibility). Sparse
+  singles in rooms, clustered spills in vaults. Never a glowing volume —
+  realistic, immersive, dark. Auto-magnet on proximity. Buffered weight slows
+  you slightly (who carries the haul?). Spendable at Compilers mid-run; banked
+  to archive only on exfiltration; lost on deletion.
 
 ## Multiplayer Architecture
 
