@@ -1,0 +1,65 @@
+<svg width="1200" height="320" viewBox="0 0 1200 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NULLVOID">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="45%" r="65%">
+      <stop offset="0%" stop-color="#0e1a24"/>
+      <stop offset="55%" stop-color="#070b12"/>
+      <stop offset="100%" stop-color="#03050a"/>
+    </radialGradient>
+    <linearGradient id="scan" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00e5ff" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#00e5ff" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#00e5ff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="320" rx="12" fill="url(#glow)"/>
+  <rect width="1200" height="320" rx="12" fill="none" stroke="#122430" stroke-width="2"/>
+
+  <!-- circuit traces -->
+  <g stroke="#0d3a4a" stroke-width="1.5" fill="none" opacity="0.9">
+    <path d="M40 60 H210 L250 100 H340"/>
+    <path d="M40 260 H160 L200 220 H300 L330 250 H420"/>
+    <path d="M1160 70 H1000 L960 110 H870"/>
+    <path d="M1160 250 H1030 L990 210 H900 L870 240 H780"/>
+    <path d="M600 20 V50"/>
+    <path d="M520 300 V270"/>
+    <path d="M690 300 V262"/>
+  </g>
+  <g fill="#0d3a4a">
+    <circle cx="340" cy="100" r="4"/>
+    <circle cx="420" cy="250" r="4"/>
+    <circle cx="870" cy="110" r="4"/>
+    <circle cx="780" cy="240" r="4"/>
+    <circle cx="600" cy="50" r="4"/>
+    <circle cx="520" cy="270" r="4"/>
+    <circle cx="690" cy="262" r="4"/>
+  </g>
+  <g fill="#1de9b6" opacity="0.85">
+    <circle cx="250" cy="100" r="2.5"/>
+    <circle cx="200" cy="220" r="2.5"/>
+    <circle cx="960" cy="110" r="2.5"/>
+    <circle cx="990" cy="210" r="2.5"/>
+  </g>
+
+  <!-- glitch title: offset ghost copies then main -->
+  <g font-family="'Courier New', Courier, monospace" font-weight="bold" font-size="96" letter-spacing="14" text-anchor="middle">
+    <text x="597" y="172" fill="#ff2d78" opacity="0.55">NULLVOID</text>
+    <text x="605" y="178" fill="#00e5ff" opacity="0.55">NULLVOID</text>
+    <text x="601" y="175" fill="#e8f4ff">NULLVOID</text>
+  </g>
+
+  <!-- glitch slice bars through the title -->
+  <rect x="330" y="130" width="540" height="6" fill="#03050a" opacity="0.85"/>
+  <rect x="410" y="131" width="380" height="3" fill="#ff2d78" opacity="0.35"/>
+  <rect x="300" y="152" width="600" height="3" fill="#03050a" opacity="0.7"/>
+
+  <!-- scanline wash -->
+  <rect width="1200" height="320" rx="12" fill="url(#scan)"/>
+
+  <g font-family="'Courier New', Courier, monospace" font-size="20" letter-spacing="6" text-anchor="middle">
+    <text x="600" y="232" fill="#5f7f93">DESCEND · DECRYPT · EXFILTRATE</text>
+  </g>
+  <g font-family="'Courier New', Courier, monospace" font-size="14" letter-spacing="2" text-anchor="middle">
+    <text x="600" y="286" fill="#2e4f63">[ intrusion protocol v0.1 — MOTHER is listening ]</text>
+  </g>
+</svg>
