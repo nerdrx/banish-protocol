@@ -1,0 +1,43 @@
+[gd_resource type="ShaderMaterial" load_steps=5 format=3]
+
+; M_PanelTrim — machined hardware: bolts, brackets, reveal steps, cross ribs.
+;
+; This is the only genuinely metallic material in the kit and it exists to give
+; the eye somewhere to land. Anisotropy is turned on so the brushed direction in
+; the detail normal actually stretches the highlight instead of just wobbling
+; it. A trim highlight is what tells you a wall has thickness.
+
+[ext_resource type="Shader" path="res://src/shaders/nv_surface.gdshader" id="1"]
+[ext_resource type="Texture2D" path="res://assets/textures/noise_macro.tres" id="2"]
+[ext_resource type="Texture2D" path="res://assets/textures/noise_detail.tres" id="3"]
+[ext_resource type="Texture2D" path="res://assets/textures/surface_normal.png" id="4"]
+
+[resource]
+shader = ExtResource("1")
+shader_parameter/macro_noise = ExtResource("2")
+shader_parameter/detail_noise = ExtResource("3")
+shader_parameter/detail_normal = ExtResource("4")
+shader_parameter/albedo = Color(0.145, 0.152, 0.168, 1)
+shader_parameter/roughness_base = 0.38
+shader_parameter/metallic_base = 0.72
+shader_parameter/specular_base = 0.55
+shader_parameter/macro_scale = 0.16
+shader_parameter/detail_scale = 2.4
+shader_parameter/normal_scale = 3.2
+shader_parameter/normal_depth = 0.75
+shader_parameter/rough_macro = 0.22
+shader_parameter/rough_detail = 0.16
+shader_parameter/albedo_var = 0.22
+shader_parameter/edge_polish = 0.22
+shader_parameter/edge_lift = 0.045
+shader_parameter/edge_metal = 0.18
+shader_parameter/grime_amount = 0.35
+shader_parameter/grime_height = 0.45
+shader_parameter/wet_amount = 0.0
+shader_parameter/wet_threshold = 0.55
+shader_parameter/wet_softness = 0.14
+shader_parameter/wet_roughness = 0.045
+shader_parameter/wet_darken = 0.55
+shader_parameter/anisotropy_amount = 0.45
+shader_parameter/alert_tint = Color(1, 0.28, 0.3, 1)
+shader_parameter/alert = 0.0

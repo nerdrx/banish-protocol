@@ -16,15 +16,24 @@
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_layer_post"]
 shader = ExtResource("4_post")
+shader_parameter/intensity = 1.0
 shader_parameter/vignette_intensity = 0.92
 shader_parameter/vignette_inner = 0.3
-shader_parameter/vignette_outer = 0.85
-shader_parameter/grain_amount = 0.03
-shader_parameter/grain_shadow_bias = 0.7
-shader_parameter/aberration = 0.0016
+shader_parameter/vignette_outer = 0.88
+shader_parameter/corner_desaturate = 0.24
+shader_parameter/grain_amount = 0.034
+shader_parameter/grain_chroma = 0.35
+shader_parameter/grain_peak = 0.22
+shader_parameter/grain_spread = 0.3
+shader_parameter/aberration = 0.0009
+shader_parameter/aberration_edge = 1.6
+shader_parameter/sharpen = 0.42
+shader_parameter/shadow_lift = 0.01
+shader_parameter/shadow_tint = Vector3(0.36, 0.52, 0.78)
 shader_parameter/stress = 0.0
 shader_parameter/degradation = 0.0
 shader_parameter/fade = 0.0
+shader_parameter/alert = 0.0
 
 [sub_resource type="CameraAttributesPractical" id="CameraAttributesPractical_layer"]
 exposure_multiplier = 1.0

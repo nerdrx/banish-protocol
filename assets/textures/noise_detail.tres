@@ -1,0 +1,21 @@
+[gd_resource type="NoiseTexture2D" load_steps=2 format=3]
+
+; Fine breakup in UV space — smudges, dust, hand-oil. Centimetre scale, so it
+; only ever reads within a metre or two of the camera. That is exactly where a
+; flashlight-driven game puts the player's attention.
+
+[sub_resource type="FastNoiseLite" id="FastNoiseLite_detail"]
+noise_type = 1
+seed = 23
+frequency = 0.024
+fractal_octaves = 4
+fractal_lacunarity = 2.3
+fractal_gain = 0.48
+
+[resource]
+width = 512
+height = 512
+seamless = true
+seamless_blend_skirt = 0.15
+generate_mipmaps = true
+noise = SubResource("FastNoiseLite_detail")

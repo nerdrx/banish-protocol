@@ -457,10 +457,12 @@ func _set_paused(paused: bool) -> void:
 	# entirely on the DIRECT transport, where there is nothing to invite into.
 	_invite_button.visible = paused and SteamHub.live \
 			and Net.transport == Net.Transport.STEAM and SteamHub.lobby != 0
-	if DisplayServer.get_name() == "headless" or Debug.automated:
+	if DisplayServer.get_name() == "headless":
 		return
-	Input.set_mouse_mode(
-			Input.MOUSE_MODE_VISIBLE if paused else Input.MOUSE_MODE_CAPTURED)
+	if paused:
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	elif Debug.may_capture_mouse():
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
 ## The debrief, for both ways a run can end. DESIGN.md M5 will make this a proper

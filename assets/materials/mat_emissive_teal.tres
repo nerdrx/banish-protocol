@@ -1,0 +1,27 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+; M_EmissiveTeal — the system's own colour, running through every recessed
+; channel in the kit. Packets move at 1.9 m/s with 2.6 m spacing: slow enough to
+; read as data rather than as a Christmas light, fast enough that a stationary
+; player can see it move.
+;
+; Energy 3.4 sits just above the environment's glow HDR threshold of 1.35, so
+; these bloom and nothing else in the scene does. That is the whole reason the
+; threshold is where it is.
+
+
+[ext_resource type="Shader" path="res://src/shaders/nv_dataflow.gdshader" id="1"]
+
+[resource]
+shader = ExtResource("1")
+shader_parameter/flow_color = Color(0.16, 0.78, 1, 1)
+shader_parameter/hostile_color = Color(1, 0.09, 0.11, 1)
+shader_parameter/energy = 2.6
+shader_parameter/flow_speed = 1.9
+shader_parameter/packet_pitch = 2.6
+shader_parameter/packet_tail = 5.0
+shader_parameter/base_level = 0.26
+shader_parameter/breathe_amount = 0.14
+shader_parameter/breathe_speed = 0.55
+shader_parameter/hostile = 0.0
+shader_parameter/flicker = 0.0

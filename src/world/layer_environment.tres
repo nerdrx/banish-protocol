@@ -1,65 +1,152 @@
-[gd_resource type="Environment" format=3]
+[gd_resource type="Environment" load_steps=3 format=3]
 
-; The system's look, in one resource.
+; NULLVOID WorldEnvironment v2 — the replacement for src/world/layer_environment.tres.
 ;
-; Rules of thumb it encodes:
-;   - Ambient is near-black. If you can see a room without a beam, the
-;     ambient is too high.
-;   - Volumetric fog is dense enough that a 4.6-energy spot reads as a shaft,
-;     but thin enough that a lit strip 30 m away still resolves.
-;   - Glow is on a screen blend so emissive trim blooms without blowing out.
+; What v1 got right and is kept: near-black ambient, glow on screen blend, ACES,
+; volumetric fog dense enough that a beam is a shaft. Do not undo any of that.
+;
+; What v2 adds, in order of how much it matters:
+;
+;   SSR. This is the headline. The floor material carries wet patches at
+;   roughness 0.045, and screen-space reflections are what make those patches
+;   mirror the teal inlays, the doorframe and the fog. In a game whose core
+;   pillar is "unrendered space is near-black", a reflection is free light: it
+;   doubles the apparent brightness of a room without adding one lumen of actual
+;   illumination, so the darkness survives.
+;
+;   SSIL. Emissive inlays now bounce. The teal channels in the pillars and floor
+;   throw coloured light onto the panels beside them, which is the effect the
+;   game currently fakes with extra OmniLights. Because it is screen-space it
+;   also costs nothing per light, which matters at 4 players + AI.
+;
+;   Ambient DOWN from 0.28 to 0.16. SSIL is now supplying the bounce that the
+;   flat ambient used to fake, and flat ambient is the enemy: it lifts every
+;   surface by the same amount regardless of what is near it, which is exactly
+;   the "uniformly lit" failure the brief calls out. Lower ambient + real bounce
+;   is darker AND more readable at the same time.
+;
+;   Fog anisotropy 0.28 -> 0.62. Anisotropy is forward-scattering: at 0.28 the
+;   haze glows evenly in all directions (a fog machine), at 0.62 it throws light
+;   forward along the beam axis (god-rays). Combined with the light projectors
+;   this is where the shafts come from.
+;
+;   Glow HDR threshold 1.1 -> 1.35 and levels re-weighted to the wide bands.
+;   Only the dataflow shader (energy 3.4) crosses the threshold, so emissive trim
+;   blooms and lit walls never do. A bloom that catches lit geometry is the
+;   fastest way to turn a dark game into a grey one.
+;
+;   Colour-correction curve. A tiny cool lift in the blacks and a fractional warm
+;   in the highlights. Split-toning is what stops near-black from reading as
+;   "underexposed" and starts it reading as "photographed at night".
+
+[sub_resource type="Gradient" id="Gradient_grade"]
+; Per-channel curve applied after tonemap. Point 0 is the black lift: blue-black
+; rather than grey-black, and small enough (0.016 in blue) that the game's
+; flashlight dependency is untouched. Point 3 warms the highlights a hair so the
+; cold key light does not read as sterile.
+offsets = PackedFloat32Array(0, 0.28, 0.65, 1)
+colors = PackedColorArray(0.0, 0.006, 0.018, 1, 0.26, 0.285, 0.315, 1, 0.655, 0.665, 0.665, 1, 1, 0.992, 0.965, 1)
+
+[sub_resource type="GradientTexture1D" id="GradientTexture1D_grade"]
+gradient = SubResource("Gradient_grade")
+width = 256
 
 [resource]
+resource_name = "NullvoidLookdev"
 background_mode = 1
-background_color = Color(0.004, 0.005, 0.007, 1)
+background_color = Color(0.003, 0.004, 0.006, 1)
 background_energy_multiplier = 1.0
+
 ambient_light_source = 2
-ambient_light_color = Color(0.10, 0.13, 0.19, 1)
+ambient_light_color = Color(0.09, 0.12, 0.185, 1)
 ambient_light_sky_contribution = 0.0
-ambient_light_energy = 0.28
+ambient_light_energy = 0.36
 reflected_light_source = 0
+
 tonemap_mode = 3
-tonemap_exposure = 1.05
+tonemap_exposure = 1.02
 tonemap_white = 6.0
+
+; --- screen-space reflections -------------------------------------------------
+; 56 steps is generous, but corridors are exactly the case SSR is good at: long
+; flat floors with the reflected geometry on screen. fade_in is short so a
+; puddle right under the camera still reflects.
+ssr_enabled = true
+ssr_max_steps = 56
+ssr_fade_in = 0.12
+ssr_fade_out = 6.0
+ssr_depth_tolerance = 0.24
+
+; --- ambient occlusion --------------------------------------------------------
+; Radius tightened from 1.4 to 0.85. The kit's detail is at panel-gap scale
+; (60 mm recesses, 6 mm chamfers); a 1.4 m radius blurs straight past all of it
+; and only darkens room corners. Small radius + high detail is what makes the
+; recessed channels actually read as recessed.
 ssao_enabled = true
-ssao_radius = 1.4
-ssao_intensity = 2.6
-ssao_power = 1.6
-ssao_detail = 0.6
-ssao_light_affect = 0.15
-ssao_ao_channel_affect = 0.0
+ssao_radius = 0.85
+ssao_intensity = 3.1
+ssao_power = 1.8
+ssao_detail = 1.0
+ssao_horizon = 0.05
+ssao_sharpness = 0.98
+ssao_light_affect = 0.10
+ssao_ao_channel_affect = 0.35
+
+; --- screen-space indirect light ---------------------------------------------
+; Pushed hard on purpose. The failure mode this kit kept hitting in review was
+; emissive trim floating in pure black — a glowing rectangle with no lit surface
+; around it, which is exactly the "painted neon line" look the old screenshots
+; have. SSIL is the fix: the recessed channels throw their teal onto the channel
+; walls and the panel beside them, so an inlay reads as a light source sitting IN
+; a surface rather than a decal stuck ON one. Low normal_rejection matters here
+; because most of the receiving geometry (channel walls, chamfers) faces almost
+; perpendicular to the emitter.
+ssil_enabled = true
+ssil_radius = 5.5
+ssil_intensity = 2.8
+ssil_sharpness = 0.96
+ssil_normal_rejection = 0.12
+
+; --- glow ---------------------------------------------------------------------
 glow_enabled = true
 glow_normalized = false
-glow_intensity = 0.72
+glow_intensity = 0.85
 glow_strength = 1.05
-glow_mix = 0.05
-glow_bloom = 0.05
+glow_mix = 0.04
+glow_bloom = 0.02
 glow_blend_mode = 1
-glow_hdr_threshold = 1.1
+glow_hdr_threshold = 1.65
 glow_hdr_scale = 2.0
 glow_hdr_luminance_cap = 12.0
+; Weighted toward the wide bands: a tight bloom halo reads as a rendering
+; artefact, a wide low one reads as atmosphere in front of the lens.
 glow_levels/1 = 0.0
-glow_levels/2 = 0.6
-glow_levels/3 = 1.0
-glow_levels/4 = 0.8
-glow_levels/5 = 0.5
-glow_levels/6 = 0.25
-glow_levels/7 = 0.0
+glow_levels/2 = 0.25
+glow_levels/3 = 0.85
+glow_levels/4 = 1.0
+glow_levels/5 = 0.75
+glow_levels/6 = 0.45
+glow_levels/7 = 0.2
+
+; --- volumetric fog -----------------------------------------------------------
 fog_enabled = false
 volumetric_fog_enabled = true
-volumetric_fog_density = 0.032
-volumetric_fog_albedo = Color(0.33, 0.38, 0.46, 1)
-volumetric_fog_emission = Color(0.01, 0.013, 0.02, 1)
-volumetric_fog_emission_energy = 0.15
-volumetric_fog_gi_inject = 0.0
-volumetric_fog_anisotropy = 0.28
-volumetric_fog_length = 72.0
-volumetric_fog_detail_spread = 2.2
+volumetric_fog_density = 0.030
+volumetric_fog_albedo = Color(0.34, 0.40, 0.48, 1)
+volumetric_fog_emission = Color(0.008, 0.011, 0.018, 1)
+volumetric_fog_emission_energy = 0.12
+volumetric_fog_gi_inject = 0.4
+volumetric_fog_anisotropy = 0.62
+volumetric_fog_length = 80.0
+volumetric_fog_detail_spread = 1.6
 volumetric_fog_ambient_inject = 0.0
 volumetric_fog_sky_affect = 0.0
 volumetric_fog_temporal_reprojection_enabled = true
-volumetric_fog_temporal_reprojection_amount = 0.92
+volumetric_fog_temporal_reprojection_amount = 0.94
+
+; --- grade --------------------------------------------------------------------
 adjustment_enabled = true
 adjustment_brightness = 1.0
-adjustment_contrast = 1.08
-adjustment_saturation = 0.9
+adjustment_contrast = 1.12
+adjustment_saturation = 1.04
+adjustment_color_correction = SubResource("GradientTexture1D_grade")

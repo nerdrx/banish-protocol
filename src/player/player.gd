@@ -65,9 +65,15 @@ const CORRUPT_EYE_HEIGHT: float = 0.72
 const CORRUPT_BODY_DROP: float = 0.62
 const CORRUPT_LERP: float = 4.0
 
+## How far in front of the eye bone the first-person lens sits. See `_embody`.
+const EYE_FORWARD: float = 0.16
+
 # --- kit ---------------------------------------------------------------------
-## Where the breaker's lash leaves the shell: low and to the side of the lens, so
-## it reads as coming off the avatar rather than out of your eye.
+## Where the breaker's lash leaves the shell when there is no viewmodel to ask —
+## low and to the side of the lens, so it reads as coming off the avatar rather
+## than out of your eye. Since M3.7 the local player's lash starts at the Surge's
+## actual emitter instead (see `_muzzle_point`); this is the fallback and the
+## origin remote copies use.
 const MUZZLE_OFFSET: Vector3 = Vector3(0.2, -0.18, -0.35)
 ## A flare leaves the hand with a lob on it and inherits the throw's motion.
 const FLARE_LOFT: float = 2.4
@@ -116,6 +122,12 @@ var _channel_elapsed: float = 0.0
 # --- kit (present on every peer's copy; only the owner pulls the trigger) ----
 var _breaker: Breaker = null
 var _restore_point: RestorePoint = null
+## First-person Surge. Local avatar only — a remote crewmate carries the same
+## model socketed to their hand instead (see CrewAvatar).
+var _view_model: ViewModel = null
+## Third-person shell. Present on every peer's copy of every avatar: yours casts
+## a shadow you can see, theirs is what you actually look at.
+var _avatar: CrewAvatar = null
 
 # --- decompiled / corrupted --------------------------------------------------
 var _seam_material: StandardMaterial3D = null
@@ -153,14 +165,24 @@ func _ready() -> void:
 	sync_yaw = rotation.y
 	_shake_seed = float(peer_id) * 7.13
 	_apply_identity()
+	_build_avatar()
 	_build_kit()
 
 	if _is_local:
 		camera.current = true
 		camera.fov = BASE_FOV
-		# Our own shell would fill the lens; keep it only as a shadow caster so
-		# the beam still throws a silhouette on the floor.
+		# The old placeholder shell would fill the lens; keep it only as a shadow
+		# caster so the beam still throws a silhouette on the floor.
 		_set_shadows_only(body)
+		if _avatar != null and _avatar.is_loaded():
+			# TRUE first-person: the lens sits in the avatar's own eye and the
+			# rifle is in its posed hands. See `_embody`.
+			_embody()
+		else:
+			# No crew model: fall back to the floating viewmodel, so a broken or
+			# missing export costs you your body but never your breaker.
+			_view_model = ViewModel.create(player_color)
+			camera.add_child(_view_model)
 		nameplate.visible = false
 		beam_cone.visible = false
 		_capture_mouse()
@@ -168,10 +190,85 @@ func _ready() -> void:
 		camera.current = false
 		set_physics_process(true)
 
+	_dress_beam()
 	_set_beam_state(sync_beam)
 	if _is_local:
 		Run.damaged.connect(_on_damaged)
 	Net.notify_player_ready(self)
+
+
+## The crew shell. Built on every peer's copy of every player: a remote crewmate
+## is what you look at, and your own is what your beam throws a shadow of.
+##
+## The M1 capsule stays in the scene as the fallback. If the model is missing or
+## the export is broken, `is_loaded()` comes back false and the capsule is left
+## visible — in a game this dark, an invisible crewmate would be indistinguishable
+## from a replication bug, and that is a debugging afternoon nobody needs.
+func _build_avatar() -> void:
+	_avatar = CrewAvatar.create(player_color)
+	if not _avatar.is_loaded():
+		_avatar.queue_free()
+		_avatar = null
+		return
+	add_child(_avatar)
+	# Remote copies get the breaker socketed here; the local copy does it in
+	# `_embody`, after the head mesh has been dealt with.
+	if not _is_local:
+		_avatar.socket_breaker(player_color)
+	# The placeholder shell and the real one must never be on screen together.
+	body.visible = false
+
+
+## First-person embodiment.
+##
+## DESIGN.md renders you "inside MOTHER's architecture, as a physical avatar",
+## and until M3.7 that avatar was a capsule nobody could see and a rifle floating
+## in the lower-right of the frame. Now the crew model IS the first-person body:
+## look down and you see your own chest, your own hands on the Surge, and your
+## own feet on the deck.
+##
+## Three moves make it work:
+##
+##   1. **The lens moves to the eye.** The head rig is re-parked at the avatar's
+##      `Eye` node's world height, so the camera is where the model's eyes are
+##      rather than at an arbitrary 1.62. Every existing feel system — bob, dip,
+##      landing, shake, beam lag — hangs off that rig untouched, which is why
+##      this is a two-line change rather than a rewrite of `_update_view`.
+##   2. **The head is hidden, the body is not.** `set_first_person()` puts only
+##      the skull mesh on SHADOWS_ONLY. Rendering it would fill the frame with
+##      the inside of a jaw; hiding the whole model would throw away the thing
+##      we came here for.
+##   3. **The rifle is in the hand, not on the camera.** The muzzle origin now
+##      follows the posed weapon, so the beam-lash leaves the barrel the player
+##      can see rather than a point floating near their eye.
+##
+## Known gap, honestly: the body yaws with the look direction, because movement
+## is client-authoritative off a single yaw. Turning your head turns your torso.
+## Decoupling them needs an aim-offset layer and a torso-twist limit, which is a
+## milestone of its own.
+func _embody() -> void:
+	_avatar.socket_breaker(player_color)
+	_avatar.set_first_person()
+	# The lens height is deliberately NOT moved to the model's eye.
+	#
+	# The obvious thing to do here is park the camera exactly where the avatar's
+	# `Eye` node is (1.69 m on this model). Doing that quietly broke the drop
+	# shaft: its console probe tops out at y = 1.65, the debug descent stands
+	# 2.7 m back and looks level, and at 1.62 the crosshair ray clears the probe
+	# by three centimetres while at 1.69 it misses by four. Every reach, probe
+	# and eye-height constant in M1-M3 was tuned against 1.62, and an art pass is
+	# not allowed to move a gameplay number by accident. The seven centimetres
+	# are invisible; the regression was not.
+	#
+	# What DOES transfer is the forward step out of the skull.
+	#
+	# A camera at the literal eye position of a short-necked, heavy-chested
+	# creature spends most of its time inside that creature's own chest plate:
+	# you get a flat wall of backface where your torso should be, and pitching
+	# down makes it worse rather than better. A 16 cm forward offset clears the
+	# chest, keeps the arms and the rifle in frame, and is small enough that it
+	# never reads as an out-of-body camera.
+	head.position.z = -EYE_FORWARD
 
 
 ## The kit every copy of an avatar carries. The breaker exists on remote copies
@@ -234,6 +331,19 @@ func _apply_identity() -> void:
 		beam_cone.material_override = tinted
 
 
+## Breaks the beam cone up with the same dust gobo the look-dev rig uses on its
+## projectors.
+##
+## A perfectly even torch cone is the most synthetic thing in a dark game, and it
+## has a second, worse symptom: because every ray in the cone carries the same
+## energy, anything the player walks up to goes flat white. Before this, a data
+## rack three metres away was a featureless grey slab with its detail washed off
+## it. The cloud breakup restores the falloff the geometry needs to read, and the
+## energy comes down a notch to go with it.
+func _dress_beam() -> void:
+	beam.light_projector = load(LightRig.GOBO_DUST) as Texture2D
+
+
 func _set_shadows_only(root: Node) -> void:
 	for child: Node in root.get_children():
 		var mesh: MeshInstance3D = child as MeshInstance3D
@@ -264,11 +374,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _capture_mouse() -> void:
-	if DisplayServer.get_name() == "headless":
-		return
 	# An automated run shares the desktop with a human who is doing something
-	# else. Stealing their cursor is as rude as stealing their focus.
-	if Debug.automated:
+	# else. Stealing their cursor is as rude as stealing their focus, and this
+	# spawn-time capture is the single most likely place for it to happen.
+	if not Debug.may_capture_mouse():
 		return
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
@@ -407,6 +516,16 @@ func _update_breaker(frozen: bool) -> void:
 	_breaker.show_lash(muzzle, _breaker_endpoint(from, direction))
 	add_shake(0.22)
 	Run.request_breaker(from, direction)
+
+
+## Where the lash leaves the avatar. The Surge's own emitter when we are holding
+## one, so the streak and the muzzle flash come out of the same hole.
+func _muzzle_point(from: Vector3, basis: Basis) -> Vector3:
+	if _avatar != null and is_instance_valid(_avatar) and _avatar.is_loaded():
+		return _avatar.muzzle_point()
+	if _view_model != null and is_instance_valid(_view_model):
+		return _view_model.muzzle_point()
+	return from + basis * MUZZLE_OFFSET
 
 
 ## Where the streak stops: whatever the cutter is pointing at, or the wall behind
@@ -701,6 +820,16 @@ func _update_view(delta: float) -> void:
 	camera.rotation.z = horizontal * BOB_ROLL * _bob_weight \
 			+ sin(t * 31.0) * _shake * SHAKE_ROLL
 
+	if _view_model != null and is_instance_valid(_view_model):
+		# Fed the same bob the lens got, so the weapon rides the walk cycle
+		# instead of floating independently of it, plus the strafe component in
+		# the avatar's own frame for the lean.
+		var strafe: float = transform.basis.x.dot(
+				Vector3(velocity.x, 0.0, velocity.z)) / SPRINT_SPEED
+		_view_model.drive(delta, Vector2(rotation.y, _pitch), clampf(strafe, -1.0, 1.0),
+				Vector3(horizontal * BOB_HORIZONTAL * _bob_weight,
+						vertical * BOB_VERTICAL * _bob_weight, 0.0))
+
 	_update_collapse(delta)
 	_update_beam(delta, speed)
 	_update_nameplate()
@@ -715,16 +844,18 @@ func _update_collapse(delta: float) -> void:
 	if _collapse <= 0.001 and not down:
 		if _corrupt_light.light_energy != 0.0:
 			_corrupt_light.light_energy = 0.0
-			body.position.y = 0.0
-			body.rotation.x = 0.0
+			if _avatar == null:
+				body.position.y = 0.0
+				body.rotation.x = 0.0
 			head.position.y = 1.62
 			if _seam_material != null:
 				_seam_material.emission = player_color
 				_seam_material.emission_energy_multiplier = SEAM_ENERGY
 		return
 
-	body.position.y = -CORRUPT_BODY_DROP * _collapse
-	body.rotation.x = _collapse * 0.42
+	if _avatar == null:
+		body.position.y = -CORRUPT_BODY_DROP * _collapse
+		body.rotation.x = _collapse * 0.42
 	if _is_local:
 		head.position.y = lerpf(1.62, CORRUPT_EYE_HEIGHT, _collapse)
 
@@ -793,11 +924,21 @@ func _apply_beam_visuals() -> void:
 	beam_cone.visible = live and not _is_local
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	# Cheap enough to reconcile every frame, and it covers three separate inputs
 	# (the toggle, corruption, deletion) without any of them having to remember
 	# to call it.
 	_apply_beam_visuals()
+
+	# The avatar is driven from the IDLE callback on purpose: its AnimationTree
+	# runs on the physics callback, and the procedural head-look has to be
+	# written after the clip has had its say or it is overwritten every frame.
+	# Speed comes from the replicated pose on a remote copy, so the walk cycle
+	# runs at the right pace on every screen with no animation on the wire.
+	if _avatar != null and is_instance_valid(_avatar):
+		var speed: float = sync_speed if not _is_local \
+				else Vector3(velocity.x, 0.0, velocity.z).length()
+		_avatar.drive(delta, speed, Vector3(velocity.x, 0.0, velocity.z), _collapse)
 
 
 # ------------------------------------------------------------------- events --

@@ -13,8 +13,20 @@ extends Antivirus
 ##   LUNGE inside reach: dash, strike, recover
 ##   FLEE  exposed to a beam or a flare for EXPOSURE_LIMIT: scatter to the dark
 ##
-## Everything a client sees is `sync_state` plus a streamed pose: the skitter,
-## the sensor colour and the death shatter are all local reactions to those.
+## Everything a client sees is `sync_state` plus a streamed pose: the gait, the
+## sensor colour and the death shatter are all local reactions to those.
+##
+## M3.7 replaced the box-and-legs placeholder with the authored model
+## (`assets/models/scrubber.glb`, 5 284 tris, 15 bones) and its four clips. The
+## swap is deliberately **visual only** — health, speeds, ranges, the collision
+## capsule and the whole state machine below are byte for byte what M3 shipped,
+## so a regression in how a Scrubber *plays* cannot be blamed on how it looks.
+##
+## The one thing worth knowing about the mapping: STALK and FLEE share the
+## skitter clip, time-scaled by how fast the body is actually moving. A fleeing
+## Scrubber is faster than a stalking one, and playing one authored clip at one
+## rate under both would have the feet sliding in exactly the state the player is
+## most likely to be staring at it.
 
 enum State { LURK, STALK, LUNGE, FLEE }
 
@@ -22,14 +34,22 @@ const BODY_HEIGHT: float = 0.42
 const SENSOR_COLOUR: Color = Color(1.0, 0.16, 0.14)
 const SHELL_COLOUR: Color = Color(0.05, 0.05, 0.06)
 
+## Metres the skitter clip carries the body in one loop, measured off the
+## authored cycle. Dividing real speed by this gives the playback rate that keeps
+## the feet planted.
+const SKITTER_STRIDE: float = 1.5
+## Above this the clip is being pushed harder than it was authored for and starts
+## to buzz; below it, a barely-moving Scrubber would freeze mid-step.
+const SKITTER_RATE_RANGE: Vector2 = Vector2(0.55, 2.6)
+
 var state: State = State.LURK
 
-var _sensor: MeshInstance3D = null
 var _sensor_material: StandardMaterial3D = null
 var _trim_material: StandardMaterial3D = null
 var _light: OmniLight3D = null
 var _shell: Node3D = null
-var _legs: Array[MeshInstance3D] = []
+var _anim: AnimationPlayer = null
+var _tree: AnimationTree = null
 
 ## Host sim.
 var _target: Node3D = null
@@ -46,8 +66,8 @@ var _alert_time: float = 0.0
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 ## Local animation, driven on every peer from the pose it can see.
-var _skitter: float = 0.0
 var _last_position: Vector3 = Vector3.ZERO
+var _measured_speed: float = 0.0
 var _hurt_flash: float = 0.0
 var _death: float = 0.0
 
@@ -56,6 +76,10 @@ func _assemble() -> void:
 	health = Balance.SCRUBBER_HEALTH
 	speed_scale = float(LayerParams.of(layer_number)["scrubber_speed"])
 
+	# Unchanged from M3. The authored mesh is 0.72 m wide and 0.49 m tall, which
+	# fits inside this capsule with room to spare — deliberately: a knee-high
+	# thing that circles you should be slightly *easier* to hit than its
+	# silhouette suggests, or a pack becomes a coin flip.
 	var shape: CollisionShape3D = CollisionShape3D.new()
 	var capsule: CapsuleShape3D = CapsuleShape3D.new()
 	capsule.radius = 0.36
@@ -68,52 +92,11 @@ func _assemble() -> void:
 	_shell.name = "Shell"
 	add_child(_shell)
 
-	var plate: StandardMaterial3D = StandardMaterial3D.new()
-	plate.albedo_color = SHELL_COLOUR
-	plate.metallic = 0.65
-	plate.roughness = 0.42
-	_trim_material = _emissive(SENSOR_COLOUR, 0.55)
-
-	# A low wedge, wider than it is tall. Read half-seen in a beam's spill it is
-	# barely a shape at all, which is the point.
-	_mesh(_shell, Vector3(0.0, BODY_HEIGHT, 0.0), Vector3(0.68, 0.3, 1.0), plate)
-	_mesh(_shell, Vector3(0.0, BODY_HEIGHT + 0.2, -0.16), Vector3(0.44, 0.22, 0.5), plate)
-	# Hairline red trim: enough emissive to be findable in the dark without ever
-	# lighting the floor it is crossing.
-	_mesh(_shell, Vector3(0.0, BODY_HEIGHT + 0.15, 0.0), Vector3(0.7, 0.02, 0.62),
-			_trim_material)
-	_mesh(_shell, Vector3(0.0, BODY_HEIGHT - 0.13, 0.0), Vector3(0.56, 0.02, 0.9),
-			_trim_material)
-
-	# Four skittering legs. Cheap, but a thing that moves on legs is a different
-	# animal from a thing that slides.
-	for i: int in 4:
-		var side: float = -1.0 if i % 2 == 0 else 1.0
-		var fore: float = -1.0 if i < 2 else 1.0
-		var leg: MeshInstance3D = _mesh(_shell,
-				Vector3(side * 0.34, BODY_HEIGHT * 0.55, fore * 0.3),
-				Vector3(0.06, 0.62, 0.06), plate)
-		leg.rotation = Vector3(0.0, 0.0, side * 0.42)
-		_legs.append(leg)
-
-	# The single sensor eye. It is the only part of a Scrubber you ever really
-	# see, so it carries the whole state read.
-	_sensor_material = _emissive(SENSOR_COLOUR, 3.4)
-	_sensor = MeshInstance3D.new()
-	var eye: SphereMesh = SphereMesh.new()
-	eye.radius = 0.09
-	eye.height = 0.18
-	eye.radial_segments = 10
-	eye.rings = 5
-	_sensor.mesh = eye
-	_sensor.position = Vector3(0.0, BODY_HEIGHT + 0.24, -0.4)
-	_sensor.material_override = _sensor_material
-	_sensor.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_shell.add_child(_sensor)
+	_build_model()
 
 	_light = OmniLight3D.new()
 	_light.name = "Sensor"
-	_light.position = Vector3(0.0, BODY_HEIGHT + 0.24, -0.5)
+	_light.position = Vector3(0.0, BODY_HEIGHT + 0.1, -0.42)
 	_light.light_color = SENSOR_COLOUR
 	# Deliberately feeble and short. The sensor has to be *findable* in the dark,
 	# not a lamp — a Scrubber that lights the room it is hunting in has undone
@@ -130,33 +113,40 @@ func _assemble() -> void:
 	_last_position = position
 
 
+## The authored model, repainted to the enemy palette and wired to an
+## AnimationTree. The trim and core materials are kept as members because they
+## are the creature's entire state read — see `_apply_state_visual`.
+func _build_model() -> void:
+	var model: Node3D = CreatureKit.instantiate(CreatureKit.SCRUBBER)
+	if model == null:
+		return
+	model.name = "Model"
+	_shell.add_child(model)
+
+	_trim_material = CreatureKit.emissive(SENSOR_COLOUR, 0.55)
+	_sensor_material = CreatureKit.emissive(SENSOR_COLOUR, 3.4)
+	var mesh: MeshInstance3D = CreatureKit.find_mesh(model)
+	CreatureKit.paint(mesh, {
+		"Body": CreatureKit.matte(SHELL_COLOUR, 0.65, 0.42),
+		"Plate": CreatureKit.matte(CreatureKit.ENEMY_PLATE, 0.5, 0.34),
+		"EmissRed": _trim_material,
+		"CoreEmiss": _sensor_material,
+	})
+
+	_anim = CreatureKit.find_player(model)
+	CreatureKit.set_looping(_anim, PackedStringArray(["idle_lurk", "skitter"]))
+	_tree = CreatureKit.build_tree(model, _anim, {
+		"lurk": "idle_lurk",
+		"skitter": "skitter",
+		"lunge": "lunge",
+		"death": "death_shatter",
+	}, "lurk", 0.14)
+
+
 ## Its sensor is at ankle height, which is why a rack of data blocks is real
 ## cover from a Scrubber.
 func _eye_height() -> float:
 	return BODY_HEIGHT + 0.2
-
-
-func _mesh(parent: Node3D, at: Vector3, size: Vector3,
-		material: StandardMaterial3D) -> MeshInstance3D:
-	var mesh: MeshInstance3D = MeshInstance3D.new()
-	var box: BoxMesh = BoxMesh.new()
-	box.size = size
-	mesh.mesh = box
-	mesh.position = at
-	mesh.material_override = material
-	parent.add_child(mesh)
-	return mesh
-
-
-func _emissive(colour: Color, energy: float) -> StandardMaterial3D:
-	var material: StandardMaterial3D = StandardMaterial3D.new()
-	material.albedo_color = colour.darkened(0.75)
-	material.emission_enabled = true
-	material.emission = colour
-	material.emission_energy_multiplier = energy
-	material.roughness = 0.4
-	material.disable_receive_shadows = true
-	return material
 
 
 # ---------------------------------------------------------------- decisions --
@@ -388,6 +378,11 @@ func _hit() -> void:
 func _play_death() -> void:
 	_death = 1.0
 	set_physics_process(false)
+	# The clip does the coming-apart; the particles are the spray it throws off.
+	# Playing one without the other reads either as a puff of dust with a corpse
+	# still standing in it, or as a mesh quietly folding up in silence.
+	CreatureKit.travel(_tree, "death")
+	CreatureKit.set_speed(_tree, 1.0)
 
 	var burst: CPUParticles3D = CPUParticles3D.new()
 	burst.name = "Shatter"
@@ -407,7 +402,7 @@ func _play_death() -> void:
 	var fragment: BoxMesh = BoxMesh.new()
 	fragment.size = Vector3.ONE
 	burst.mesh = fragment
-	burst.material_override = _emissive(SENSOR_COLOUR, 3.0)
+	burst.material_override = CreatureKit.emissive(SENSOR_COLOUR, 3.0)
 	add_child(burst)
 
 
@@ -416,22 +411,43 @@ func _process(delta: float) -> void:
 		_die_visual(delta)
 		return
 
-	# Skitter, driven by however fast this copy is actually moving — so a client's
-	# puppet legs move with the pose it receives, with no extra replication.
+	# Gait, driven by however fast this copy is actually moving — so a client's
+	# puppet runs at the pace of the pose it receives, with no extra replication
+	# and no need for the client to be able to see the state machine.
 	var moved: float = Vector2(global_position.x - _last_position.x,
 			global_position.z - _last_position.z).length() / maxf(delta, 0.0001)
 	_last_position = global_position
-	_skitter += delta * clampf(moved, 0.0, 10.0) * 2.4
-
-	var bounce: float = absf(sin(_skitter)) * 0.06
-	_shell.position.y = bounce
-	_shell.rotation.z = sin(_skitter * 0.5) * 0.09
-	for i: int in _legs.size():
-		var phase: float = _skitter + float(i) * PI * 0.5
-		_legs[i].rotation.x = sin(phase) * 0.55
+	# Smoothed: a 20 Hz pose stream differentiates into a very noisy speed, and
+	# feeding that straight into playback rate makes the clip stutter.
+	_measured_speed = lerpf(_measured_speed, clampf(moved, 0.0, 12.0),
+			1.0 - exp(-8.0 * delta))
+	_drive_animation()
 
 	_hurt_flash = maxf(_hurt_flash - delta * 4.0, 0.0)
 	_apply_state_visual()
+
+
+## State -> clip, plus the time scale that keeps the feet planted.
+func _drive_animation() -> void:
+	match int(sync_state):
+		int(State.LUNGE):
+			CreatureKit.travel(_tree, "lunge")
+			CreatureKit.set_speed(_tree, 1.0)
+		int(State.STALK), int(State.FLEE):
+			CreatureKit.travel(_tree, "skitter")
+			CreatureKit.set_speed(_tree, clampf(_measured_speed / SKITTER_STRIDE,
+					SKITTER_RATE_RANGE.x, SKITTER_RATE_RANGE.y))
+		_:
+			# Lurking, but a lurking Scrubber still drifts between loiter points.
+			# Above walking pace it should be skittering, whatever the state
+			# machine thinks it is doing.
+			if _measured_speed > 0.9:
+				CreatureKit.travel(_tree, "skitter")
+				CreatureKit.set_speed(_tree, clampf(_measured_speed / SKITTER_STRIDE,
+						SKITTER_RATE_RANGE.x, SKITTER_RATE_RANGE.y))
+			else:
+				CreatureKit.travel(_tree, "lurk")
+				CreatureKit.set_speed(_tree, 1.0)
 
 
 ## The sensor is the tell. Dim and slow while lurking, hot and steady while
@@ -470,12 +486,15 @@ func _apply_state_visual() -> void:
 	_light.light_energy = light
 
 
+## The authored death_shatter clip is 1.0 s long and does the coming-apart, so
+## this no longer scales the shell down — it only rides the light and the
+## emissives out over the same window and frees the node at the end.
 func _die_visual(delta: float) -> void:
-	_death = maxf(_death - delta * 1.4, 0.0)
-	var collapse: float = _death * _death
-	_shell.scale = Vector3(collapse, collapse * 0.4, collapse)
-	# One hard pulse of light as it goes, then nothing.
-	_light.light_energy = 6.0 * sin(clampf(1.0 - _death, 0.0, 1.0) * PI) + collapse
-	_sensor_material.emission_energy_multiplier = 9.0 * collapse
+	_death = maxf(_death - delta * 0.9, 0.0)
+	var fade: float = _death * _death
+	# One hard pulse of light as the process is deallocated, then nothing.
+	_light.light_energy = 6.0 * sin(clampf(1.0 - _death, 0.0, 1.0) * PI) + fade
+	_sensor_material.emission_energy_multiplier = 9.0 * fade
+	_trim_material.emission_energy_multiplier = 1.4 * fade
 	if _death <= 0.001:
 		queue_free()

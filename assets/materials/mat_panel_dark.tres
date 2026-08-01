@@ -1,0 +1,45 @@
+[gd_resource type="ShaderMaterial" load_steps=5 format=3]
+
+; M_PanelDark — the wall. 96% of the visible surface area of a layer.
+;
+; Albedo is barely above the game's current monolith_wall, and metallic stays at
+; zero for the same reason DESIGN.md gives: a true metal returns nothing to a
+; head-mounted beam except an off-axis lobe, and the room renders black. What is
+; new is that the roughness swings +-0.13 across the macro layer, so a beam
+; sweeping one wall crosses three or four different sheens on the way. That
+; single change is most of the distance between the old screenshots and these.
+
+[ext_resource type="Shader" path="res://src/shaders/nv_surface.gdshader" id="1"]
+[ext_resource type="Texture2D" path="res://assets/textures/noise_macro.tres" id="2"]
+[ext_resource type="Texture2D" path="res://assets/textures/noise_detail.tres" id="3"]
+[ext_resource type="Texture2D" path="res://assets/textures/surface_normal.png" id="4"]
+
+[resource]
+shader = ExtResource("1")
+shader_parameter/macro_noise = ExtResource("2")
+shader_parameter/detail_noise = ExtResource("3")
+shader_parameter/detail_normal = ExtResource("4")
+shader_parameter/albedo = Color(0.095, 0.101, 0.114, 1)
+shader_parameter/roughness_base = 0.80
+shader_parameter/metallic_base = 0.0
+shader_parameter/specular_base = 0.42
+shader_parameter/macro_scale = 0.115
+shader_parameter/detail_scale = 1.6
+shader_parameter/normal_scale = 2.2
+shader_parameter/normal_depth = 0.55
+shader_parameter/rough_macro = 0.26
+shader_parameter/rough_detail = 0.13
+shader_parameter/albedo_var = 0.32
+shader_parameter/edge_polish = 0.40
+shader_parameter/edge_lift = 0.032
+shader_parameter/edge_metal = 0.34
+shader_parameter/grime_amount = 0.50
+shader_parameter/grime_height = 0.55
+shader_parameter/wet_amount = 0.0
+shader_parameter/wet_threshold = 0.55
+shader_parameter/wet_softness = 0.14
+shader_parameter/wet_roughness = 0.045
+shader_parameter/wet_darken = 0.55
+shader_parameter/anisotropy_amount = 0.0
+shader_parameter/alert_tint = Color(1, 0.28, 0.3, 1)
+shader_parameter/alert = 0.0

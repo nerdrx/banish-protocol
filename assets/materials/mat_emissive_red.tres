@@ -1,0 +1,23 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3]
+
+; M_EmissiveRed — hostile variant. Same shader, hostile=1: the colour flips to
+; red, the flow reverses and quantises into hard 9 Hz steps so it stops reading
+; as data in transit and starts reading as something sweeping. Used for scan
+; sweeps, purge alarms and the red-alert lighting state.
+
+
+[ext_resource type="Shader" path="res://src/shaders/nv_dataflow.gdshader" id="1"]
+
+[resource]
+shader = ExtResource("1")
+shader_parameter/flow_color = Color(0.16, 0.78, 1, 1)
+shader_parameter/hostile_color = Color(1, 0.09, 0.11, 1)
+shader_parameter/energy = 4.2
+shader_parameter/flow_speed = 1.9
+shader_parameter/packet_pitch = 2.6
+shader_parameter/packet_tail = 5.0
+shader_parameter/base_level = 0.22
+shader_parameter/breathe_amount = 0.10
+shader_parameter/breathe_speed = 1.8
+shader_parameter/hostile = 1.0
+shader_parameter/flicker = 0.0

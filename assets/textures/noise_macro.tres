@@ -1,0 +1,23 @@
+[gd_resource type="NoiseTexture2D" load_steps=2 format=3]
+
+; Macro breakup. Sampled in WORLD space by nv_surface.gdshader at ~0.115
+; tiles/metre, so one blotch of this texture covers roughly 3 m of wall. This is
+; the layer that makes two identical kit modules placed side by side stop
+; looking identical — panel-to-panel roughness and albedo variation, plus the
+; puddle mask on floors.
+
+[sub_resource type="FastNoiseLite" id="FastNoiseLite_macro"]
+noise_type = 1
+seed = 7
+frequency = 0.0075
+fractal_octaves = 3
+fractal_lacunarity = 2.1
+fractal_gain = 0.55
+
+[resource]
+width = 512
+height = 512
+seamless = true
+seamless_blend_skirt = 0.2
+generate_mipmaps = true
+noise = SubResource("FastNoiseLite_macro")

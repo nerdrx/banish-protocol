@@ -35,7 +35,14 @@ extends Node
 ##   --goto TARGET [delay]         teleport the local avatar there after `delay`
 ##                                 seconds, and again on every new layer.
 ##                                 TARGET: shaft | siphon | vault | nest | node |
-##                                 uplink | crew (the nearest corrupted crewmate)
+##                                 uplink | corridor (looking down the longest
+##                                 one — the shot that judges the architecture) |
+##                                 decal (stand 3 m off a wall sign and read it) |
+##                                 crew (the nearest corrupted crewmate)
+##   --pitch RADIANS               override the lens pitch every `--goto` sets.
+##                                 Negative looks down; -1.2 is "at your own
+##                                 boots", which is the shot that proves the
+##                                 first-person body is really there.
 ##   --hold-interact [delay]       hold E from `delay` seconds onward
 ##   --sprint                      hold forward + sprint (Cycles drain test)
 ##   --autodescend                 goto shaft + hold E on every layer, forever:
@@ -60,6 +67,18 @@ extends Node
 ##   --no-antivirus      generate the layer but buy nothing hostile
 ##   --log-ai            per-second census of every process and its state, plus
 ##                       a line on every state transition and every tap ping
+##
+## M3.7 flags:
+##   --log-fps [window]  per-`window`-second frame-rate census: average, 1% low
+##                       and the worst frame in the window, plus draw calls and
+##                       primitives. The look-dev merge quadrupled the fixture
+##                       count per layer, so "does a two-client layer with
+##                       creatures in it still hold 60" is now a number this
+##                       build has to be able to print about itself. Uncaps the
+##                       frame rate for the duration: under a compositor the
+##                       renderer vsyncs to 60 and every census comes back
+##                       "avg=60 1%low=60", which measures the display and not
+##                       the game.
 ##
 ## M3.5 (Steam) flags:
 ##   --no-steam          never touch the Steam API, even with the client running.
@@ -139,6 +158,10 @@ var _dump_layer: int = 1
 ## `--steamjoin` target.
 var _lobby_id: int = 0
 
+## `--pitch`. Applied on top of whatever a `--goto` target chose.
+var pitch_override: float = 0.0
+var _has_pitch: bool = false
+
 var _goto: String = ""
 var _goto_delay: float = 1.6
 var _hold_delay: float = -1.0
@@ -148,6 +171,15 @@ var _fire_delay: float = -1.0
 var _flare_delay: float = -1.0
 var _exfil_delay: float = -1.0
 var _grab_count: int = 0
+
+## Seconds of shader-compilation and layer-build time excluded from the census.
+const FPS_WARMUP: float = 4.0
+
+## `--log-fps`. Zero disables.
+var _fps_window: float = 0.0
+var _fps_warmup: float = 0.0
+var _fps_clock: float = 0.0
+var _fps_samples: PackedFloat32Array = PackedFloat32Array()
 
 var _shot_armed: bool = false
 var _frames_left: int = 0
@@ -167,20 +199,57 @@ func _ready() -> void:
 			and not steam_selftest:
 		set_process(false)
 		return
+	# Stays processing for the whole run, not just while a screenshot is armed:
+	# `_enforce_mouse` has to be live from boot to quit, including across the
+	# menu -> layer scene change and every descent after it.
+	set_process(true)
 	_boot.call_deferred()
 
 
 ## Automated runs are launched *next to* whatever the developer is actually
 ## doing — often a full-screen game on the other monitor. A capture that steals
 ## keyboard focus or grabs the cursor ruins both the desktop and the capture, so
-## an automated window is opened as a bystander: never focused, never focusable.
-## (Pair with Godot's own `--screen N` to choose which monitor it lands on, or
-## run the whole thing under `gamescope --backend headless` to have no window at
-## all.) The mouse half of this lives in Player._capture_mouse and Hud.
+## an automated window is opened as a bystander: never focused, never focusable,
+## and never in possession of the pointer.
+##
+## This is a **hard rule, not a nicety**. An automated run that captures the
+## mouse yanks the cursor out of whatever the developer was doing on the other
+## monitor, and because it happens on a spawn — several seconds into a run that
+## was supposed to be invisible — it is very hard to attribute. It has bitten
+## this project once already.
+##
+## Three layers, deliberately redundant:
+##   1. every `MOUSE_MODE_CAPTURED` call site asks `may_capture_mouse()` first
+##      (Player._capture_mouse, Hud._set_paused)
+##   2. the window is opened un-focusable
+##   3. `_enforce_mouse()` below re-asserts VISIBLE every frame regardless, so a
+##      capture from a path nobody thought of survives for at most one frame
+##
+## Belt, braces, and a second pair of braces. The correct runtime cost of this is
+## "one enum comparison per frame during automated runs only", which is nothing.
 func _stay_out_of_the_way() -> void:
 	if DisplayServer.get_name() == "headless":
 		return
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_NO_FOCUS, true)
+	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
+## The single question every `MOUSE_MODE_CAPTURED` call site in the codebase has
+## to ask. Kept here rather than duplicated as `if Debug.automated` at each site
+## so that "what counts as automated" can never drift between them.
+func may_capture_mouse() -> bool:
+	return not automated and DisplayServer.get_name() != "headless"
+
+
+## Layer 3 of the guard above: whatever anybody does, an automated run holds the
+## pointer for at most one frame. Runs unconditionally while `automated`.
+func _enforce_mouse() -> void:
+	if not automated or DisplayServer.get_name() == "headless":
+		return
+	if Input.get_mouse_mode() != Input.MOUSE_MODE_VISIBLE:
+		push_warning("[Debug] something captured the mouse during an automated "
+				+ "run; releasing it")
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 
 
 func _parse_args(args: PackedStringArray) -> void:
@@ -248,6 +317,11 @@ func _parse_args(args: PackedStringArray) -> void:
 				log_cycles = true
 			"--log-ai":
 				log_ai = true
+			"--log-fps":
+				_fps_window = 5.0
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_fps_window = maxf(args[i].to_float(), 1.0)
 			"--no-antivirus":
 				no_antivirus = true
 			"--aim":
@@ -296,6 +370,11 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size():
 					i += 1
 					_decompile_at = args[i].to_float()
+			"--pitch":
+				if i + 1 < args.size():
+					i += 1
+					pitch_override = args[i].to_float()
+					_has_pitch = true
 			"--sprint":
 				hold_sprint = true
 				hold_forward = true
@@ -327,6 +406,8 @@ func _boot() -> void:
 	for _i in BOOT_DELAY_FRAMES:
 		await get_tree().process_frame
 
+	if _fps_window > 0.0:
+		_uncap_frame_rate()
 	if not screenshot_path.is_empty():
 		_arm_screenshot()
 	if auto_quit_after > 0.0:
@@ -437,7 +518,9 @@ func _on_automation_player_ready(_player: Node) -> void:
 		_flare_later(_flare_delay)
 	if _grab_count > 0:
 		_grab_shards(_grab_count)
-	if _exfil_delay >= 0.0:
+	# With `--autodescend` the exfil is deferred until a backdoor layer is
+	# reached; see `_on_automation_layer`.
+	if _exfil_delay >= 0.0 and not _auto_descend:
 		_run_exfil(_exfil_delay)
 
 
@@ -469,6 +552,17 @@ func _flare_later(seconds: float) -> void:
 func _on_automation_layer(number: int) -> void:
 	if not _auto_descend:
 		return
+	# The full loop, in one run: ride the shaft down to the first backdoor layer
+	# and then play the endgame out through the real channels. Without this,
+	# `--autodescend --exfil` would fire the exfil script on layer 1, where there
+	# is no node to root, and the soak would never reach the thing it exists to
+	# prove.
+	if _exfil_delay >= 0.0 and bool(LayerParams.of(number)["has_backdoor"]):
+		print("[Debug] autodescend: layer %d has a backdoor, running the exfil" % number)
+		_auto_descend = false
+		hold_interact = false
+		_run_exfil(1.2)
+		return
 	print("[Debug] autodescend: now on layer %d, re-arming" % number)
 	hold_interact = false
 	_run_automation()
@@ -490,6 +584,11 @@ func _run_automation() -> void:
 ## exactly what a client is allowed to do to itself under M1's client-authority
 ## movement. Each peer offsets sideways by its roster index so a mustered crew
 ## does not stack inside one capsule.
+## Applies `--pitch` if it was given, otherwise the target's own choice.
+func _pitch_for(default_pitch: float) -> float:
+	return pitch_override if _has_pitch else default_pitch
+
+
 func _teleport_local(where: String) -> void:
 	var layer: Node = get_tree().get_first_node_in_group("layer")
 	var player: Node = Net.get_player(Net.local_id())
@@ -507,7 +606,7 @@ func _teleport_local(where: String) -> void:
 		# Stood off the console, facing it (-Z). Only index 0 lines up with the
 		# console probe; the rest just need to be inside the muster radius.
 		var side: float = 0.0 if index == 0 else (1.9 if index % 2 == 1 else -1.9)
-		avatar.teleport_to(shaft + Vector3(side, 0.35, 5.4), 0.0)
+		avatar.teleport_to(shaft + Vector3(side, 0.35, 5.4), 0.0, _pitch_for(0.0))
 		print("[Debug] teleported to drop shaft %s" % str(shaft))
 	elif where == "node" or where == "uplink" or where == "vault" or where == "nest":
 		var target: Vector3 = Vector3(layer.get(
@@ -521,30 +620,59 @@ func _teleport_local(where: String) -> void:
 		if where == "nest":
 			# Stand in the middle of it, looking down: that is where the pack is,
 			# and a Scrubber is well below the horizon.
-			avatar.teleport_to(target + Vector3(lateral, 0.35, 0.0), 0.0, -0.42)
+			avatar.teleport_to(target + Vector3(lateral, 0.35, 0.0), 0.0, _pitch_for(-0.42))
 			print("[Debug] teleported to nest %s" % str(target))
 			return
 		if where == "uplink":
 			# Inside the pad looking outward at the console on its rim: standing
 			# behind the console would be standing off the pad when it fires.
-			avatar.teleport_to(target + Vector3(lateral, 0.35, 0.9), PI)
+			avatar.teleport_to(target + Vector3(lateral, 0.35, 0.9), PI, _pitch_for(0.0))
 			print("[Debug] teleported to uplink %s" % str(target))
 			return
 		# The node is channelled from its +Z face, same convention as the shaft.
-		avatar.teleport_to(target + Vector3(lateral, 0.35, 3.4), 0.0)
+		avatar.teleport_to(target + Vector3(lateral, 0.35, 3.4), 0.0, _pitch_for(0.0))
 		print("[Debug] teleported to %s %s" % [where, str(target)])
+	elif where == "decal":
+		# Art-direction probe: stand off a wall sign and look at it. Signage that
+		# cannot be read at three metres is not signage, and there is no other way
+		# to check that from a level-wide screenshot.
+		var sign: Decal = _pick_decal(layer)
+		if sign == null:
+			push_warning("[Debug] no decals on this layer")
+			return
+		# A decal projects along its own -Y; the wall it is printed on is that
+		# way, so the reader stands the other way.
+		var out: Vector3 = sign.global_transform.basis.y.normalized()
+		var stand: Vector3 = sign.global_position + out * 4.2
+		avatar.teleport_to(Vector3(stand.x, 0.35, stand.z),
+				atan2(-(-out).x, -(-out).z),
+				atan2(sign.global_position.y - 1.62, 4.2))
+		print("[Debug] reading decal '%s' at %s out=%s stand=%s yaw=%.2f" % [
+			String(sign.name), str(sign.global_position.snapped(Vector3.ONE * 0.1)),
+			str(out.snapped(Vector3.ONE * 0.01)), str(stand.snapped(Vector3.ONE * 0.1)),
+			atan2(-(-out).x, -(-out).z)])
+	elif where == "corridor":
+		var run: Vector3 = Vector3(layer.get("corridor_position"))
+		if run.is_equal_approx(Vector3.ZERO):
+			push_warning("[Debug] no corridor on this layer")
+			return
+		avatar.teleport_to(run + Vector3(0.0, 0.35, 0.0), float(layer.get("corridor_yaw")),
+				_pitch_for(0.0))
+		print("[Debug] teleported to corridor %s" % str(run))
 	elif where == "crew":
 		var casualty: Node3D = _nearest_corrupted(avatar)
 		if casualty == null:
 			push_warning("[Debug] no corrupted crewmate to walk to")
 			return
-		# Stood just off them on whichever side is actually open, looking down: a
-		# corrupted crewmate is on the floor, and they often went down against a
-		# wall.
+		# Stood just off them on whichever side is actually open, looking at them.
+		# A corrupted crewmate is on the floor and often went down against a wall,
+		# so the approach is probed rather than assumed; a standing one wants a
+		# level look instead of a downward one.
 		var approach: Vector3 = _clear_side(casualty)
+		var down: bool = Run.is_corrupted(int(String(casualty.name)))
 		avatar.teleport_to(casualty.global_position + approach + Vector3.UP * 0.35,
-				atan2(approach.x, approach.z), -0.4)
-		print("[Debug] teleported to corrupted crewmate %s at %s (approach %s)" % [
+				atan2(approach.x, approach.z), _pitch_for(-0.4 if down else -0.06))
+		print("[Debug] teleported to crewmate %s at %s (approach %s)" % [
 			String(casualty.name), str(casualty.global_position.snapped(Vector3.ONE * 0.1)),
 			str(approach.snapped(Vector3.ONE * 0.1))])
 	elif where == "siphon":
@@ -558,10 +686,28 @@ func _teleport_local(where: String) -> void:
 		var stand: Vector3 = approaches[pick] if pick < approaches.size() \
 				else tap + Vector3(0.0, 0.0, 2.6)
 		var look: Vector3 = tap - stand
-		avatar.teleport_to(stand + Vector3.UP * 0.35, atan2(-look.x, -look.z))
+		avatar.teleport_to(stand + Vector3.UP * 0.35, atan2(-look.x, -look.z),
+				_pitch_for(0.0))
 		print("[Debug] teleported to siphon tap %d %s" % [pick, str(tap)])
 	else:
 		push_warning("[Debug] unknown --goto target '%s'" % where)
+
+
+## A decal to photograph: the one nearest the crew's spawn, so the probe lands
+## somewhere the layer actually lit rather than in a nest.
+func _pick_decal(layer: Node) -> Decal:
+	var best: Decal = null
+	var best_distance: float = INF
+	var origin: Vector3 = Vector3(layer.get_spawn_point(0).origin)
+	for node: Node in layer.find_children("*", "Decal", true, false):
+		var sign: Decal = node as Decal
+		if sign == null:
+			continue
+		var distance: float = sign.global_position.distance_to(origin)
+		if distance < best_distance:
+			best_distance = distance
+			best = sign
+	return best
 
 
 ## Walks the avatar onto shard after shard until its buffer holds `count`. The
@@ -665,12 +811,28 @@ func _clear_side(body: Node3D) -> Vector3:
 	return best
 
 
-## Nearest crewmate who is currently down, for `--goto crew`: the automated
-## half of a restore, with the channel itself left to `--hold-interact`.
+## Nearest crewmate for `--goto crew`.
+##
+## Prefers a corrupted one — that is the automated half of a restore, with the
+## channel itself left to `--hold-interact`. Falls back to any living crewmate,
+## which is how a two-instance capture gets a crewmate in frame at all: without
+## the fallback the only way to photograph another player was to hurt them
+## first.
 func _nearest_corrupted(from: Node3D) -> Node3D:
+	var downed: Node3D = _nearest_of(from, Run.corrupted_crew())
+	if downed != null:
+		return downed
+	var living: Array[int] = []
+	for id: int in Net.crew.keys():
+		if int(id) != Net.local_id() and Run.is_running(int(id)):
+			living.append(int(id))
+	return _nearest_of(from, living)
+
+
+func _nearest_of(from: Node3D, peers: Array) -> Node3D:
 	var best: Node3D = null
 	var best_distance: float = INF
-	for peer: int in Run.corrupted_crew():
+	for peer: int in peers:
 		if peer == Net.local_id():
 			continue
 		var node: Node = Net.get_player(peer)
@@ -682,6 +844,62 @@ func _nearest_corrupted(from: Node3D) -> Node3D:
 			best_distance = distance
 			best = body
 	return best
+
+
+# ------------------------------------------------------------------ fps log --
+
+## Takes the brakes off so the census measures the renderer rather than the
+## monitor. Only ever called by `--log-fps`, so a played session keeps its vsync.
+func _uncap_frame_rate() -> void:
+	Engine.max_fps = 0
+	if DisplayServer.get_name() == "headless":
+		return
+	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	print("[FPS] vsync disabled for the census")
+
+
+
+## Per-window frame-rate census.
+##
+## The average alone is nearly useless for judging a game like this: a layer can
+## sit at 300 fps and still be unplayable if it drops a frame every time a
+## Sentinel's shadow atlas re-renders. The 1% low is the number that decides
+## whether the merge shipped, and the worst frame is what to go and look at.
+func _sample_fps(delta: float) -> void:
+	if _fps_window <= 0.0:
+		return
+	# The first seconds of a run are shader compilation and the layer build. They
+	# are real costs and they are worth knowing about, but they are not what
+	# "does a two-client layer hold 60" is asking, and leaving them in drags every
+	# 1% low to 1 fps and makes the number useless.
+	_fps_warmup += delta
+	if _fps_warmup < FPS_WARMUP:
+		return
+	_fps_samples.append(float(Engine.get_frames_per_second()))
+	_fps_clock += delta
+	if _fps_clock < _fps_window:
+		return
+	_fps_clock = 0.0
+
+	var sorted: Array[float] = []
+	for value: float in _fps_samples:
+		if value > 0.0:
+			sorted.append(value)
+	_fps_samples.clear()
+	if sorted.is_empty():
+		return
+	sorted.sort()
+
+	var total: float = 0.0
+	for value: float in sorted:
+		total += value
+	var low_index: int = maxi(int(float(sorted.size()) * 0.01), 0)
+	print("[FPS] avg=%.0f  1%%low=%.0f  min=%.0f  frames=%d  draws=%d  prims=%dk" % [
+		total / float(sorted.size()), sorted[low_index], sorted[0], sorted.size(),
+		RenderingServer.get_rendering_info(
+				RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
+		RenderingServer.get_rendering_info(
+				RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME) / 1000])
 
 
 # ---------------------------------------------------------------- screenshot --
@@ -720,7 +938,9 @@ func _on_connect_failed(reason: String) -> void:
 	_shot_armed = true
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_enforce_mouse()
+	_sample_fps(delta)
 	if not _shot_armed or _shot_taken:
 		return
 	_frames_left -= 1

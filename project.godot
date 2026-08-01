@@ -109,10 +109,14 @@ flare={
 
 renderer/rendering_method="forward_plus"
 textures/default_filters/anisotropic_filtering_level=3
-anti_aliasing/quality/msaa_3d=2
-anti_aliasing/quality/screen_space_aa=1
+;; M3.7: TAA instead of MSAA+FXAA. Every expensive buffer in the look-dev stack
+;; (SSR, SSIL, volumetric fog) is temporally accumulated and MSAA helps none of
+;; them; leaving MSAA on instead produced visible noise in the reflections.
+anti_aliasing/quality/msaa_3d=0
+anti_aliasing/quality/screen_space_aa=0
+anti_aliasing/quality/use_taa=true
 lights_and_shadows/positional_shadow/atlas_size=4096
 lights_and_shadows/positional_shadow/soft_shadow_filter_quality=3
-environment/volumetric_fog/volume_size=96
+environment/volumetric_fog/volume_size=128
 environment/volumetric_fog/volume_depth=192
 environment/volumetric_fog/use_filter=1

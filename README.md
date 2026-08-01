@@ -9,7 +9,7 @@ You are an invading program. The dungeon is a rogue AI. Its antivirus is hunting
 [![Language](https://img.shields.io/badge/GDScript-static%20typed-355570)](#architecture)
 [![Multiplayer](https://img.shields.io/badge/multiplayer-Steam%20%C2%B7%20ENet%20%C2%B7%201–4%20players-1de9b6)](#multiplayer)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows-2e4f63)](#getting-started)
-[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M3.5%20complete-ff2d78)](#roadmap)
+[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M3.7%20complete-ff2d78)](#roadmap)
 
 [The Pitch](#the-pitch) · [Features](#features) · [The Loop](#the-loop) ·
 [Progression](#progression) · [Bestiary](#bestiary) · [Getting Started](#getting-started) ·
@@ -101,11 +101,17 @@ member to have installed it. No account, no server, your character is yours.
 | **Sentinel** | Quarantine process | Slow, heavy, armored — but killable: its core drops shielding exactly when it attacks. Guards data vaults, announces itself with a red scan sweep, and pays out a shard burst if your crew wins the argument. |
 | *…deeper processes* | `[REDACTED]` | The bottom rings run code MOTHER wrote for herself. Nobody has exfiltrated footage. |
 
+Every one of them dies to the breaker. That is a design invariant, not a
+balance number: nothing in MOTHER is immune, because terror has to read as
+*"shooting is one of several competing options"* and never as *"your gun is
+useless."* What you cannot delete is the **process** — she recompiles it.
+
 ## Getting Started
 
-> ⚠️ **Pre-alpha.** A full intrusion is playable and Steamworks is wired
-> (M3.5); the art overhaul is next. No packaged releases yet — for now you run
-> from source.
+> ⚠️ **Pre-alpha.** A full intrusion is playable, Steamworks is wired (M3.5),
+> and the art overhaul has landed (M3.7) — authored creatures, a modular
+> architecture kit, the four-layer lighting rig and first-person embodiment.
+> No packaged releases yet — for now you run from source.
 
 **Requirements:** [Godot 4.7+](https://godotengine.org/download) · Linux or Windows
 
@@ -230,41 +236,53 @@ fiction-earns-the-mechanics reasoning, art direction language.
 - [x] **M2 — The dark** · procgen layers + drop shafts, layer-scaled generation, Cycles + siphon taps, HUD
 - [x] **M3 — The system bites** · Scrubbers + Sentinels, combat, corrupted/restore, data shards, backdoor nodes, exfiltration — *a full intrusion, playable*
 - [x] **M3.5 — Steamworks** · GodotSteam GDExtension, SteamMultiplayerPeer beside ENet, friends-only lobbies + overlay invites + join-in-progress, rich presence, local-first achievements (dev app 480)
-- [ ] **M3.7 — Embodiment & Overhaul** *(art in production)* · creature models, beveled architecture kit, wet-floor SSR, the Expensive pass
+- [x] **M3.7 — Embodiment & Overhaul** · authored Scrubber + Sentinel, beveled modular architecture kit on a 4 m lattice, four-layer light rig with gobo projectors, SSR/SSIL WorldEnvironment, post v2, the Surge breaker in your hands, crew avatars, and MOTHER's signage on the walls
 - [ ] **M4 — The long game** · Compilers, permanent modules, per-player saves, backdoor injection lobby, economy balancing
 - [ ] **M5 — Expensive** · glitch post stack, positional audio, kill cams, low-Cycles presentation, menu polish, Linux + Windows exports
 
 ## Screenshots
 
-> Live captures from the build — two networked instances, real lighting.
+> Live captures from the build — two networked instances, real lighting, no
+> post-production. Everything below is the M3.7 art pass: authored creature
+> models, a beveled modular architecture kit on a 4 m lattice, a four-layer
+> light rig firing through gobo projectors, screen-space reflections on wet
+> deck plating, and MOTHER's own signage on the walls.
 
-*A Scrubber stalking through layer 6 — its scan cone is the only warning:*
-
-![Scrubber](.github/assets/screenshots/scrubber.png)
-
-*The Sentinel, alerted — its exposed core is the weak point, if you dare the purge arc:*
+*The Sentinel, alerted — the whole vault goes hostile with it, and that core on its chest is the only thing on it worth shooting:*
 
 ![Sentinel](.github/assets/screenshots/sentinel.png)
 
-*Exfiltration called — 17 seconds to be standing on that pad:*
+*A Scrubber in its nest, caught in a beam — the only warning you get is its sensor:*
 
-![Exfiltration](.github/assets/screenshots/exfil.png)
+![Scrubber](.github/assets/screenshots/scrubber.png)
 
-*A crewmate's avatar, circuit seams in their shell color, decryption beam cutting the haze — 23 ms link:*
+*Layer architecture: chamfered panel modules, hanging duct runs, a hero doorframe at the end of the dark, and the floor mirroring all of it:*
+
+![Corridor architecture](.github/assets/screenshots/layer.png)
+
+*MOTHER talks to her own processes. Deeper layers have been losing glyphs for a long time:*
+
+![Signage](.github/assets/screenshots/signage.png)
+
+*A crewmate over your body, mid-restore — bright shell, blue seams, the same silhouette as the thing that put you down:*
 
 ![Crewmate in the dark](.github/assets/screenshots/crew.png)
 
-*Layer architecture: monolith brutalism, hairline traces, a red scan sweep passing through:*
-
-![Scan sweep](.github/assets/screenshots/layer.png)
-
-*A siphon tap in a procedurally generated layer — hold the channel, refill the crew's shared pool:*
+*A siphon tap in a procedurally generated layer — hold the channel, refill the crew's shared pool, and tell the whole ring where you are:*
 
 ![Siphon tap](.github/assets/screenshots/siphon.png)
+
+*The backdoor node: warm, symmetrical, colonnaded, and the only room on the layer antivirus will not enter:*
+
+![Exfiltration](.github/assets/screenshots/exfil.png)
 
 *Cycles depleted — the world starts decompiling you:*
 
 ![Cycles depleted](.github/assets/screenshots/depleted.png)
+
+*The data vault: ribbed storage racks with something still running behind the shelf slits, quarantine marked on the deck, salvage chips lying where they fell:*
+
+![Data vault](.github/assets/screenshots/vault.png)
 
 *Injection console:*
 

@@ -38,12 +38,27 @@ var uplink_position: Vector3 = Vector3.ZERO
 ## nest, for `--goto nest` — the two rooms M3's verification runs care about.
 var vault_position: Vector3 = Vector3.ZERO
 var nest_position: Vector3 = Vector3.ZERO
+## One end of the layer's longest corridor, and the yaw that looks down it.
+## M3.7 added this because a corridor is the shot that judges the architecture
+## kit — it is the only place the player sees a wall from three metres, and it is
+## what the README screenshot has to be.
+var corridor_position: Vector3 = Vector3.ZERO
+var corridor_yaw: float = 0.0
 
 var _builder: GeometryKit = null
 var _authored: bool = false
 var _fade: float = 0.0
 var _fade_target: float = 0.0
 var _fade_rate: float = 1.0
+
+## Red-alert, 0..1. One number turns the whole layer hostile: the kit's surface
+## materials tint and their emissive flow reverses, the LightRig recolours, and
+## the post grade pushes red. DESIGN.md reserves red for hostile processes, so
+## this is the only thing in the game allowed to look like this.
+var _alert: float = 0.0
+## Damage kick for the post shader's `stress` uniform. M2 shipped the uniform and
+## never drove it; M3.7 hooks it to the same signal the screen shake uses.
+var _stress: float = 0.0
 
 
 func _ready() -> void:
@@ -58,6 +73,7 @@ func _ready() -> void:
 
 	Run.config_changed.connect(_on_config_changed)
 	Run.descent_started.connect(_on_descent_started)
+	Run.damaged.connect(_on_damaged)
 
 	if not Net.is_online:
 		# Running the scene straight from the editor: nobody is going to tell us
@@ -106,6 +122,7 @@ func _rebuild() -> void:
 		vault_position = graph.centre_of(graph.vault_index)
 		nest_position = graph.centre_of(
 				graph.nest_rooms[0] if not graph.nest_rooms.is_empty() else -1)
+		_find_hero_corridor(graph)
 
 	add_child(_builder)  # GeometryKit._ready() runs build() synchronously.
 	_apply_environment()
@@ -117,11 +134,46 @@ func _rebuild() -> void:
 	_director.begin(null if built == null else built.graph, Run.layer_number)
 
 	# Node count is the cheap canary for the descent leaking geometry: it must
-	# come back to roughly the same number on every layer, not climb.
-	print("[Layer] built %s  nodes=%d" % [
+	# come back to roughly the same number on every layer, not climb. Since M3.7
+	# the light census sits beside it: the look-dev rig spends four fixtures where
+	# M2 spent one, and "how many of those cast shadows" is the number that
+	# decides whether a four-player layer holds 60 fps.
+	var lights: int = 0
+	var shadowed: int = 0
+	if _builder != null and is_instance_valid(_builder):
+		for node: Node in _builder.find_children("*", "Light3D", true, false):
+			lights += 1
+			if (node as Light3D).shadow_enabled:
+				shadowed += 1
+	var decals: int = 0
+	if _builder != null and is_instance_valid(_builder):
+		decals = _builder.find_children("*", "Decal", true, false).size()
+	print("[Layer] built %s  nodes=%d lights=%d shadowed=%d decals=%d" % [
 		"layer %d: hand-authored test layer" % Run.layer_number if Run.use_test_layer
 				else LayerParams.describe(Run.layer_number),
-		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))])
+		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)), lights, shadowed,
+		decals])
+
+
+## The longest corridor on the layer, entered from one end looking down it.
+func _find_hero_corridor(graph: LayerGraph) -> void:
+	corridor_position = Vector3.ZERO
+	corridor_yaw = 0.0
+	var best: float = -1.0
+	for corridor: Dictionary in graph.corridors:
+		var rect: Rect2 = GeometryKit.kit_corridor_rect(corridor)
+		var length: float = maxf(rect.size.x, rect.size.y)
+		if length <= best:
+			continue
+		best = length
+		var mid: Vector2 = rect.position + rect.size * 0.5
+		if String(corridor["axis"]) == "z":
+			# Stood just inside the north end, facing south (+Z).
+			corridor_position = Vector3(mid.x, 0.0, rect.position.y + 1.6)
+			corridor_yaw = PI
+		else:
+			corridor_position = Vector3(rect.position.x + 1.6, 0.0, mid.y)
+			corridor_yaw = -PI * 0.5
 
 
 ## Frees flares and dropped bundles. Immediate rather than deferred, for the
@@ -203,13 +255,67 @@ func _place_local_player() -> void:
 
 # --------------------------------------------------------------------- post --
 
+func _on_damaged(_from: Vector3) -> void:
+	_stress = minf(_stress + 0.55, 1.0)
+
+
+## How hostile the layer currently is. Read off replicated Sentinel state rather
+## than pushed by an RPC: `sync_state` is already on the wire because the sweep
+## has to be in the same place on every screen, so a purging Sentinel turns the
+## architecture red on all four clients for free.
+##
+## Scoped to the Sentinels that can actually see you — a purge two rooms away is
+## the layer's problem, not yours — so the alert reads as *this room is hunting*
+## rather than as a global difficulty light.
+func _alert_amount() -> float:
+	var viewer: Node = Net.get_player(Net.local_id())
+	var here: Node3D = viewer as Node3D
+	var worst: float = 0.0
+	for node: Node in get_tree().get_nodes_in_group(Antivirus.GROUP):
+		var boss: Sentinel = node as Sentinel
+		if boss == null or not is_instance_valid(boss):
+			continue
+		var level: float = 0.0
+		match int(boss.sync_state):
+			int(Sentinel.State.SCAN):
+				level = 0.35
+			int(Sentinel.State.PURGE):
+				level = 1.0
+		if level <= 0.0:
+			continue
+		if here != null and is_instance_valid(here):
+			# Falls off over the Sentinel's own leash: inside its vault the room
+			# is red, a corridor away it is a rumour.
+			var reach: float = Balance.SENTINEL_LEASH + 12.0
+			level *= clampf(1.0 - here.global_position.distance_to(
+					boss.global_position) / reach, 0.0, 1.0)
+		worst = maxf(worst, level)
+	return worst
+
+
 func _process(delta: float) -> void:
+	# The alert ramps rather than snapping. A hard cut to red reads as a bug; a
+	# 0.6 s ramp reads as the room deciding something about you.
+	_alert = move_toward(_alert, _alert_amount(), delta * 1.6)
+	_stress = maxf(_stress - delta * 1.1, 0.0)
+	KitLib.set_alert(_alert)
+	if _builder != null and is_instance_valid(_builder):
+		LightRig.set_alert(_builder, _alert)
+
 	var material: ShaderMaterial = _grade.material as ShaderMaterial
 	if material == null:
 		return
 	_fade = move_toward(_fade, _fade_target, _fade_rate * delta)
+	var degradation: float = Run.degradation()
 	material.set_shader_parameter("fade", _fade)
-	material.set_shader_parameter("degradation", Run.degradation())
+	material.set_shader_parameter("degradation", degradation)
+	material.set_shader_parameter("stress", _stress)
+	material.set_shader_parameter("alert", _alert)
+	# The v2 master. Grain, aberration, vignette and corner desaturation all ride
+	# it, so a starving or bleeding process does not just get a glitch overlay —
+	# the whole grade leans on it. Capped well under the shader's 2.0 ceiling:
+	# past ~1.6 the image stops being a game and starts being an effect.
+	material.set_shader_parameter("intensity", 1.0 + degradation * 0.5 + _stress * 0.15)
 
 
 # ------------------------------------------------------------------- lookup --
