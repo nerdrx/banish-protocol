@@ -80,6 +80,39 @@ extends Node
 ##                       "avg=60 1%low=60", which measures the display and not
 ##                       the game.
 ##
+## M3.8 flags:
+##   --hud-state NAME [PHASE]
+##       Force the HUD into a state a capture could not otherwise reach, and
+##       *freeze* it there. Every animation in the interface runs off
+##       `UiFx.clock()`, which counts frames rather than wall time during an
+##       automated run — so with one of these the same shutter frame produces
+##       the same picture on any machine, which is what makes the M3.8 states
+##       diffable across iterations.
+##
+##         boot      play the shell's compile-in sequence (automation normally
+##                   skips it) and hold it at PHASE, 0..1 of the way through.
+##                   Defaults to 0.35 — the frame where half the readouts are
+##                   up, the ring is visibly still spinning, and the self-test
+##                   line is still typing.
+##         full      inject with a full pool. The settled, healthy HUD.
+##         warn      inject at 45% — the amber band.
+##         low       inject at 10% — red, beating, and visibly decaying.
+##         damage    pin the damage flinch and its edge arc on, permanently.
+##         debrief   let the debrief type itself in rather than snapping to the
+##                   finished panel, and pop a synthetic one a few seconds in so
+##                   the screen can be photographed without playing a whole run.
+##                   The payload is flagged `synthetic`, so Achievements ignores
+##                   it and no save file is touched — the screen is real, the run
+##                   behind it is not.
+##         decompile hold the menu's dive transition open at its midpoint — the
+##                   0.8 s glitch dissolve that takes the screen apart on the way
+##                   into a layer.
+##
+##       `full`/`warn`/`low` are shorthand for `--cycles N`: they set the real
+##       pool the host starts with, so the colour, the heartbeat, the shader
+##       degradation and the interface decay are all the genuine article rather
+##       than a HUD-local lie.
+##
 ## M3.5 (Steam) flags:
 ##   --no-steam          never touch the Steam API, even with the client running.
 ##                       The ENet-only regression path on a Steam machine.
@@ -122,6 +155,15 @@ var use_test_layer: bool = false
 ## Negative means "start full".
 var start_cycles: float = -1.0
 var log_cycles: bool = false
+
+# --- M3.8 HUD capture states (read by Hud, DamageArc and MainMenu) -----------
+## `--hud-state`. Empty means "behave normally". See the header for the values.
+var hud_state: String = ""
+## Where in the boot sequence `--hud-state boot` freezes, 0..1. A third of the
+## way through is the frame worth photographing: the ring is visibly still
+## spinning up, half the readouts have not resolved, and the self-test line is
+## mid-type. Later than this and it just looks like the finished HUD.
+var hud_boot_phase: float = 0.35
 
 # --- M3 world/AI selection ---------------------------------------------------
 ## Generate the layer with no antivirus in it, for isolating everything else.
@@ -315,6 +357,14 @@ func _parse_args(args: PackedStringArray) -> void:
 					start_cycles = args[i].to_float()
 			"--log-cycles":
 				log_cycles = true
+			"--hud-state":
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					hud_state = args[i]
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					hud_boot_phase = clampf(args[i].to_float(), 0.0, 1.0)
+				_apply_hud_state()
 			"--log-ai":
 				log_ai = true
 			"--log-fps":
@@ -400,6 +450,53 @@ func _parse_args(args: PackedStringArray) -> void:
 		i += 1
 
 
+## `--hud-state`. The pool presets deliberately drive `--cycles` rather than
+## poking the HUD: a capture of "the interface at 10%" has to be a capture of the
+## game genuinely at 10%, or it is documenting something that cannot happen.
+func _apply_hud_state() -> void:
+	match hud_state:
+		"full":
+			start_cycles = -1.0
+		"warn":
+			start_cycles = 45.0
+		"low":
+			start_cycles = 10.0
+		"boot", "damage", "debrief", "decompile":
+			pass
+		_:
+			push_warning("[Debug] unknown --hud-state '%s'" % hud_state)
+			hud_state = ""
+
+
+## Pops the debrief without playing a run, so the summary screen can be
+## photographed on its own. Emits `Run.run_ended` locally with a plausible
+## payload — the HUD is a pure observer, so this exercises the real screen; it
+## touches no authoritative state and never goes near the wire.
+func _fake_debrief() -> void:
+	await get_tree().create_timer(2.5).timeout
+	print("[Debug] --hud-state debrief: emitting a synthetic run summary")
+	var banked: Dictionary = {}
+	var escaped: Array = []
+	for id: int in Net.crew.keys():
+		banked[int(id)] = 148 if int(id) == Net.local_id() else 96
+		escaped.append(int(id))
+	Run.run_ended.emit({
+		# Marks the payload as fabricated. Achievements refuses to score it; the
+		# HUD does not care, because the HUD's job is to display what it is given.
+		"synthetic": true,
+		"reason": "EXFILTRATED",
+		"success": true,
+		"banked": banked,
+		"escaped": escaped,
+		"crew": Net.crew.size(),
+		"deleted": 0,
+		"layers": 7,
+		"start_layer": 1,
+		"siphons": 11,
+		"seconds": 512.0,
+	})
+
+
 func _boot() -> void:
 	# Autoloads are ready before the main scene is swapped in; give the tree a
 	# couple of frames so our change_scene_to_file() is not overwritten.
@@ -416,6 +513,9 @@ func _boot() -> void:
 			or _fire_delay >= 0.0 or _flare_delay >= 0.0 or _exfil_delay >= 0.0 \
 			or _grab_count > 0:
 		_arm_automation()
+	if hud_state == "debrief":
+		Net.local_player_spawned.connect(
+				func(_p: Node) -> void: _fake_debrief(), CONNECT_ONE_SHOT)
 
 	match _mode:
 		"server":

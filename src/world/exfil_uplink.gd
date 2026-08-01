@@ -137,6 +137,23 @@ func prompt() -> String:
 	return "HOLD E  ·  CALL EXFILTRATION"
 
 
+func prompt_title() -> String:
+	if Run.exfil_calling:
+		return "EXFIL  %02d  ·  ON THE PAD" % int(ceilf(Run.exfil_remaining))
+	if not Run.backdoor_rooted:
+		return "UPLINK LOCKED"
+	return "EXFIL UPLINK"
+
+
+func prompt_glyph() -> String:
+	return "▲"
+
+
+## Over the console on the pad's rim, matching the probe.
+func prompt_anchor() -> Vector3:
+	return Vector3(0.0, 1.9, Balance.EXFIL_PAD_RADIUS - 0.4)
+
+
 func available() -> bool:
 	return Run.backdoor_rooted and not Run.exfil_calling
 

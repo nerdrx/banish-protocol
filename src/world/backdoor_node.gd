@@ -100,6 +100,18 @@ func prompt() -> String:
 	return "HOLD E  ·  ROOT MAINTENANCE NODE"
 
 
+func prompt_title() -> String:
+	return "BACKDOOR INSTALLED" if Run.backdoor_rooted else "MAINTENANCE NODE"
+
+
+func prompt_glyph() -> String:
+	return "●"
+
+
+func prompt_height() -> float:
+	return 3.4
+
+
 func available() -> bool:
 	return not Run.backdoor_rooted
 

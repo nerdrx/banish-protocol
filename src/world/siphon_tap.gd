@@ -119,6 +119,19 @@ func prompt() -> String:
 	return "HOLD E  ·  SIPHON TAP"
 
 
+func prompt_title() -> String:
+	return "TAP DRAINED" if spent else "SIPHON TAP"
+
+
+func prompt_glyph() -> String:
+	return "◆"
+
+
+## Clear of the cowl, which tops out at 2.43.
+func prompt_height() -> float:
+	return 3.0
+
+
 func available() -> bool:
 	return not spent
 

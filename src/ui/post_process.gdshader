@@ -54,6 +54,12 @@ uniform float degradation : hint_range(0.0, 1.0) = 0.0;
 uniform float fade : hint_range(0.0, 1.0) = 0.0;
 // Red-alert / purge: pushes the grade hot without touching any material.
 uniform float alert : hint_range(0.0, 1.0) = 0.0;
+// M3.8 damage flinch. Distinct from `stress`, which is a ~1 s settle: this is a
+// hard 0.2 s hit — a few chunky block slips and a real RGB split, the frame
+// equivalent of the HUD's own flinch. Kept separate so the two can be tuned
+// independently, and so a long stressful stretch never accumulates into
+// something that looks like a broken renderer.
+uniform float glitch : hint_range(0.0, 1.0) = 0.0;
 
 float hash13(vec3 p) {
 	p = fract(p * vec3(443.897, 441.423, 437.195));
@@ -87,6 +93,18 @@ void fragment() {
 		uv.x = clamp(uv.x, 0.0, 1.0);
 	}
 
+	// --- damage flinch: a few chunky blocks slip sideways -------------------
+	// Deliberately coarse (8 bands, not 40) and deliberately brief. Damage
+	// should read as the frame being *struck*, which is a different gesture
+	// from the fine-grained rot of a starving process above.
+	if (glitch > 0.001) {
+		float slab = floor(uv.y * 8.0);
+		float roll = hash11(slab * 12.9 + floor(TIME * 30.0));
+		if (roll > 1.0 - glitch * 0.7) {
+			uv.x = clamp(uv.x + (roll - 0.5) * 0.06 * glitch, 0.0, 1.0);
+		}
+	}
+
 	vec2 centered = uv - vec2(0.5);
 	float dist = length(centered);
 
@@ -108,6 +126,9 @@ void fragment() {
 	// inlays and nowhere else, so the frame stays clean.
 	float ab = aberration * intensity * (1.0 + stress * 3.0 + fail * 14.0 + alert * 1.5);
 	ab *= (0.35 + local_edge * aberration_edge);
+	// The flinch's split is not edge-weighted: a hit fringes the whole frame,
+	// which is exactly what makes it read as an impact rather than as a lens.
+	ab += aberration * glitch * 22.0;
 	vec2 offset = centered * ab * (0.25 + dist * dist * 2.4);
 
 	vec3 color;

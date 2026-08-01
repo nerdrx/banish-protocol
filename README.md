@@ -247,6 +247,12 @@ fiction-earns-the-mechanics reasoning, art direction language.
 > models, a beveled modular architecture kit on a 4 m lattice, a four-layer
 > light rig firing through gobo projectors, screen-space reflections on wet
 > deck plating, and MOTHER's own signage on the walls.
+>
+> The interface is the M3.8 pass: the shell compiles itself in when you are
+> injected, hangs a few pixels behind your lens, flinches and corrupts your own
+> callsign when you are hit, and starts shedding pixels as the shared pool runs
+> down. Interaction prompts live **on the machine**, not across the middle of
+> your screen.
 
 *The Sentinel, alerted — the whole vault goes hostile with it, and that core on its chest is the only thing on it worth shooting:*
 
@@ -268,7 +274,7 @@ fiction-earns-the-mechanics reasoning, art direction language.
 
 ![Crewmate in the dark](.github/assets/screenshots/crew.png)
 
-*A siphon tap in a procedurally generated layer — hold the channel, refill the crew's shared pool, and tell the whole ring where you are:*
+*A siphon tap in a procedurally generated layer — the prompt is a keycap tagged onto the machine itself, and its ring fills as you channel. Refill the crew's shared pool, and tell the whole layer where you are:*
 
 ![Siphon tap](.github/assets/screenshots/siphon.png)
 
@@ -284,7 +290,7 @@ fiction-earns-the-mechanics reasoning, art direction language.
 
 ![Data vault](.github/assets/screenshots/vault.png)
 
-*Injection console:*
+*The injection console — MOTHER's own schematic of the stack drifting past behind it, her chatter along the bottom rule. Committing to a dive decompiles the screen:*
 
 ![Main menu](.github/assets/screenshots/menu.png)
 

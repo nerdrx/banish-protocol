@@ -33,6 +33,27 @@ func prompt() -> String:
 		Net.crew_name(peer_id), int(ceilf(Run.corruption_left(peer_id)))]
 
 
+func prompt_title() -> String:
+	return "RESTORE %s  ·  %ds" % [
+		Net.crew_name(peer_id), int(ceilf(Run.corruption_left(peer_id)))]
+
+
+func prompt_glyph() -> String:
+	return "◇"
+
+
+## Just above a kneeling shell, not above a standing one: this only ever exists
+## while its owner is on the floor.
+func prompt_height() -> float:
+	return 1.5
+
+
+## A crewmate on their feet is not a prompt. Unlike a drained siphon tap, there
+## is nothing here to label until they go down.
+func prompt_visible() -> bool:
+	return Run.is_corrupted(peer_id) and peer_id != Net.local_id()
+
+
 func available() -> bool:
 	return Run.is_corrupted(peer_id) and peer_id != Net.local_id() and Run.local_running()
 

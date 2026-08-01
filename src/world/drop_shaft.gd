@@ -148,6 +148,26 @@ func prompt() -> String:
 	return "HOLD E  ·  DESCEND TO LAYER %02d" % (Run.layer_number + 1)
 
 
+func prompt_title() -> String:
+	if Run.descending:
+		return "DESCENDING"
+	if not Run.crew_intact():
+		return "CREW CORRUPTED"
+	if not Run.crew_mustered():
+		return "CREW IN SHAFT  %d/%d" % [Run.muster_inside, Run.muster_total]
+	return "DROP SHAFT  ·  LAYER %02d" % (Run.layer_number + 1)
+
+
+func prompt_glyph() -> String:
+	return "▼"
+
+
+## Over the console on the pad's +Z edge, where the probe is and where the crew
+## stands to channel — not over the middle of the trunk, which they stand inside.
+func prompt_anchor() -> Vector3:
+	return Vector3(0.0, 2.2, 2.7)
+
+
 func available() -> bool:
 	return Run.crew_mustered() and Run.crew_intact() and not Run.descending
 

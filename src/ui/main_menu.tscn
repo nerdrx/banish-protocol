@@ -1,9 +1,10 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="Script" path="res://src/ui/main_menu.gd" id="1_menu"]
 [ext_resource type="Theme" path="res://src/ui/nullvoid_theme.tres" id="2_theme"]
 [ext_resource type="Font" path="res://assets/fonts/title_font.tres" id="3_title"]
 [ext_resource type="Shader" path="res://src/ui/post_process.gdshader" id="4_post"]
+[ext_resource type="Script" path="res://src/ui/menu_backdrop.gd" id="5_schematic"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_menu_post"]
 shader = ExtResource("4_post")
@@ -48,6 +49,17 @@ mouse_filter = 2
 texture = SubResource("GradientTexture2D_backdrop")
 expand_mode = 1
 stretch_mode = 6
+
+[node name="Schematic" type="Control" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("5_schematic")
 
 [node name="Frame" type="Control" parent="."]
 layout_mode = 1
@@ -289,6 +301,12 @@ text = "AWAITING ORDERS"
 horizontal_alignment = 1
 autowrap_mode = 2
 
+[node name="ConsoleSweep" type="ColorRect" parent="Margin/Column/Console"]
+unique_name_in_owner = true
+layout_mode = 2
+mouse_filter = 2
+color = Color(1, 1, 1, 1)
+
 [node name="Gap2" type="Control" parent="Margin/Column"]
 custom_minimum_size = Vector2(0, 12)
 layout_mode = 2
@@ -299,6 +317,24 @@ custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
 size_flags_horizontal = 4
 text = "ABANDON"
+
+[node name="Ticker" type="Label" parent="."]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 12
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 52.0
+offset_top = -34.0
+offset_right = -280.0
+offset_bottom = -14.0
+grow_horizontal = 2
+grow_vertical = 0
+mouse_filter = 2
+theme_type_variation = &"Ticker"
+text = ""
+clip_text = true
 
 [node name="Version" type="Label" parent="."]
 layout_mode = 1
@@ -316,10 +352,11 @@ grow_vertical = 0
 mouse_filter = 2
 theme_override_colors/font_color = Color(0.22, 0.27, 0.34, 1)
 theme_override_font_sizes/font_size = 11
-text = "M3.5 // STEAMWORKS"
+text = "M3.8 // INTERFACE"
 horizontal_alignment = 2
 
 [node name="Post" type="ColorRect" parent="."]
+unique_name_in_owner = true
 material = SubResource("ShaderMaterial_menu_post")
 layout_mode = 1
 anchors_preset = 15

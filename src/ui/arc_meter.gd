@@ -5,8 +5,25 @@ extends Control
 ##
 ## Drawn rather than assembled from Controls because DESIGN.md wants the HUD to
 ## read as "diegetic program-shell UI" — a StyleBox ProgressBar always reads as
-## an application, and nothing in this game should. Ticks, a leading cap and an
-## optional bloom pass are what make it look emitted rather than laid out.
+## an application, and nothing in this game should.
+##
+## M3.8 turns the Cycles ring into something that is visibly *alive*:
+##
+##   * the fill is **segmented**, notched at regular intervals, and the fine tick
+##     marks outside it **burn away** as the pool drains — a spent tick is short,
+##     dark and jittered off true, so the gauge looks eaten rather than emptied.
+##   * an **outer hairline orbit** turns continuously with a bright dash on it.
+##     Nothing reads it; it exists so the ring is never a still image.
+##   * `ember` paints a drain streak trailing the head. Sprinting bleeds the pool
+##     at 2.5x and this is where you see that happening.
+##   * `beat` scales the whole drawing on a heartbeat, for the sub-25% alarm.
+##
+## Every one of those is off by default, so the channel ring around the crosshair
+## keeps M2's behaviour exactly.
+##
+## Allocation note: the per-tick unit vectors are computed once into a packed
+## array and reused, and every extra pass is `draw_line`/`draw_circle`, which
+## allocate nothing. `draw_arc` builds its point list in C++, not in GDScript.
 
 @export var radius: float = 54.0
 @export var thickness: float = 9.0
@@ -21,6 +38,15 @@ extends Control
 @export var fill_color: Color = Color(0.36, 0.86, 1.0)
 @export var tick_color: Color = Color(0.3, 0.45, 0.58, 0.7)
 
+@export_group("Living ring")
+## Notches cut into the fill. Zero draws one continuous arc (M2 behaviour).
+@export var notch_count: int = 0
+## Draw the outer hairline orbit and turn it.
+@export var orbit: bool = false
+@export var orbit_gap: float = 13.0
+## Burnt ticks are drawn at this fraction of a live tick's length.
+@export var burnt_tick_scale: float = 0.45
+
 ## 0..1 gauge reading.
 var value: float = 1.0: set = _set_value
 ## 0..1 extra bloom, driven by events (a siphon landing, a channel completing).
@@ -28,6 +54,20 @@ var glow: float = 0.0: set = _set_glow
 ## Draws a second, dimmer arc behind the fill — used for "where this was a
 ## moment ago", so a siphon visibly *fills* rather than jumping.
 var ghost: float = 0.0: set = _set_ghost
+## 0..1 drain streak trailing the head. Sprint bleed.
+var ember: float = 0.0: set = _set_ember
+## 0..1 heartbeat weight. Scales the drawing; the alarm below 25% Cycles.
+var beat: float = 0.0: set = _set_beat
+
+## Cached unit directions, one per tick, rebuilt only when the geometry changes.
+var _tick_dirs: PackedVector2Array = PackedVector2Array()
+var _tick_key: int = 0
+## Orbit phase, advanced in `_process` only while `orbit` is on.
+var _orbit_phase: float = 0.0
+
+
+func _ready() -> void:
+	set_process(orbit)
 
 
 func _set_value(next: float) -> void:
@@ -45,24 +85,73 @@ func _set_ghost(next: float) -> void:
 	queue_redraw()
 
 
+func _set_ember(next: float) -> void:
+	ember = clampf(next, 0.0, 1.0)
+	queue_redraw()
+
+
+func _set_beat(next: float) -> void:
+	beat = clampf(next, 0.0, 1.0)
+	queue_redraw()
+
+
+func _process(_delta: float) -> void:
+	# Driven off the shared UI clock rather than delta, so a capture freezes the
+	# orbit at a reproducible angle instead of wherever the frame landed.
+	var next: float = fposmod(UiFx.clock() * UiFx.RING_ORBIT_SPEED, 1.0)
+	if absf(next - _orbit_phase) < 0.0005:
+		return
+	_orbit_phase = next
+	queue_redraw()
+
+
+## Unit vector per tick. Rebuilt when the arc geometry changes and never
+## otherwise — this is the only array the meter owns.
+func _rebuild_ticks() -> void:
+	var key: int = hash([tick_count, start_degrees, sweep_degrees])
+	if key == _tick_key and _tick_dirs.size() == tick_count + 1:
+		return
+	_tick_key = key
+	_tick_dirs.resize(tick_count + 1)
+	var start: float = deg_to_rad(start_degrees)
+	var sweep: float = deg_to_rad(sweep_degrees)
+	for i: int in tick_count + 1:
+		var angle: float = start + sweep * (float(i) / float(maxi(tick_count, 1)))
+		_tick_dirs[i] = Vector2(cos(angle), sin(angle))
+
+
 func _draw() -> void:
+	_rebuild_ticks()
+
 	var centre: Vector2 = size * 0.5
+	# The heartbeat is a scale on the drawing, not on the Control: scaling the
+	# Control would drag the value label nested beside it out of alignment.
+	var scale: float = 1.0 + beat * UiFx.RING_BEAT_SCALE
+	var r: float = radius * scale
+	var t: float = thickness * scale
 	var start: float = deg_to_rad(start_degrees)
 	var sweep: float = deg_to_rad(sweep_degrees)
 
-	draw_arc(centre, radius, start, start + sweep, segments, track_color, thickness, true)
+	if orbit:
+		_draw_orbit(centre, r + orbit_gap)
 
-	for i: int in tick_count + 1:
-		var angle: float = start + sweep * (float(i) / float(tick_count))
-		var direction: Vector2 = Vector2(cos(angle), sin(angle))
-		draw_line(centre + direction * (radius + thickness * 0.62),
-				centre + direction * (radius + thickness * 0.62 + 4.0),
-				tick_color, 1.5, true)
+	# The track is drawn in two halves: the part the reading still covers at full
+	# strength, and the part it has already given up dimmer. A single even track
+	# reads as an empty bar waiting to be filled; this reads as a gauge that has
+	# been eaten, which is what a draining shared pool is.
+	var spent_from: float = start + sweep * value
+	draw_arc(centre, r, start, spent_from, maxi(int(float(segments) * value), 2),
+			track_color, t, true)
+	draw_arc(centre, r, spent_from, start + sweep,
+			maxi(int(float(segments) * (1.0 - value)), 2),
+			Color(track_color.r * 0.55, track_color.g * 0.5, track_color.b * 0.5,
+					track_color.a * 0.5), t, true)
+	_draw_ticks(centre, r, t)
 
 	if ghost > value:
-		draw_arc(centre, radius, start + sweep * value, start + sweep * ghost,
+		draw_arc(centre, r, start + sweep * value, start + sweep * ghost,
 				maxi(int(float(segments) * (ghost - value)), 3),
-				Color(fill_color.r, fill_color.g, fill_color.b, 0.28), thickness, true)
+				Color(fill_color.r, fill_color.g, fill_color.b, 0.28), t, true)
 
 	if value <= 0.0005:
 		return
@@ -73,12 +162,85 @@ func _draw() -> void:
 	if glow > 0.001:
 		# A wide, low-alpha pass under the fill. Cheaper and steadier than a
 		# shader, and it blooms through the layer's glow pass anyway.
-		draw_arc(centre, radius, start, end, used,
-				Color(fill_color.r, fill_color.g, fill_color.b, 0.34 * glow),
-				thickness * 3.0, true)
+		draw_arc(centre, r, start, end, used,
+				Color(fill_color.r, fill_color.g, fill_color.b, 0.34 * glow), t * 3.0, true)
 
-	draw_arc(centre, radius, start, end, used, fill_color, thickness, true)
+	draw_arc(centre, r, start, end, used, fill_color, t, true)
+	_draw_notches(centre, r, t, start, sweep, end)
 
-	# Leading cap: the bright head of the charge.
-	var head: Vector2 = centre + Vector2(cos(end), sin(end)) * radius
-	draw_circle(head, thickness * 0.62, Color(1.0, 1.0, 1.0, 0.85))
+	if ember > 0.001:
+		_draw_ember(centre, r, t, start, sweep, end)
+
+	# Leading cap: the bright head of the charge. Tinted toward the fill rather
+	# than pure white — at low readings a white dot on a short red stub is the
+	# brightest thing in the corner, and the eye goes to the wrong element.
+	var head: Vector2 = centre + Vector2(cos(end), sin(end)) * r
+	draw_circle(head, t * 0.52, fill_color.lerp(Color(1.0, 1.0, 1.0), 0.55))
+
+
+## Fine ticks outside the arc. Everything above the current reading is *burnt*:
+## short, dark, and knocked a pixel off true, so a draining pool visibly eats its
+## own gauge instead of just uncovering track.
+func _draw_ticks(centre: Vector2, r: float, t: float) -> void:
+	var inner: float = r + t * 0.62
+	for i: int in _tick_dirs.size():
+		var direction: Vector2 = _tick_dirs[i]
+		var fraction: float = float(i) / float(maxi(tick_count, 1))
+		var live: bool = fraction <= value + 0.001
+		var length: float = 4.0 if live else 4.0 * burnt_tick_scale
+		var colour: Color = tick_color
+		if not live:
+			colour = Color(tick_color.r * 0.5, tick_color.g * 0.42, tick_color.b * 0.4,
+					tick_color.a * 0.38)
+		# Burnt ticks sit a hair off the ring; a perfectly aligned dead tick just
+		# looks like a dimmer live one.
+		var skew: float = 0.0 if live else (UiFx.hash01(float(i) * 3.7) - 0.5) * 2.4
+		var base: Vector2 = centre + direction * inner + direction.orthogonal() * skew
+		draw_line(base, base + direction * length, colour, 1.5, true)
+
+
+## Notches cut across the fill at regular intervals. Drawn in the track colour so
+## they read as gaps between segments rather than as marks on top of a bar.
+func _draw_notches(centre: Vector2, r: float, t: float, start: float, sweep: float,
+		end: float) -> void:
+	if notch_count <= 0:
+		return
+	for i: int in notch_count:
+		var angle: float = start + sweep * (float(i) + 0.5) / float(notch_count)
+		if angle > end:
+			return
+		var direction: Vector2 = Vector2(cos(angle), sin(angle))
+		draw_line(centre + direction * (r - t * 0.55), centre + direction * (r + t * 0.55),
+				Color(0.02, 0.03, 0.04, 0.85), 2.0, false)
+
+
+## The drain streak: a short, hot tail behind the head, fading backwards. Reads
+## as compute being burned off the end of the arc.
+func _draw_ember(centre: Vector2, r: float, t: float, start: float, sweep: float,
+		end: float) -> void:
+	const STEPS: int = 9
+	var span: float = sweep * 0.085 * ember
+	for i: int in STEPS:
+		var k: float = float(i) / float(STEPS - 1)
+		var angle: float = end + span * k
+		if angle < start:
+			break
+		var direction: Vector2 = Vector2(cos(angle), sin(angle))
+		var fade: float = (1.0 - k) * ember
+		var jitter: float = (UiFx.hash01(float(i) + floor(UiFx.clock() * 24.0)) - 0.5) * t * 0.5
+		var point: Vector2 = centre + direction * (r + jitter)
+		draw_circle(point, t * 0.4 * (1.0 - k * 0.6),
+				Color(UiFx.SYSTEM_HOT.r, UiFx.SYSTEM_HOT.g, UiFx.SYSTEM_HOT.b, 0.85 * fade))
+
+
+## A hairline circle outside the gauge with one bright dash travelling round it.
+## Pure decoration, and the cheapest possible way to stop the corner of the
+## screen from being a still image.
+func _draw_orbit(centre: Vector2, r: float) -> void:
+	var hairline: Color = Color(tick_color.r, tick_color.g, tick_color.b, tick_color.a * 0.35)
+	draw_arc(centre, r, 0.0, TAU, 48, hairline, 1.0, true)
+	var head: float = _orbit_phase * TAU
+	draw_arc(centre, r, head, head + 0.5, 8,
+			Color(fill_color.r, fill_color.g, fill_color.b, 0.55), 1.6, true)
+	var mark: Vector2 = centre + Vector2(cos(head + 0.5), sin(head + 0.5)) * r
+	draw_circle(mark, 1.8, Color(fill_color.r, fill_color.g, fill_color.b, 0.8))

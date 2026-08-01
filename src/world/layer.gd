@@ -59,6 +59,10 @@ var _alert: float = 0.0
 ## Damage kick for the post shader's `stress` uniform. M2 shipped the uniform and
 ## never drove it; M3.7 hooks it to the same signal the screen shake uses.
 var _stress: float = 0.0
+## M3.8's short, hard flinch on the same signal — the frame's half of what the
+## HUD does to itself. Decays over `UiFx.GLITCH_TIME` rather than over a second,
+## so the two land together and let go together.
+var _glitch: float = 0.0
 
 
 func _ready() -> void:
@@ -257,6 +261,7 @@ func _place_local_player() -> void:
 
 func _on_damaged(_from: Vector3) -> void:
 	_stress = minf(_stress + 0.55, 1.0)
+	_glitch = 1.0
 
 
 ## How hostile the layer currently is. Read off replicated Sentinel state rather
@@ -298,6 +303,10 @@ func _process(delta: float) -> void:
 	# 0.6 s ramp reads as the room deciding something about you.
 	_alert = move_toward(_alert, _alert_amount(), delta * 1.6)
 	_stress = maxf(_stress - delta * 1.1, 0.0)
+	# `--hud-state damage` pins the flinch so the shutter cannot miss a state
+	# that is, by design, a fifth of a second long.
+	_glitch = 0.8 if Debug.hud_state == "damage" \
+			else maxf(_glitch - delta / UiFx.GLITCH_TIME, 0.0)
 	KitLib.set_alert(_alert)
 	if _builder != null and is_instance_valid(_builder):
 		LightRig.set_alert(_builder, _alert)
@@ -310,6 +319,7 @@ func _process(delta: float) -> void:
 	material.set_shader_parameter("fade", _fade)
 	material.set_shader_parameter("degradation", degradation)
 	material.set_shader_parameter("stress", _stress)
+	material.set_shader_parameter("glitch", _glitch)
 	material.set_shader_parameter("alert", _alert)
 	# The v2 master. Grain, aberration, vignette and corner desaturation all ride
 	# it, so a starving or bleeding process does not just get a glitch overlay —

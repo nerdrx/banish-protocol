@@ -185,6 +185,14 @@ func _on_buffers_changed() -> void:
 
 
 func _on_run_ended(summary: Dictionary) -> void:
+	# `--hud-state debrief` fires a fabricated summary so the debrief screen can
+	# be photographed without playing a run out. That is a legitimate thing to do
+	# to a *screen* — the HUD is a pure observer and shows exactly what it would
+	# really show — but it is not a legitimate thing to do to a save file. An
+	# achievement is a claim about something the player did.
+	if bool(summary.get("synthetic", false)):
+		return
+
 	var me: int = Net.local_id()
 	var escaped: Array = summary.get("escaped", []) as Array
 	var got_out: bool = escaped.has(me)

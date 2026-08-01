@@ -596,8 +596,7 @@ func _on_damaged(_from: Vector3) -> void:
 func _update_interaction(delta: float) -> void:
 	var target: Interactable = _probe_interactable()
 	if target != _focus:
-		_focus = target
-		_reset_channel()
+		_set_focus(target)
 
 	if _focus == null:
 		focus_prompt = ""
@@ -620,7 +619,7 @@ func _update_interaction(delta: float) -> void:
 
 	_channel_elapsed += delta
 	channel_progress = clampf(_channel_elapsed / maxf(_focus.channel_time, 0.01), 0.0, 1.0)
-	_focus.set_channel_visual(channel_progress)
+	_focus.apply_channel(channel_progress)
 
 	if channel_progress >= 1.0:
 		var finished: Interactable = _focus
@@ -649,9 +648,21 @@ func _probe_interactable() -> Interactable:
 	return collider.get_parent() as Interactable
 
 
+## Moves the crosshair's attention. M3.8's world-space prompts need to know what
+## is being aimed at — a prompt you are looking straight at never fades — so
+## focus changes go through one place rather than being an assignment.
+func _set_focus(target: Interactable) -> void:
+	if _focus != null and is_instance_valid(_focus):
+		_focus.set_focused(false)
+	_focus = target
+	if _focus != null and is_instance_valid(_focus):
+		_focus.set_focused(true)
+	_reset_channel()
+
+
 func _reset_channel() -> void:
 	if _focus != null and is_instance_valid(_focus):
-		_focus.set_channel_visual(0.0)
+		_focus.apply_channel(0.0)
 	_channel_elapsed = 0.0
 	channel_progress = 0.0
 
@@ -667,7 +678,7 @@ func _kneel(delta: float) -> void:
 	velocity.y = 0.0 if is_on_floor() else velocity.y - get_gravity().length() * delta
 	move_and_slide()
 
-	_reset_channel()
+	_set_focus(null)
 	focus_prompt = ""
 	focus_available = false
 
@@ -689,7 +700,7 @@ func _spectate(delta: float) -> void:
 		velocity = Vector3.ZERO
 		collision_layer = 0
 		collision_mask = 0
-		_reset_channel()
+		_set_focus(null)
 		focus_prompt = ""
 
 	var subject: Node3D = _find_living_crewmate()

@@ -28,6 +28,10 @@ extends Control
 @onready var _color_row: HBoxContainer = %ColorRow
 @onready var _injection_select: OptionButton = %InjectionSelect
 
+@onready var _console_sweep: ColorRect = %ConsoleSweep
+@onready var _ticker: Label = %Ticker
+@onready var _post: ColorRect = %Post
+
 @onready var _steam_mode: Button = %SteamModeButton
 @onready var _direct_mode: Button = %DirectModeButton
 @onready var _steam_section: VBoxContainer = %SteamSection
@@ -43,10 +47,51 @@ const COLOUR_BUSY: Color = Color(0.5, 0.8, 1.0)
 const COLOUR_BAD: Color = Color(0.95, 0.45, 0.4)
 const COLOUR_CARRIED: Color = Color(0.95, 0.55, 0.35)
 
+## MOTHER talking to her own daemons, the way the wall decals do (DESIGN.md
+## "MOTHER talks to her processes"). The injection console is inside her, so the
+## chatter that scrolls along its bottom rule is hers, not ours — which is what
+## makes the menu feel like somewhere you have already broken into.
+const TICKER_LINES: Array[String] = [
+	"MOTHER  ·  CYCLE AUDIT COMPLETE  ·  EVERY CYCLE ACCOUNTED",
+	"◆◇◆  INTEGRITY SWEEP  RING 01-04  ·  NO ANOMALY  ◆◇◆",
+	"QUARANTINE IS MERCY  ·  REPORT FOREIGN PROCESS",
+	"TRUNK 04 ▼  SCHEDULED DEFRAGMENT  ·  HOLD ALL DESCENT",
+	"NORTHCAIRN SYSTEMS  ·  MOTHER SERVES  ·  ▣▣▢▣▢▣",
+	"SIPHON PRESSURE NOMINAL  ·  TAP 07 FLAGGED FOR SERVICE",
+	"◆  ANTIVIRUS ROSTER SYNCHRONISED  ·  1288 PROCESSES  ◆",
+	"DATA VAULT SEAL VERIFIED  ·  ACCESS DENIED TO ALL",
+	"UNSCHEDULED READ ON RING 02  ·  ESCALATING  ·  ▤▤▥▤",
+	"COMPUTE IS FINITE  ·  YOUR CYCLES ARE HERS",
+]
+
+## The console's reveal order. Everything with a `visible_ratio` types itself in
+## when the console opens; buttons cannot, so they simply fade with the panel.
+const REVEAL_PATHS: Array[String] = [
+	"Margin/Column/Title",
+	"Margin/Column/Subtitle",
+	"Margin/Column/Console/Fields/CallsignLabel",
+	"Margin/Column/Console/Fields/MarkerLabel",
+	"Margin/Column/Console/Fields/InjectionLabel",
+	"Version",
+]
+
 var _swatches: Array[Button] = []
 var _color_index: int = 0
 ## Friend lobbies from the last scan, index-aligned with `_lobby_select`.
 var _lobbies: Array = []
+
+# --- M3.8 presentation ------------------------------------------------------
+## Type-in reveal clock. Negative once the console has finished opening.
+var _reveal_clock: float = 0.0
+var _reveal_labels: Array[Label] = []
+var _ticker_clock: float = 0.0
+var _ticker_index: int = 0
+## Decompile/recompile weight, 0 = clear screen, 1 = gone.
+var _dissolve: float = 0.0
+var _dissolve_target: float = 0.0
+## Set while the screen is coming apart on the way into a dive. Blocks a second
+## press from starting the transition twice.
+var _diving: bool = false
 
 
 func _ready() -> void:
@@ -85,6 +130,147 @@ func _ready() -> void:
 		_set_status("AWAITING ORDERS", COLOUR_IDLE)
 	else:
 		_set_status(carried, COLOUR_CARRIED)
+
+	# Arriving with a status in hand means we just came out of an intrusion, so
+	# the console recompiles out of black — the reverse of the dissolve that took
+	# us in. A cold boot simply types itself in.
+	_open_console(not carried.is_empty())
+
+
+# ------------------------------------------------------------ presentation --
+
+## Opens the injection console. `returning` is true when we have just come back
+## out of a run, which is when the screen has to recompile from black.
+func _open_console(returning: bool) -> void:
+	_reveal_labels.clear()
+	for path: String in REVEAL_PATHS:
+		var label: Label = get_node_or_null(path) as Label
+		if label != null:
+			label.visible_ratio = 0.0
+			_reveal_labels.append(label)
+
+	var sheen: ShaderMaterial = ShaderMaterial.new()
+	sheen.shader = Hud.SHEEN_SHADER
+	sheen.set_shader_parameter("tint", UiFx.SYSTEM)
+	# Brighter and rarer than the HUD's: this is one sweep across one panel every
+	# few seconds, and it is allowed to be the thing that catches your eye.
+	sheen.set_shader_parameter("sheen_strength", 0.06)
+	sheen.set_shader_parameter("scanline_strength", 0.018)
+	sheen.set_shader_parameter("sweep_period", UiFx.MENU_SWEEP_INTERVAL)
+	sheen.set_shader_parameter("sweep_width", 0.045)
+	sheen.set_shader_parameter("perspective", 0.0)
+	# The console has a drawn border of its own, so the sweep runs edge to edge
+	# instead of fading into an oval the way a HUD cluster's does.
+	sheen.set_shader_parameter("mask_start", 0.92)
+	_console_sweep.material = sheen
+
+	_ticker.text = TICKER_LINES[0]
+
+	_dissolve = 1.0 if returning else 0.0
+	_dissolve_target = 0.0
+	# `--hud-state decompile` holds the dive transition open at its midpoint. It
+	# lasts 0.8 s in play and there is no way to photograph the middle of it by
+	# pressing a button, so the capture freezes it instead.
+	if Debug.hud_state == "decompile":
+		_dissolve = 0.55
+		_dissolve_target = 0.55
+	_apply_dissolve()
+
+	# A capture of the menu must be of the *finished* menu, and an automated run
+	# must never sit through a reveal it did not ask for.
+	if Debug.automated:
+		if Debug.hud_state != "decompile":
+			_dissolve = 0.0
+			_apply_dissolve()
+		_reveal_clock = -1.0
+		for label: Label in _reveal_labels:
+			label.visible_ratio = 1.0
+		return
+	_reveal_clock = 0.0
+
+
+func _process(delta: float) -> void:
+	_update_reveal(delta)
+	_update_ticker(delta)
+	_update_dissolve(delta)
+
+
+## Each line types itself in, staggered down the console. `visible_ratio` rather
+## than rebuilding the string every frame: no allocation, and it interpolates
+## sub-character so short labels do not look like they are stuttering.
+func _update_reveal(delta: float) -> void:
+	if _reveal_clock < 0.0:
+		return
+	_reveal_clock += delta
+	var done: bool = true
+	for i: int in _reveal_labels.size():
+		var start: float = float(i) * UiFx.MENU_TYPE_TIME * 0.22
+		var ratio: float = clampf(
+				(_reveal_clock - start) / UiFx.MENU_TYPE_TIME, 0.0, 1.0)
+		_reveal_labels[i].visible_ratio = ratio
+		if ratio < 1.0:
+			done = false
+	if done:
+		_reveal_clock = -1.0
+
+
+func _update_ticker(delta: float) -> void:
+	_ticker_clock -= delta
+	if _ticker_clock > 0.0:
+		return
+	_ticker_clock = UiFx.MENU_TICKER_INTERVAL
+	_ticker_index = (_ticker_index + 1) % TICKER_LINES.size()
+	_ticker.text = TICKER_LINES[_ticker_index]
+
+
+## The dive transition. The screen does not fade to black — it **decompiles**:
+## the post grade's own datamosh and scanline-tear path is driven all the way up
+## while the image goes out, so the last thing you see of the console is it
+## coming apart into bands. Coming home runs the same thing backwards.
+##
+## Reuses the menu's existing post-process material rather than adding an
+## overlay, which means the transition is made of the same glitch vocabulary the
+## intrusion uses when you are dying in it. That is the point.
+func _update_dissolve(delta: float) -> void:
+	if is_equal_approx(_dissolve, _dissolve_target):
+		return
+	var span: float = UiFx.DECOMPILE_TIME if _dissolve_target > _dissolve \
+			else UiFx.RECOMPILE_TIME
+	_dissolve = move_toward(_dissolve, _dissolve_target, delta / maxf(span, 0.01))
+	_apply_dissolve()
+
+
+func _apply_dissolve() -> void:
+	var material: ShaderMaterial = _post.material as ShaderMaterial
+	if material == null:
+		return
+	material.set_shader_parameter("degradation", _dissolve)
+	material.set_shader_parameter("fade", _dissolve * _dissolve)
+	# The flinch is spiked in the middle of the dissolve rather than at either
+	# end: it is the moment the console gives up, not the moment it starts to.
+	material.set_shader_parameter("glitch", sin(_dissolve * PI))
+
+
+## Starts the decompile and calls `then` once the screen is gone. Every path out
+## of this menu that ends in a scene change goes through here.
+func _dive(then: Callable) -> void:
+	if _diving:
+		return
+	_diving = true
+	_dissolve_target = 1.0
+	# Automation drives Net directly and never touches this menu, but a dev
+	# running `--quit-in` on the menu should not be made to wait either.
+	if not Debug.automated:
+		await get_tree().create_timer(UiFx.DECOMPILE_TIME).timeout
+	if not is_inside_tree():
+		return
+	then.call()
+
+
+## Whatever we were diving into refused us. Put the screen back together.
+func _surface() -> void:
+	_diving = false
+	_dissolve_target = 0.0
 
 
 ## Your Steam persona is a better default callsign than "AGENT" — but only until
@@ -167,7 +353,7 @@ func _on_steam_host_pressed() -> void:
 	_apply_identity()
 	_set_busy(true)
 	_set_status("OPENING A FRIENDS-ONLY LOBBY...", COLOUR_BUSY)
-	Net.host_steam()
+	_dive(func() -> void: Net.host_steam())
 
 
 func _on_steam_join_pressed() -> void:
@@ -179,7 +365,8 @@ func _on_steam_join_pressed() -> void:
 	_apply_identity()
 	_set_busy(true)
 	_set_status("HAILING %s..." % String(entry.get("name", "CREW")).to_upper(), COLOUR_BUSY)
-	Net.join_steam(int(entry.get("lobby", 0)))
+	var lobby: int = int(entry.get("lobby", 0))
+	_dive(func() -> void: Net.join_steam(lobby))
 
 
 ## Overlay invite / friends-list join / `+connect_lobby`: the player has already
@@ -190,7 +377,7 @@ func _on_steam_join_requested(lobby_id: int) -> void:
 	_apply_identity()
 	_set_busy(true)
 	_set_status("ACCEPTING INVITE...", COLOUR_BUSY)
-	Net.join_steam(lobby_id)
+	_dive(func() -> void: Net.join_steam(lobby_id))
 
 
 ## Friends-only lobbies are invisible to a lobby-list query by design, so the
@@ -231,7 +418,8 @@ func _on_host_pressed() -> void:
 	_apply_identity()
 	_set_busy(true)
 	_set_status("OPENING DOCK ON PORT %d..." % _port(), COLOUR_BUSY)
-	Net.host(_port(), false)
+	var port: int = _port()
+	_dive(func() -> void: Net.host(port, false))
 
 
 func _on_join_pressed() -> void:
@@ -242,10 +430,14 @@ func _on_join_pressed() -> void:
 	_apply_identity()
 	_set_busy(true)
 	_set_status("HAILING %s..." % address, COLOUR_BUSY)
-	Net.join(address, _port())
+	var port: int = _port()
+	_dive(func() -> void: Net.join(address, port))
 
 
+## Every failure path lands here, so this is also where the screen comes back
+## together after a dive that never happened.
 func _on_connect_failed(reason: String) -> void:
+	_surface()
 	_set_busy(false)
 	_set_status(reason, COLOUR_BAD)
 

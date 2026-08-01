@@ -3,26 +3,49 @@ extends CanvasLayer
 ## In-intrusion HUD: the shared Cycles ring, your integrity, the layer you are
 ## on, channel feedback, the crew roster, and the overlays (pause, run summary).
 ##
-## DESIGN.md: "diegetic program-shell UI". Everything here is drawn dark, thin
-## and emissive, and it only speaks when it has something to say — the channel
-## ring and the shaft muster line are invisible until they are relevant. Nothing
-## renders in default Godot grey; the theme is nullvoid_theme.tres throughout.
+## DESIGN.md: "diegetic program-shell UI". M3.8 takes that literally — **the
+## interface is software running on a hostile machine**, and it behaves like it:
 ##
-## The HUD is a pure observer. It reads Run (replicated state) and the local
-## Player (feel state) and never writes to either.
+##   * it **compiles in** when your process is injected (`_update_boot`), element
+##     by element, with a one-line self-test that fades;
+##   * it hangs a few pixels behind the lens on a spring (`_update_parallax`) and
+##     wears a faint scanline sheen, so it reads as projected in front of you
+##     rather than painted on the glass;
+##   * it **flinches** when you are hit (`_update_glitch`) — clusters jump a
+##     pixel or two, the big readouts split chromatically, and your own callsign
+##     corrupts for a fifth of a second;
+##   * it **decays** as the shared pool empties (`_update_degradation`) — dead
+##     pixels in the readouts, labels that flicker, the occasional scanline tear.
+##
+## None of that is gameplay. The HUD is still a pure observer: it reads Run
+## (replicated state) and the local Player (feel state) and never writes to
+## either. Every animation runs off `UiFx.clock()`, which is wall time for a
+## player and frame count for a capture, so screenshots are reproducible.
+##
+## Two Control layers, and the split matters. `Root` holds the readouts and takes
+## the parallax lag. `Fixed` holds the crosshair, the channel ring, the damage
+## arc and the overlays — everything that is either an aiming reference or
+## pinned to the frame edge, and must therefore never move.
 
 const PING_INTERVAL: float = 0.5
 const NOTICE_DURATION: float = 4.0
 
-const COLOUR_OK: Color = Color(0.36, 0.86, 1.0)
-const COLOUR_WARNING: Color = Color(1.0, 0.42, 0.36)
-const COLOUR_DIM: Color = Color(0.34, 0.42, 0.5)
-const COLOUR_TEXT: Color = Color(0.82, 0.92, 1.0)
+const COLOUR_OK: Color = UiFx.SYSTEM
+const COLOUR_WARNING: Color = UiFx.HOSTILE
+const COLOUR_AMBER: Color = UiFx.WARNING
+const COLOUR_DIM: Color = UiFx.DIM
+const COLOUR_TEXT: Color = UiFx.TEXT
 
 ## How long the ring keeps blooming after a siphon lands.
 const PULSE_DECAY: float = 1.6
 ## How fast the "where it was" ghost arc collapses onto the real value.
 const GHOST_DECAY: float = 0.55
+## Pixels of HUD lag per radian/second of head turn, before clamping.
+const PARALLAX_GAIN: float = 1.8
+
+const SHEEN_SHADER: Shader = preload("res://src/ui/hud_sheen.gdshader")
+
+@onready var _root: Control = $Root
 
 @onready var _crew_list: VBoxContainer = %CrewList
 @onready var _link_label: Label = %LinkLabel
@@ -41,11 +64,15 @@ const GHOST_DECAY: float = 0.55
 @onready var _layer_label: Label = %LayerLabel
 @onready var _channel_ring: ArcMeter = %ChannelRing
 @onready var _prompt_label: Label = %PromptLabel
+@onready var _crosshair: ColorRect = %Crosshair
+@onready var _boot_line: Label = %BootLine
 
 @onready var _summary: Control = %SummaryOverlay
 @onready var _summary_title: Label = %SummaryTitle
 @onready var _summary_body: Label = %SummaryBody
 @onready var _summary_button: Button = %SummaryButton
+@onready var _banked_caption: Label = %BankedCaption
+@onready var _banked_value: Label = %BankedValue
 
 # --- M3 ---------------------------------------------------------------------
 @onready var _data_value: Label = %DataValue
@@ -54,7 +81,15 @@ const GHOST_DECAY: float = 0.55
 @onready var _flare_pips: HBoxContainer = %FlarePips
 @onready var _alert_label: Label = %AlertLabel
 @onready var _exfil_label: Label = %ExfilLabel
-@onready var _damage_edges: Control = %DamageEdges
+@onready var _damage_arc: DamageArc = %DamageArc
+
+# --- M3.8 -------------------------------------------------------------------
+@onready var _specks: HudSpecks = %Specks
+@onready var _crew_cluster: Control = %CrewCluster
+@onready var _cycles_panel: Control = %CyclesPanel
+@onready var _kit_panel: Control = %KitPanel
+@onready var _integrity_panel: Control = %IntegrityPanel
+@onready var _data_panel: Control = %DataPanel
 
 var _ping_clock: float = 0.0
 var _notice_clock: float = 0.0
@@ -67,6 +102,50 @@ var _player: Player = null
 var _damage_flash: float = 0.0
 var _damage_local: Vector2 = Vector2.ZERO
 var _pips: Array[ColorRect] = []
+
+# --- boot -------------------------------------------------------------------
+## Seconds since the shell started compiling. A frozen value is how
+## `--hud-state boot` photographs the sequence mid-compile.
+var _boot_clock: float = 0.0
+var _booting: bool = true
+## Parallel arrays rather than an array of dictionaries: this is walked every
+## frame of the boot and must not allocate.
+var _boot_nodes: Array[CanvasItem] = []
+var _boot_starts: PackedFloat32Array = PackedFloat32Array()
+
+# --- glitch / degradation ---------------------------------------------------
+var _glitch: float = 0.0
+var _degrade: float = -1.0
+## Clusters that jump when the shell is hit, and their laid-out home positions.
+var _clusters: Array[Control] = []
+var _cluster_home: PackedVector2Array = PackedVector2Array()
+## Chromatic split ghosts for the two big readouts.
+var _cycles_ghosts: Array[Label] = []
+var _data_ghosts: Array[Label] = []
+## The local crewmate's roster label, and the name it is supposed to read.
+var _self_label: Label = null
+var _self_name: String = ""
+var _glyph_tick: int = -1
+## Labels that flicker as the interface degrades.
+var _flicker_labels: Array[Label] = []
+
+# --- holographic depth ------------------------------------------------------
+var _parallax: Vector2 = Vector2.ZERO
+var _parallax_velocity: Vector2 = Vector2.ZERO
+var _last_yaw: float = 0.0
+var _last_pitch: float = 0.0
+var _sheens: Array[ShaderMaterial] = []
+
+# --- living ring ------------------------------------------------------------
+## Sprint bleed weight, and the damped overshoot after a siphon lands.
+var _ember: float = 0.0
+var _surge_clock: float = -1.0
+
+# --- debrief ----------------------------------------------------------------
+var _debrief_clock: float = -1.0
+var _debrief_lines: int = 0
+var _banked_from: int = 0
+var _banked_to: int = 0
 
 
 func _ready() -> void:
@@ -94,10 +173,15 @@ func _ready() -> void:
 	_prompt_label.text = ""
 	_alert_label.text = ""
 	_exfil_label.text = ""
+	_boot_line.text = ""
 	_build_pips()
 	_ghost = Run.display_fraction()
 	_on_layer_changed(Run.layer_number)
 	_rebuild_crew()
+
+	_install_depth()
+	_install_glitch_rig()
+	_begin_boot()
 
 	# The host already has a player when the HUD loads; clients get the signal.
 	var existing: Node = Net.get_player(Net.local_id())
@@ -107,6 +191,9 @@ func _ready() -> void:
 
 func _on_local_player(player: Node) -> void:
 	_player = player as Player
+	if _player != null:
+		_last_yaw = _player.rotation.y
+		_last_pitch = float(_player.sync_pitch)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -137,12 +224,144 @@ func _process(delta: float) -> void:
 	_update_alerts()
 	_update_damage(delta)
 
+	_update_boot(delta)
+	_update_degradation()
+	_update_glitch(delta)
+	_update_parallax(delta)
+	_update_debrief(delta)
+
+
+# --------------------------------------------------------------------- boot --
+
+## Assembles the compile order. Elements resolve from the structural to the
+## specific — the crew first, then the pool that crew is spending, then what it
+## is carrying — because that is the order a program shell would bring its own
+## readouts up in, and it happens to scan left-to-right as well.
+func _begin_boot() -> void:
+	_add_boot(_crosshair, 0.05)
+	_add_boot(_crew_cluster, 0.10)
+	_add_boot(_cycles_panel, 0.22)
+	_add_boot(_integrity_panel, 0.36)
+	_add_boot(_kit_panel, 0.46)
+	_add_boot(_data_panel, 0.56)
+	_add_boot(_layer_label, 0.66)
+	_add_boot(_link_label, 0.74)
+
+	_boot_line.text = "INSTANCE 0x%04X  ·  RUNTIME OK" % _instance_hash()
+	_boot_line.visible_ratio = 0.0
+
+	# Automation never waits on the shell compiling: a capture armed for frame N
+	# must photograph the HUD settled, and a soak must not spend a second of
+	# every layer looking at a boot animation. `--hud-state boot` is the
+	# deliberate exception — and it *freezes* the sequence rather than playing
+	# it, so the mid-compile frame is the same frame every time.
+	if Debug.hud_state == "boot":
+		_boot_clock = UiFx.BOOT_DURATION * Debug.hud_boot_phase
+		_apply_boot()
+		return
+	if Debug.automated:
+		_finish_boot()
+
+
+func _add_boot(node: CanvasItem, start: float) -> void:
+	_boot_nodes.append(node)
+	_boot_starts.append(start)
+	node.modulate.a = 0.0
+
+
+func _update_boot(delta: float) -> void:
+	if not _booting:
+		return
+	if Debug.hud_state == "boot":
+		return  # frozen mid-compile for the capture.
+
+	_boot_clock += delta
+	_apply_boot()
+	if _boot_clock > UiFx.BOOT_DURATION + UiFx.BOOT_SELFTEST_HOLD + UiFx.BOOT_SELFTEST_FADE:
+		_finish_boot()
+
+
+func _apply_boot() -> void:
+	for i: int in _boot_nodes.size():
+		_boot_nodes[i].modulate.a = _boot_alpha(_boot_starts[i], i)
+
+	# The ring spins up from zero and overshoots a hair before settling, which is
+	# a gauge finding its reading rather than a bar being drawn.
+	var spin: float = clampf(
+			(_boot_clock - _boot_starts[2]) / UiFx.BOOT_RING_TIME, 0.0, 1.0)
+	var eased: float = 1.0 - pow(1.0 - spin, 3.0)
+	if spin < 1.0:
+		eased += sin(spin * PI) * UiFx.BOOT_RING_OVERSHOOT
+	_cycles_ring.value = Run.display_fraction() * clampf(eased, 0.0, 1.0)
+
+	_update_boot_line()
+
+
+## One element resolving: a hard flicker for the first fraction of a second, then
+## a clean ramp. The flicker is hashed on the element index so no two come up in
+## the same rhythm.
+func _boot_alpha(start: float, index: int) -> float:
+	var local: float = _boot_clock - start
+	if local <= 0.0:
+		return 0.0
+	if local >= UiFx.BOOT_ELEMENT_FADE:
+		return 1.0
+	var ramp: float = local / UiFx.BOOT_ELEMENT_FADE
+	var strobe: float = UiFx.hash01(floor(_boot_clock * 42.0) + float(index) * 5.0)
+	return ramp * (0.18 if strobe < 0.4 else 1.0)
+
+
+func _update_boot_line() -> void:
+	var typed: float = clampf(
+			(_boot_clock - 0.18) * UiFx.BOOT_TYPE_SPEED / float(maxi(
+					_boot_line.text.length(), 1)), 0.0, 1.0)
+	_boot_line.visible_ratio = typed
+	var held: float = _boot_clock - UiFx.BOOT_DURATION - UiFx.BOOT_SELFTEST_HOLD
+	_boot_line.modulate.a = 1.0 if held <= 0.0 \
+			else clampf(1.0 - held / UiFx.BOOT_SELFTEST_FADE, 0.0, 1.0)
+
+
+func _finish_boot() -> void:
+	_booting = false
+	for node: CanvasItem in _boot_nodes:
+		node.modulate.a = 1.0
+	_boot_line.text = ""
+	_boot_line.modulate.a = 0.0
+
+
+## Short identity for the self-test line. Deterministic from the peer id and the
+## callsign, so an automated run prints the same instance every time and the two
+## peers in a two-client capture print different ones.
+func _instance_hash() -> int:
+	return hash("%s#%d" % [GameState.local_name, Net.local_id()]) & 0xFFFF
+
 
 # ------------------------------------------------------------------- cycles --
 
 func _update_cycles(delta: float) -> void:
 	var fraction: float = Run.display_fraction()
-	_cycles_ring.value = fraction
+
+	# Sprinting bills the pool at 2.5x (Balance.SPRINT_DRAIN_MULT). The ember is
+	# that surcharge made visible — read off the same speed the host bills from,
+	# not off a separate input bit, so what you see is what you are paying.
+	var sprinting: bool = _player != null and is_instance_valid(_player) \
+			and float(_player.sync_speed) >= Balance.SPRINT_BILLING_SPEED
+	_ember = 1.0 if sprinting else maxf(_ember - delta / UiFx.RING_EMBER_DECAY, 0.0)
+	_cycles_ring.ember = _ember
+
+	# A siphon landing overshoots and settles rather than stepping up: seventy
+	# Cycles arriving at once should feel like a surge through the gauge.
+	var surge: float = 0.0
+	if _surge_clock >= 0.0:
+		_surge_clock += delta
+		if _surge_clock > UiFx.RING_SURGE_TIME:
+			_surge_clock = -1.0
+		else:
+			var u: float = _surge_clock / UiFx.RING_SURGE_TIME
+			surge = UiFx.RING_SURGE_OVERSHOOT * exp(-u * 5.0) * cos(u * 9.0)
+
+	if not _booting:
+		_cycles_ring.value = fraction + surge
 
 	# The ghost arc trails the real value downward, so the drain reads as
 	# something being consumed rather than a number quietly shrinking.
@@ -153,17 +372,35 @@ func _update_cycles(delta: float) -> void:
 		_pulse = maxf(_pulse - delta / PULSE_DECAY, 0.0)
 	_cycles_ring.glow = _pulse
 
-	var warning: bool = fraction < Balance.CYCLES_WARNING_FRACTION
-	var colour: Color = COLOUR_WARNING if warning else COLOUR_OK
-	if warning and not Run.starved():
-		# A slow throb below 25%: visible in peripheral vision, not a strobe.
-		var beat: float = 0.72 + 0.28 * sin(float(Time.get_ticks_msec()) / 190.0)
-		colour = COLOUR_WARNING * beat
+	# Three bands, not two. Amber at half a pool is the "stop wandering" signal
+	# the crew argues over; red below a quarter is the emergency, and only the
+	# emergency gets a heartbeat.
+	var alarm: bool = fraction < Balance.CYCLES_WARNING_FRACTION
+	var colour: Color = COLOUR_OK
+	if alarm:
+		colour = COLOUR_WARNING
+	elif fraction < UiFx.RING_AMBER_FRACTION:
+		# Gamma'd rather than linear. A straight lerp from ice-blue to amber runs
+		# through a pale desaturated grey at the halfway point, and a gauge that
+		# goes *washed out* on its way to a warning reads as broken rather than
+		# as concerned. Curving it keeps the ring on-palette until the tint has
+		# something to say, then commits.
+		var tint: float = clampf(inverse_lerp(
+				UiFx.RING_AMBER_FRACTION, Balance.CYCLES_WARNING_FRACTION,
+				fraction), 0.0, 1.0)
+		colour = COLOUR_OK.lerp(COLOUR_AMBER, pow(tint, UiFx.RING_AMBER_GAMMA))
+
+	var beat: float = 0.0
+	if alarm and not Run.starved():
+		beat = UiFx.heartbeat(UiFx.clock(), UiFx.RING_BEAT_PERIOD)
+		colour = COLOUR_WARNING * (0.74 + 0.26 * beat)
 		colour.a = 1.0
+	_cycles_ring.beat = beat
+
 	_cycles_ring.fill_color = colour
 	_cycles_value.add_theme_color_override("font_color", colour)
 	_cycles_caption.add_theme_color_override("font_color",
-			COLOUR_WARNING if warning else Color(0.36, 0.78, 1.0, 0.75))
+			COLOUR_WARNING if alarm else Color(0.36, 0.78, 1.0, 0.75))
 
 	_cycles_value.text = "%03d" % int(ceilf(Run.cycles))
 	_cycles_cap.text = "/ %d" % int(Run.cycles_max)
@@ -172,6 +409,7 @@ func _update_cycles(delta: float) -> void:
 
 func _on_siphon_taken(_index: int, _pool: float) -> void:
 	_pulse = 1.0
+	_surge_clock = 0.0
 
 
 func _on_layer_changed(number: int) -> void:
@@ -190,7 +428,7 @@ func _update_integrity() -> void:
 	if fraction <= 0.0:
 		colour = COLOUR_WARNING
 	elif fraction < 0.4:
-		colour = Color(1.0, 0.62, 0.26)
+		colour = COLOUR_AMBER
 	_integrity_fill.color = colour
 
 	if Run.local_corrupted():
@@ -206,18 +444,22 @@ func _update_integrity() -> void:
 
 # ------------------------------------------------------------------ channel --
 
-## Prompt and channel ring both come off the local avatar. The muster line is the
-## drop shaft's own prompt, so "CREW IN SHAFT 2/3" needs no special case here.
+## The channel ring stays at the crosshair — it is aiming feedback and belongs
+## where you are looking. The *text* moved out to the object it describes
+## (WorldPrompt); `UiFx.SCREEN_PROMPT_FALLBACK` puts it back for anyone who needs
+## a fixed place on the screen to read.
 func _update_channel() -> void:
 	if _player == null or not is_instance_valid(_player):
 		_channel_ring.visible = false
 		_prompt_label.text = ""
 		return
 
-	var prompt: String = _player.focus_prompt
-	_prompt_label.text = prompt
-	_prompt_label.add_theme_color_override("font_color",
-			COLOUR_TEXT if _player.focus_available else Color(1.0, 0.62, 0.26))
+	if UiFx.SCREEN_PROMPT_FALLBACK:
+		_prompt_label.text = _player.focus_prompt
+		_prompt_label.add_theme_color_override("font_color",
+				COLOUR_TEXT if _player.focus_available else COLOUR_AMBER)
+	elif not _prompt_label.text.is_empty():
+		_prompt_label.text = ""
 
 	var progress: float = _player.channel_progress
 	_channel_ring.visible = progress > 0.001
@@ -260,7 +502,7 @@ func _update_kit() -> void:
 	var track: Control = _heat_fill.get_parent_control()
 	_heat_fill.size.x = float(track.size.x) * clampf(heat, 0.0, 1.0)
 	_heat_fill.color = COLOUR_WARNING if locked else \
-			(Color(1.0, 0.62, 0.26) if heat > 0.6 else COLOUR_OK)
+			(COLOUR_AMBER if heat > 0.6 else COLOUR_OK)
 	_kit_label.text = "BREAKER  ·  OVERHEATED" if locked else "BREAKER"
 	_kit_label.add_theme_color_override("font_color",
 			COLOUR_WARNING if locked else COLOUR_DIM)
@@ -289,8 +531,7 @@ func _update_alerts() -> void:
 				lines.append("%s CORRUPTED  ·  %ds  ·  HOLD E TO RESTORE" % [
 					Net.crew_name(peer), seconds])
 		_alert_label.text = "\n".join(lines)
-		var beat: float = 0.7 + 0.3 * sin(float(Time.get_ticks_msec()) / 140.0)
-		_alert_label.modulate.a = beat
+		_alert_label.modulate.a = 0.7 + 0.3 * UiFx.heartbeat(UiFx.clock(), 0.62)
 
 	if not Run.exfil_calling:
 		_exfil_label.text = ""
@@ -299,15 +540,15 @@ func _update_alerts() -> void:
 	_exfil_label.text = "EXFILTRATION  %02d" % int(ceilf(left))
 	# The pulse tightens as the window closes.
 	var urgency: float = 1.0 - clampf(left / Balance.EXFIL_COUNTDOWN, 0.0, 1.0)
-	var flash: float = 0.65 + 0.35 * absf(sin(
-			float(Time.get_ticks_msec()) / (260.0 - urgency * 170.0)))
-	_exfil_label.modulate.a = flash
+	_exfil_label.modulate.a = 0.65 + 0.35 * UiFx.heartbeat(
+			UiFx.clock(), 0.72 - urgency * 0.42)
 
 
 # -------------------------------------------------------------------- damage --
 
 func _on_damaged(from: Vector3) -> void:
 	_damage_flash = 1.0
+	_glitch = 1.0
 	_damage_local = Vector2.ZERO
 	if _player == null or not is_instance_valid(_player):
 		return
@@ -324,24 +565,222 @@ func _on_damaged(from: Vector3) -> void:
 	_damage_local = Vector2(to_source.dot(right), to_source.dot(forward))
 
 
-## Four edge bands rather than a full-screen wash: a wash tells you that you were
-## hit, and the whole point is telling you *where from*.
+## An arc of corrupted static burnt into the frame edge facing the source. M2
+## used four full-edge bands; those told you *that* you were hit, and the whole
+## point is telling you where from. See DamageArc.
 func _update_damage(delta: float) -> void:
+	if Debug.hud_state == "damage":
+		# Pinned for the capture: the flinch is a fifth of a second long and no
+		# shutter is going to land inside it by luck.
+		_damage_arc.direction = Vector2(0.72, 0.69)
+		_damage_arc.weight = 0.85
+		_glitch = 0.8
+		return
 	if _damage_flash <= 0.0:
 		return
 	_damage_flash = maxf(_damage_flash - delta / Balance.DAMAGE_FLASH_TIME, 0.0)
-	var strength: float = _damage_flash * _damage_flash * 0.55
-
-	_set_edge("Top", maxf(_damage_local.y, 0.0) * strength)
-	_set_edge("Bottom", maxf(-_damage_local.y, 0.0) * strength)
-	_set_edge("Right", maxf(_damage_local.x, 0.0) * strength)
-	_set_edge("Left", maxf(-_damage_local.x, 0.0) * strength)
+	_damage_arc.direction = _damage_local
+	_damage_arc.weight = _damage_flash
 
 
-func _set_edge(edge: String, alpha: float) -> void:
-	var rect: ColorRect = _damage_edges.get_node_or_null(edge) as ColorRect
-	if rect != null:
-		rect.color.a = clampf(alpha, 0.0, 1.0)
+# -------------------------------------------------------------------- glitch --
+
+## Builds the pieces the flinch needs, once: two tinted ghost copies of each big
+## readout (the chromatic split — cheaper and sharper than a per-control shader
+## on a Label), and the list of clusters that jump.
+func _install_glitch_rig() -> void:
+	_clusters = [_crew_cluster, _cycles_panel, _integrity_panel, _kit_panel, _data_panel]
+	_cluster_home.resize(_clusters.size())
+	for i: int in _clusters.size():
+		_cluster_home[i] = _clusters[i].position
+
+	_cycles_ghosts = _make_ghosts(_cycles_value)
+	_data_ghosts = _make_ghosts(_data_value)
+
+	_flicker_labels = [_cycles_caption, _kit_label, _integrity_label, _cycles_cap]
+
+
+func _make_ghosts(source: Label) -> Array[Label]:
+	var made: Array[Label] = []
+	for tint: Color in [Color(1.0, 0.18, 0.22), Color(0.18, 0.95, 1.0)]:
+		var ghost: Label = Label.new()
+		ghost.text = source.text
+		ghost.horizontal_alignment = source.horizontal_alignment
+		ghost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ghost.add_theme_font_size_override("font_size",
+				source.get_theme_font_size("font_size"))
+		ghost.add_theme_color_override("font_color", tint)
+		ghost.modulate.a = 0.0
+		# Behind the real readout: the split should look like fringing on the
+		# glyphs, not like three labels stacked.
+		source.get_parent().add_child(ghost)
+		source.get_parent().move_child(ghost, source.get_index())
+		ghost.position = source.position
+		ghost.size = source.size
+		made.append(ghost)
+	return made
+
+
+func _update_glitch(delta: float) -> void:
+	if Debug.hud_state != "damage":
+		if _glitch <= 0.0:
+			return
+		_glitch = maxf(_glitch - delta / UiFx.GLITCH_TIME, 0.0)
+
+	var shift: float = _glitch * UiFx.GLITCH_SHIFT
+	var tick: float = floor(UiFx.clock() * 45.0)
+	for i: int in _clusters.size():
+		var jump: Vector2 = Vector2(
+				UiFx.hash01(tick + float(i) * 3.1) - 0.5,
+				UiFx.hash01(tick + float(i) * 3.1 + 11.0) - 0.5) * 2.0 * shift
+		_clusters[i].position = _cluster_home[i] + jump
+
+	_split(_cycles_ghosts, _cycles_value)
+	_split(_data_ghosts, _data_value)
+	_corrupt_callsign()
+
+
+func _split(ghosts: Array[Label], source: Label) -> void:
+	var offset: float = _glitch * UiFx.GLITCH_SPLIT
+	for i: int in ghosts.size():
+		var ghost: Label = ghosts[i]
+		if ghost.text != source.text:
+			ghost.text = source.text
+		ghost.modulate.a = _glitch * 0.75
+		ghost.position = source.position + Vector2(offset if i == 0 else -offset, 0.0)
+
+
+## Your own callsign coming apart for a fifth of a second. It is the one label on
+## the HUD that is *you*, which is exactly why it is the one that corrupts.
+func _corrupt_callsign() -> void:
+	if _self_label == null or not is_instance_valid(_self_label):
+		return
+	if _glitch <= 0.001:
+		if _self_label.text != _self_name:
+			_self_label.text = _self_name
+		return
+	var tick: int = int(UiFx.clock() / UiFx.GLITCH_GLYPH_INTERVAL)
+	if tick == _glyph_tick:
+		return
+	_glyph_tick = tick
+
+	var out: String = ""
+	for i: int in _self_name.length():
+		var roll: float = UiFx.hash01(float(tick) * 7.0 + float(i) * 2.3)
+		if roll < _glitch * 0.45:
+			var pick: int = int(UiFx.hash01(float(tick) + float(i) * 5.7)
+					* float(UiFx.CORRUPT_GLYPHS.length()))
+			out += UiFx.CORRUPT_GLYPHS[pick % UiFx.CORRUPT_GLYPHS.length()]
+		else:
+			out += _self_name[i]
+	_self_label.text = out
+
+
+# --------------------------------------------------------------- degradation --
+
+## The interface fails with the pool that powers it. Deliberately later than the
+## amber warning: the readouts change colour first, and only start losing pixels
+## once the crew is genuinely in trouble.
+func _update_degradation() -> void:
+	var target: float = 0.0
+	if Run.configured:
+		if Run.starved():
+			target = 1.0
+		else:
+			target = clampf(inverse_lerp(
+					UiFx.DEGRADE_FRACTION, 0.0, Run.display_fraction()), 0.0, 1.0)
+	if absf(target - _degrade) > 0.002:
+		_degrade = target
+		_specks.degrade = _degrade
+		for sheen: ShaderMaterial in _sheens:
+			sheen.set_shader_parameter("degrade", _degrade)
+
+	if _degrade <= 0.001:
+		return
+	# Label flicker. Hashed on a slow tick and on the label's index so the row
+	# does not blink in unison — a synchronised flicker reads as an animation, an
+	# unsynchronised one reads as a failing panel.
+	var tick: float = floor(UiFx.clock() / UiFx.DEGRADE_TICK)
+	for i: int in _flicker_labels.size():
+		var roll: float = UiFx.hash01(tick + float(i) * 9.4)
+		_flicker_labels[i].modulate.a = \
+				0.25 if roll < 0.16 * _degrade else 1.0
+
+
+# ------------------------------------------------------- holographic depth --
+
+## Installs the sheen materials and the corner tilt.
+##
+## The tilt is deliberately about one degree. Control has no skew (Node2D does),
+## so a small rotation about each cluster's own centre is the layout-safe way to
+## stop the corners reading as rectangles glued to the frame. Any more than this
+## and the text starts to shimmer under TAA — a real cost for an effect that is
+## supposed to be subliminal.
+func _install_depth() -> void:
+	_tilt(_crew_cluster, UiFx.CLUSTER_TILT_DEG)
+	_tilt(_cycles_panel, -UiFx.CLUSTER_TILT_DEG)
+	_tilt(_integrity_panel, -UiFx.CLUSTER_TILT_DEG)
+	_tilt(_kit_panel, -UiFx.CLUSTER_TILT_DEG)
+	_tilt(_data_panel, UiFx.CLUSTER_TILT_DEG)
+
+	_sheen(%CrewSheen, 0.55)
+	_sheen(%CyclesSheen, -0.4)
+	_sheen(%IntegritySheen, -0.35)
+	_sheen(%KitSheen, -0.35)
+	_sheen(%DataSheen, 0.4)
+
+	# The readouts worth corrupting when the pool runs dry.
+	_specks.regions = [
+		Rect2(_cycles_panel.position, _cycles_panel.size),
+		Rect2(_kit_panel.position, _kit_panel.size),
+		Rect2(_integrity_panel.position, _integrity_panel.size),
+		Rect2(_data_panel.position, _data_panel.size),
+	]
+
+
+func _tilt(cluster: Control, degrees: float) -> void:
+	cluster.pivot_offset = cluster.size * 0.5
+	cluster.rotation = deg_to_rad(degrees)
+
+
+func _sheen(rect: ColorRect, perspective: float) -> void:
+	var material: ShaderMaterial = ShaderMaterial.new()
+	material.shader = SHEEN_SHADER
+	material.set_shader_parameter("tint", UiFx.SYSTEM)
+	material.set_shader_parameter("perspective", perspective)
+	# Every cluster gets its own sweep phase. Five panels sweeping in lockstep
+	# would read as one animation across the screen instead of five surfaces.
+	material.set_shader_parameter("sweep_period",
+			UiFx.MENU_SWEEP_INTERVAL * (0.7 + UiFx.hash01(float(_sheens.size()) * 3.7) * 0.9))
+	rect.material = material
+	rect.color = Color(1.0, 1.0, 1.0, 1.0)
+	_sheens.append(material)
+
+
+## A few pixels of spring-damped lag against the lens. The HUD is projected in
+## front of the process, not welded to it, so a hard turn leaves it very slightly
+## behind — and then it catches up with the faintest overshoot.
+##
+## Disabled during automated runs: `--goto` snaps the avatar's rotation, which
+## would fire a large impulse into the spring and make every capture depend on
+## exactly when the shutter landed relative to the teleport.
+func _update_parallax(delta: float) -> void:
+	if Debug.automated or _player == null or not is_instance_valid(_player) or delta <= 0.0:
+		return
+
+	var yaw: float = _player.rotation.y
+	var pitch: float = float(_player.sync_pitch)
+	var spin: Vector2 = Vector2(
+			angle_difference(_last_yaw, yaw), pitch - _last_pitch) / delta
+	_last_yaw = yaw
+	_last_pitch = pitch
+
+	var target: Vector2 = (spin * PARALLAX_GAIN).limit_length(UiFx.PARALLAX_PIXELS)
+	var accel: Vector2 = (target - _parallax) * UiFx.PARALLAX_SPRING \
+			- _parallax_velocity * UiFx.PARALLAX_DAMPING
+	_parallax_velocity += accel * delta
+	_parallax += _parallax_velocity * delta
+	_root.position = _parallax.limit_length(UiFx.PARALLAX_PIXELS * 1.6)
 
 
 # --------------------------------------------------------------------- crew --
@@ -349,6 +788,7 @@ func _set_edge(edge: String, alpha: float) -> void:
 func _rebuild_crew() -> void:
 	for child: Node in _crew_list.get_children():
 		child.queue_free()
+	_self_label = null
 
 	var ids: Array = Net.crew.keys()
 	ids.sort()
@@ -373,6 +813,10 @@ func _crew_row(id: int) -> Control:
 	label.add_theme_color_override("font_color",
 			Color(0.88, 0.94, 1.0) if is_self else Color(0.55, 0.62, 0.72))
 	row.add_child(label)
+	if is_self:
+		# Held so the damage flinch can corrupt it — see `_corrupt_callsign`.
+		_self_label = label
+		_self_name = label.text
 
 	# Per-crewmate integrity: a short bar rather than a number, so the roster
 	# stays scannable at a glance in the dark.
@@ -407,7 +851,7 @@ func _refresh_link() -> void:
 					Run.integrity_of(id) / Balance.INTEGRITY_MAX, 0.0, 1.0)
 			gauge.custom_minimum_size.x = maxf(26.0 * fraction, 1.0)
 			gauge.color = COLOUR_WARNING if fraction <= 0.0 else \
-					(Color(1.0, 0.62, 0.26) if fraction < 0.4 else COLOUR_OK)
+					(COLOUR_AMBER if fraction < 0.4 else COLOUR_OK)
 
 		var tag: Label = row.get_node_or_null("Latency") as Label
 		if tag == null:
@@ -417,7 +861,7 @@ func _refresh_link() -> void:
 			tag.add_theme_color_override("font_color", COLOUR_WARNING)
 		elif Run.is_corrupted(id):
 			tag.text = "DOWN %ds" % int(ceilf(Run.corruption_left(id)))
-			tag.add_theme_color_override("font_color", Color(1.0, 0.62, 0.26))
+			tag.add_theme_color_override("font_color", COLOUR_AMBER)
 		elif id == 1:
 			tag.text = "HOST"
 		elif id == Net.local_id():
@@ -466,7 +910,9 @@ func _set_paused(paused: bool) -> void:
 
 
 ## The debrief, for both ways a run can end. DESIGN.md M5 will make this a proper
-## screen; what it has to do now is say plainly whether the haul came home.
+## screen; what it has to do now is say plainly whether the haul came home — and
+## since M3.8, say it the way the rest of the shell speaks: the lines type
+## themselves in, and the archive total rolls up to what the run just added.
 func _on_run_ended(summary: Dictionary) -> void:
 	_pause.visible = false
 	_summary.visible = true
@@ -495,6 +941,7 @@ func _on_run_ended(summary: Dictionary) -> void:
 	# an agent can get out empty-handed, and that is not the same as being left
 	# inside with the uplink shut behind them.
 	var escaped: Array = summary.get("escaped", []) as Array
+	var mine: int = int(banked.get(Net.local_id(), 0))
 	if success:
 		var ids: Array = banked.keys()
 		ids.sort()
@@ -505,14 +952,53 @@ func _on_run_ended(summary: Dictionary) -> void:
 			if escaped.has(peer):
 				fate = "BANKED %d DATA" % amount if amount > 0 else "OUT, EMPTY BUFFER"
 			lines.append("%-14s %s" % [Net.crew_name(peer), fate])
-		lines.append("")
-		lines.append("ARCHIVE  %d DATA" % GameState.archive)
 	else:
 		lines.append("BUFFERED DATA LOST. COMPILED MODULES INTACT.")
 
 	_summary_body.text = "\n".join(lines)
+	_summary_body.visible_ratio = 0.0
+	_debrief_lines = lines.size()
+	_debrief_clock = 0.0
+
+	# The counter rolls from what the archive held before this run to what it
+	# holds now. Run has already banked, so the target is simply the archive and
+	# the start is the archive minus what came home.
+	_banked_to = GameState.archive
+	_banked_from = maxi(_banked_to - (mine if success else 0), 0)
+	_banked_caption.text = "ARCHIVE  ·  +%d THIS RUN" % mine \
+			if success and mine > 0 else "ARCHIVE"
+	_banked_value.text = str(_banked_from)
+	_banked_value.add_theme_color_override("font_color",
+			Color(0.42, 0.95, 1.0) if success else COLOUR_DIM)
+
 	if DisplayServer.get_name() != "headless":
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
+## Types the summary in and rolls the counter. Snapped to its finished state
+## under automation, so a captured debrief is always the whole panel rather than
+## whatever fraction of it had appeared when the shutter fired.
+func _update_debrief(delta: float) -> void:
+	if _debrief_clock < 0.0:
+		return
+	if Debug.automated and Debug.hud_state != "debrief":
+		_debrief_clock = -1.0
+		_summary_body.visible_ratio = 1.0
+		_banked_value.text = str(_banked_to)
+		return
+
+	_debrief_clock += delta
+	var typing: float = float(_debrief_lines) * UiFx.DEBRIEF_LINE_TIME
+	_summary_body.visible_ratio = clampf(_debrief_clock / maxf(typing, 0.01), 0.0, 1.0)
+
+	var rolling: float = clampf(
+			(_debrief_clock - typing) / UiFx.DEBRIEF_COUNT_TIME, 0.0, 1.0)
+	# Ease out: a counter that decelerates into its total reads as a machine
+	# settling on a number rather than as a linear tween.
+	var eased: float = 1.0 - pow(1.0 - rolling, 3.0)
+	_banked_value.text = str(int(round(lerpf(float(_banked_from), float(_banked_to), eased))))
+	if rolling >= 1.0:
+		_debrief_clock = -1.0
 
 
 func _on_leave_pressed() -> void:
