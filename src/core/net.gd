@@ -1,5 +1,5 @@
 extends Node
-## Net — host/join lifecycle and crew roster for VOIDFALL.
+## Net — host/join lifecycle and crew roster for NULLVOID.
 ##
 ## Topology (DESIGN.md): host-authoritative listen server over ENet. The host
 ## owns world state; players own their own movement (client authority) so input
@@ -7,7 +7,7 @@ extends Node
 ##
 ## Connect handshake:
 ##   1. client connects  -> `connected_to_server`
-##   2. client loads the deck scene; deck calls `world_ready()`
+##   2. client loads the layer scene; the layer calls `world_ready()`
 ##   3. client sends `_register_crew(name, color)` to the host
 ##   4. host stores the roster entry, spawns the player via MultiplayerSpawner,
 ##      replies with the run seed and broadcasts the new roster
@@ -39,7 +39,7 @@ var is_dedicated: bool = false
 
 var _player_scene: PackedScene = null
 var _spawner: MultiplayerSpawner = null
-var _deck: Node = null
+var _layer: Node = null
 var _connect_timer: SceneTreeTimer = null
 
 
@@ -106,7 +106,7 @@ func leave(reason: String = "") -> void:
 	is_dedicated = false
 	crew.clear()
 	_spawner = null
-	_deck = null
+	_layer = null
 	crew_changed.emit()
 	if not reason.is_empty():
 		GameState.report(reason)
@@ -115,9 +115,9 @@ func leave(reason: String = "") -> void:
 		get_tree().change_scene_to_file(MENU_SCENE)
 
 
-## Called by the deck scene on every peer once the world exists.
-func world_ready(deck: Node, spawner: MultiplayerSpawner) -> void:
-	_deck = deck
+## Called by the layer scene on every peer once the world exists.
+func world_ready(layer: Node, spawner: MultiplayerSpawner) -> void:
+	_layer = layer
 	_spawner = spawner
 	_spawner.spawn_function = _spawn_player
 
@@ -148,7 +148,7 @@ func _spawn_for_peer(id: int) -> void:
 	var point: Transform3D = _spawn_point(maxi(spawn_index, 0))
 	_spawner.spawn({
 		"id": id,
-		"name": String(entry.get("name", "SALVAGER")),
+		"name": String(entry.get("name", "AGENT")),
 		"color": Color(entry.get("color", Color.WHITE)),
 		"position": point.origin,
 		"yaw": point.basis.get_euler().y,
@@ -165,7 +165,7 @@ func _spawn_player(data: Variant) -> Node:
 	var player: Node3D = _player_scene.instantiate() as Node3D
 	var id: int = int(info.get("id", 1))
 	player.name = str(id)
-	player.set("player_name", String(info.get("name", "SALVAGER")))
+	player.set("player_name", String(info.get("name", "AGENT")))
 	player.set("player_color", Color(info.get("color", Color.WHITE)))
 	player.position = Vector3(info.get("position", Vector3.ZERO))
 	player.rotation = Vector3(0.0, float(info.get("yaw", 0.0)), 0.0)
@@ -189,8 +189,8 @@ func get_player(id: int) -> Node:
 
 
 func _spawn_point(index: int) -> Transform3D:
-	if _deck != null and is_instance_valid(_deck) and _deck.has_method("get_spawn_point"):
-		return _deck.call("get_spawn_point", index) as Transform3D
+	if _layer != null and is_instance_valid(_layer) and _layer.has_method("get_spawn_point"):
+		return _layer.call("get_spawn_point", index) as Transform3D
 	return Transform3D.IDENTITY
 
 
@@ -213,7 +213,7 @@ func _on_peer_disconnected(id: int) -> void:
 
 
 func _on_connected_to_server() -> void:
-	print("[Net] connected, loading deck")
+	print("[Net] connected, loading layer")
 	_cancel_connect_timeout()
 	get_tree().change_scene_to_file(LAYER_SCENE)
 

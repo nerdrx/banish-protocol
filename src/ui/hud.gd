@@ -1,10 +1,10 @@
 class_name Hud
 extends CanvasLayer
-## In-dive HUD: crosshair, crew roster with connection quality, and the pause
+## In-intrusion HUD: crosshair, crew roster with connection quality, and the pause
 ## overlay that releases the mouse.
 ##
-## Deliberately minimal for M1. DESIGN.md wants this to go diegetic (oxygen ring,
-## suit glow) in M2/M4 — nothing here should grow into a stat wall.
+## Deliberately minimal for M1. DESIGN.md wants this to go diegetic (Cycles ring,
+## shell glow) in M2/M4 — nothing here should grow into a stat wall.
 
 const PING_INTERVAL: float = 0.5
 const NOTICE_DURATION: float = 4.0
@@ -143,4 +143,4 @@ func _set_paused(paused: bool) -> void:
 func _on_leave_pressed() -> void:
 	if DisplayServer.get_name() != "headless":
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
-	Net.leave("YOU LEFT THE DIVE")
+	Net.leave("YOU ABORTED THE INTRUSION")

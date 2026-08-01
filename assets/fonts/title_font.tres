@@ -1,7 +1,7 @@
 [gd_resource type="FontVariation" load_steps=2 format=3]
 
-; Wordmark tracking. VOIDFALL is set wide enough that the letters read as a
-; nameplate stencilled on a hull.
+; Wordmark tracking. NULLVOID is set wide enough that the letters read as a
+; nameplate stencilled on a slab.
 
 [ext_resource type="Font" path="res://assets/fonts/ui_font.tres" id="1_base"]
 

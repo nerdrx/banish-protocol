@@ -1,7 +1,7 @@
 [gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://src/ui/main_menu.gd" id="1_menu"]
-[ext_resource type="Theme" path="res://src/ui/voidfall_theme.tres" id="2_theme"]
+[ext_resource type="Theme" path="res://src/ui/nullvoid_theme.tres" id="2_theme"]
 [ext_resource type="Font" path="res://assets/fonts/title_font.tres" id="3_title"]
 [ext_resource type="Shader" path="res://src/ui/post_process.gdshader" id="4_post"]
 
@@ -109,7 +109,7 @@ theme_override_colors/font_outline_color = Color(0.24, 0.62, 0.95, 0.28)
 theme_override_constants/outline_size = 14
 theme_override_fonts/font = ExtResource("3_title")
 theme_override_font_sizes/font_size = 88
-text = "VOIDFALL"
+text = "NULLVOID"
 horizontal_alignment = 1
 
 [node name="AccentBar" type="ColorRect" parent="Margin/Column"]
@@ -122,7 +122,7 @@ color = Color(0.36, 0.78, 1, 0.75)
 layout_mode = 2
 theme_override_colors/font_color = Color(0.36, 0.44, 0.54, 1)
 theme_override_font_sizes/font_size = 14
-text = "SALVAGE DIVE  //  THE HUSK  //  DECK 01"
+text = "INTRUSION  //  MOTHER  //  LAYER 01"
 horizontal_alignment = 1
 
 [node name="Gap" type="Control" parent="Margin/Column"]
@@ -147,7 +147,7 @@ text = "CALLSIGN"
 [node name="NameEdit" type="LineEdit" parent="Margin/Column/Console/Fields"]
 unique_name_in_owner = true
 layout_mode = 2
-text = "SALVAGER"
+text = "AGENT"
 placeholder_text = "CALLSIGN"
 max_length = 14
 
@@ -155,7 +155,7 @@ max_length = 14
 layout_mode = 2
 theme_override_colors/font_color = Color(0.4, 0.48, 0.58, 1)
 theme_override_font_sizes/font_size = 12
-text = "SUIT MARKER"
+text = "SHELL MARKER"
 
 [node name="ColorRow" type="HBoxContainer" parent="Margin/Column/Console/Fields"]
 unique_name_in_owner = true
@@ -175,7 +175,7 @@ theme_override_constants/separation = 10
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
-text = "HOST DIVE"
+text = "HOST INTRUSION"
 
 [node name="PortEdit" type="LineEdit" parent="Margin/Column/Console/Fields/HostRow"]
 unique_name_in_owner = true

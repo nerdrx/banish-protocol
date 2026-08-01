@@ -2,7 +2,7 @@ extends Node
 ## GameState — session-scoped state that outlives a scene change.
 ##
 ## M1 keeps this deliberately thin: identity for the local crew member and the
-## reason we bounced back to the menu. Oxygen, salvage and run score land in M2/M3.
+## reason we bounced back to the menu. Cycles, buffered data and run score land in M2/M3.
 
 const DEFAULT_COLORS: Array[Color] = [
 	Color(0.36, 0.78, 1.0),   # ice
@@ -14,7 +14,7 @@ const DEFAULT_COLORS: Array[Color] = [
 ]
 
 ## Set before host()/join(); sent to the host on connect.
-var local_name: String = "SALVAGER"
+var local_name: String = "AGENT"
 var local_color: Color = DEFAULT_COLORS[0]
 
 ## Populated when we leave a session, consumed and cleared by the main menu.
@@ -24,7 +24,7 @@ var last_status_message: String = ""
 func sanitize_name(raw: String) -> String:
 	var trimmed: String = raw.strip_edges()
 	if trimmed.is_empty():
-		trimmed = "SALVAGER"
+		trimmed = "AGENT"
 	return trimmed.substr(0, 14).to_upper()
 
 

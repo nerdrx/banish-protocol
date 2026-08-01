@@ -2,7 +2,7 @@ class_name FlickerLight
 extends OmniLight3D
 ## A failing emergency strip. Mostly stable, with brownouts and the occasional
 ## full dropout — the dropout is the point, because it teaches the player not to
-## trust anything on this deck except their own flashlight.
+## trust anything on this layer except their own beam.
 ##
 ## Purely cosmetic and therefore run locally on every peer (no replication):
 ## crewmates seeing slightly different flicker phases costs nothing.

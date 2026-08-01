@@ -3,7 +3,7 @@
 ; Every control in the game pulls from this. Nothing should ever render in
 ; default Godot grey.
 ;
-; Palette: near-black hull, one ice-blue accent, desaturated text. Square
+; Palette: near-black slab, one ice-blue accent, desaturated text. Square
 ; corners throughout — the UI is stencilled onto equipment, not a web page.
 
 [ext_resource type="Font" path="res://assets/fonts/ui_font_wide.tres" id="1_font"]

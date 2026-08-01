@@ -1,14 +1,14 @@
 extends Node
-## Dev — permanent developer entry points driven by command-line user args.
+## Debug — permanent developer entry points driven by command-line user args.
 ##
 ## Everything after a bare `--` reaches us via OS.get_cmdline_user_args():
 ##
 ##   godot --headless --path . -- --server [--port 27015]
 ##       Dedicated host: no local player, no window.
 ##   godot --path . -- --autohost [--port N] [--name X]
-##       Host and drop straight into the deck.
+##       Host and drop straight into the layer.
 ##   godot --path . -- --autojoin 127.0.0.1 [--port N] [--name X]
-##       Join and drop straight into the deck.
+##       Join and drop straight into the layer.
 ##   ... -- --screenshot /tmp/shot.png 120
 ##       Wait 120 rendered frames after the local player spawns, save the
 ##       viewport to a PNG, then quit. Combines with the flags above. Framerate
@@ -23,6 +23,12 @@ const BOOT_DELAY_FRAMES: int = 2
 var screenshot_path: String = ""
 var screenshot_frames: int = 120
 var auto_quit_after: float = 0.0
+
+## Set while a screenshot run is armed. Player honours it and ignores ALL local
+## input. A windowed capture on a live desktop still receives the real user's
+## cursor and keystrokes — without this the avatar wanders off mid-run and no two
+## captures ever frame the same shot.
+var lock_input: bool = false
 
 var _mode: String = ""
 var _address: String = "127.0.0.1"
@@ -98,19 +104,19 @@ func _boot() -> void:
 
 	match _mode:
 		"server":
-			print("[Dev] dedicated server on port %d" % _port)
+			print("[Debug] dedicated server on port %d" % _port)
 			Net.host(_port, true)
 		"host":
 			GameState.local_name = GameState.sanitize_name(
 					_name_override if not _name_override.is_empty() else "HOST-A")
 			GameState.local_color = _pick_color(0)
-			print("[Dev] autohost as %s" % GameState.local_name)
+			print("[Debug] autohost as %s" % GameState.local_name)
 			Net.host(_port, false)
 		"join":
 			GameState.local_name = GameState.sanitize_name(
 					_name_override if not _name_override.is_empty() else "CREW-B")
 			GameState.local_color = _pick_color(1)
-			print("[Dev] autojoin %s:%d as %s" % [_address, _port, GameState.local_name])
+			print("[Debug] autojoin %s:%d as %s" % [_address, _port, GameState.local_name])
 			Net.join(_address, _port)
 		_:
 			pass
@@ -125,13 +131,14 @@ func _pick_color(fallback_index: int) -> Color:
 
 func _arm_screenshot() -> void:
 	if DisplayServer.get_name() == "headless":
-		push_warning("[Dev] --screenshot ignored: headless has no framebuffer")
+		push_warning("[Debug] --screenshot ignored: headless has no framebuffer")
 		screenshot_path = ""
 		return
 	# Pin the framerate so a frame budget is also a wall-clock budget. Uncapped,
 	# this machine renders 600 frames in ~2 s, which silently made the host quit
 	# before a second instance could finish connecting.
 	Engine.max_fps = 60
+	lock_input = true
 
 	_frames_left = screenshot_frames
 	if _mode == "host" or _mode == "join":
@@ -147,12 +154,12 @@ func _arm_screenshot() -> void:
 
 
 func _on_local_player_spawned(_player: Node) -> void:
-	print("[Dev] local player spawned, screenshot in %d frames" % _frames_left)
+	print("[Debug] local player spawned, screenshot in %d frames" % _frames_left)
 	_shot_armed = true
 
 
 func _on_connect_failed(reason: String) -> void:
-	print("[Dev] connect failed (%s), screenshot in %d frames" % [reason, _frames_left])
+	print("[Debug] connect failed (%s), screenshot in %d frames" % [reason, _frames_left])
 	_shot_armed = true
 
 
@@ -170,10 +177,10 @@ func _capture() -> void:
 	var image: Image = get_viewport().get_texture().get_image()
 	var err: Error = image.save_png(screenshot_path)
 	if err == OK:
-		print("[Dev] screenshot saved: %s (%dx%d)" % [
+		print("[Debug] screenshot saved: %s (%dx%d)" % [
 			screenshot_path, image.get_width(), image.get_height()])
 	else:
-		push_error("[Dev] screenshot failed: %s" % error_string(err))
+		push_error("[Debug] screenshot failed: %s" % error_string(err))
 	await get_tree().process_frame
 	# `--quit-in` owns the process lifetime when both are given, so a host can
 	# stay up past its own screenshot while a second instance takes theirs.
@@ -184,12 +191,12 @@ func _capture() -> void:
 func _fail_safe(seconds: float) -> void:
 	await get_tree().create_timer(seconds).timeout
 	if not _shot_taken:
-		push_warning("[Dev] fail-safe fired: capturing without a spawned player")
+		push_warning("[Debug] fail-safe fired: capturing without a spawned player")
 		_shot_taken = true
 		_capture()
 
 
 func _quit_after(seconds: float) -> void:
 	await get_tree().create_timer(seconds).timeout
-	print("[Dev] --quit-in elapsed")
+	print("[Debug] --quit-in elapsed")
 	get_tree().quit()

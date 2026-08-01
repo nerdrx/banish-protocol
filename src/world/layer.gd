@@ -1,6 +1,6 @@
-class_name Deck
+class_name Layer
 extends Node3D
-## Root of a playable deck. Owns the replication rig (spawner + player
+## Root of a playable security layer. Owns the replication rig (spawner + player
 ## container) and hands out crew drop points.
 ##
 ## Every peer loads this scene locally; only spawned player nodes are

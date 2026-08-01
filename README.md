@@ -177,16 +177,27 @@ fiction-earns-the-mechanics reasoning, art direction language.
 ## Roadmap
 
 - [x] **M0 — Design** · concept, systems, fiction, art direction ([DESIGN.md](DESIGN.md))
-- [ ] **M1 — Skeleton crew** *(in development)* · ENet host/join, first-person controller with real feel, decryption beam, moody greybox layer, dedicated server mode
-- [ ] **M2 — The dark** · procgen layers + drop shafts, layer-scaled generation, Cycles + siphon taps, HUD
+- [x] **M1 — Skeleton crew** · ENet host/join, first-person controller with real feel, decryption beam, moody greybox layer, dedicated server mode
+- [ ] **M2 — The dark** *(in development)* · procgen layers + drop shafts, layer-scaled generation, Cycles + siphon taps, HUD
 - [ ] **M3 — The system bites** · Scrubbers + Sentinels, combat, corrupted/restore, data shards, backdoor nodes, exfiltration — *a full intrusion, playable*
 - [ ] **M4 — The long game** · Compilers, permanent modules, per-player saves, backdoor injection lobby, economy balancing
 - [ ] **M5 — Expensive** · glitch post stack, positional audio, kill cams, low-Cycles presentation, menu polish, Linux + Windows exports
 
 ## Screenshots
 
-> 📸 Coming with M1 — the first vertical slice of the art direction (volumetric
-> haze, decryption beams, circuit-trace brutalism) is rendering as you read this.
+> Live captures from the M1 build — two networked instances, real lighting.
+
+*A crewmate's avatar, circuit seams in their shell color, decryption beam cutting the haze — 23 ms link:*
+
+![Crewmate in the dark](.github/assets/screenshots/crew.png)
+
+*Layer architecture: monolith brutalism, hairline traces, a red scan sweep passing through:*
+
+![Scan sweep](.github/assets/screenshots/layer.png)
+
+*Injection console:*
+
+![Main menu](.github/assets/screenshots/menu.png)
 
 ---
 

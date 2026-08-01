@@ -10,7 +10,7 @@
 
 [resource]
 resource_name = "MonolithWall"
-albedo_color = Color(0.112, 0.118, 0.132, 1)
+albedo_color = Color(0.138, 0.145, 0.161, 1)
 metallic = 0.0
 metallic_specular = 0.22
 roughness = 0.88

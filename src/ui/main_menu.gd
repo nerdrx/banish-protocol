@@ -1,6 +1,6 @@
 class_name MainMenu
 extends Control
-## Crew assembly screen: pick a callsign and suit marker, then host or join.
+## Crew assembly screen: pick a callsign and shell marker, then host or join.
 ##
 ## Every failure path ends here with a readable message rather than a hang —
 ## `Net.connect_failed` is the single funnel for "we could not get you in".

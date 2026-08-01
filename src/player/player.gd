@@ -1,6 +1,6 @@
 class_name Player
 extends CharacterBody3D
-## First-person salvager.
+## First-person intrusion program — the crew member's avatar inside MOTHER.
 ##
 ## Movement is client-authoritative (DESIGN.md: responsiveness first, server
 ## sanity checks later). The owning peer simulates locally and pushes pose into
@@ -39,7 +39,7 @@ const NAMEPLATE_FULL_DISTANCE: float = 8.0
 const NAMEPLATE_FADE_DISTANCE: float = 15.0
 
 # --- identity (set by Net._spawn_player on every peer before tree entry) -----
-var player_name: String = "SALVAGER"
+var player_name: String = "AGENT"
 var player_color: Color = Color.WHITE
 
 # --- replicated state -------------------------------------------------------
@@ -72,7 +72,7 @@ var _time_since_packet: float = 0.0
 @onready var beam: SpotLight3D = $BeamRig/Beam
 @onready var beam_cone: MeshInstance3D = $BeamRig/BeamCone
 @onready var body: Node3D = $Body
-@onready var stripe: MeshInstance3D = $Body/Stripe
+@onready var seams: Node3D = $Body/Seams
 @onready var visor: MeshInstance3D = $Body/Visor
 @onready var nameplate: Label3D = $Nameplate
 @onready var synchronizer: MultiplayerSynchronizer = $Sync
@@ -88,7 +88,7 @@ func _ready() -> void:
 	if _is_local:
 		camera.current = true
 		camera.fov = BASE_FOV
-		# Our own hull would fill the lens; keep it only as a shadow caster so
+		# Our own shell would fill the lens; keep it only as a shadow caster so
 		# the beam still throws a silhouette on the floor.
 		_set_shadows_only(body)
 		nameplate.visible = false
@@ -105,14 +105,20 @@ func _ready() -> void:
 func _apply_identity() -> void:
 	nameplate.text = player_name
 	nameplate.modulate = player_color
+	# Circuit seams are how you tell crewmates apart at 20 m in the dark, so they
+	# run hot enough to bloom and are applied to every seam mesh at once.
 	var accent: StandardMaterial3D = StandardMaterial3D.new()
-	accent.albedo_color = player_color.darkened(0.65)
+	accent.albedo_color = player_color.darkened(0.6)
 	accent.emission_enabled = true
 	accent.emission = player_color
-	accent.emission_energy_multiplier = 2.6
-	accent.metallic = 0.2
-	accent.roughness = 0.45
-	stripe.material_override = accent
+	accent.emission_energy_multiplier = 3.0
+	accent.metallic = 0.1
+	accent.roughness = 0.4
+	accent.disable_receive_shadows = true
+	for seam: Node in seams.get_children():
+		var mesh: MeshInstance3D = seam as MeshInstance3D
+		if mesh != null:
+			mesh.material_override = accent
 
 	var visor_mat: StandardMaterial3D = StandardMaterial3D.new()
 	visor_mat.albedo_color = Color(0.02, 0.03, 0.04)
@@ -147,6 +153,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 
 	var motion: InputEventMouseMotion = event as InputEventMouseMotion
+	if motion != null and Debug.lock_input:
+		return
 	if motion != null and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
 		rotate_y(-motion.relative.x * MOUSE_SENSITIVITY)
 		_pitch = clampf(_pitch - motion.relative.y * MOUSE_SENSITIVITY, -PITCH_LIMIT, PITCH_LIMIT)
@@ -176,24 +184,29 @@ func _physics_process(delta: float) -> void:
 
 
 func _simulate_local(delta: float) -> void:
+	# Debug.lock_input freezes the avatar for reproducible automated captures.
+	var frozen: bool = Debug.lock_input
 	if not is_on_floor():
 		velocity.y -= get_gravity().length() * delta
-	elif Input.is_action_just_pressed("jump"):
+	elif not frozen and Input.is_action_just_pressed("jump"):
 		velocity.y = JUMP_VELOCITY
 
-	var input_dir: Vector2 = Input.get_vector(
-			"move_left", "move_right", "move_forward", "move_back")
+	var input_dir: Vector2 = Vector2.ZERO
+	if not frozen:
+		input_dir = Input.get_vector(
+				"move_left", "move_right", "move_forward", "move_back")
 	var wish: Vector3 = (transform.basis * Vector3(input_dir.x, 0.0, input_dir.y))
 	wish.y = 0.0
 	if wish.length_squared() > 1.0:
 		wish = wish.normalized()
 
-	var sprinting: bool = Input.is_action_pressed("sprint") and input_dir.y < -0.1
+	var sprinting: bool = not frozen \
+			and Input.is_action_pressed("sprint") and input_dir.y < -0.1
 	var top_speed: float = SPRINT_SPEED if sprinting else WALK_SPEED
 	var target: Vector3 = wish * top_speed
 	var planar: Vector3 = Vector3(velocity.x, 0.0, velocity.z)
 
-	# Acceleration, never instant — the suit has mass.
+	# Acceleration, never instant — the avatar has mass.
 	var rate: float = AIR_ACCEL
 	if is_on_floor():
 		rate = GROUND_ACCEL if target.length_squared() > 0.01 else GROUND_DECEL
@@ -235,7 +248,7 @@ func _smooth_remote(delta: float) -> void:
 	var blend: float = 1.0 - exp(-16.0 * delta)
 	global_position = global_position.lerp(target, blend)
 	if global_position.distance_to(target) > 6.0:
-		global_position = target  # respawn / teleport — do not slide across the deck.
+		global_position = target  # respawn / teleport — do not slide across the layer.
 
 	rotation.y = lerp_angle(rotation.y, sync_yaw, blend)
 	_pitch = lerp_angle(_pitch, sync_pitch, blend)
@@ -348,4 +361,4 @@ func on_landed(_strength: float) -> void:
 
 
 func interact() -> void:
-	pass  # M2/M3: beacons, salvage, doors.
+	pass  # M2/M3: siphon taps, data shards, gates.

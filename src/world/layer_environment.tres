@@ -1,9 +1,9 @@
 [gd_resource type="Environment" format=3]
 
-; The Husk's look, in one resource.
+; The system's look, in one resource.
 ;
 ; Rules of thumb it encodes:
-;   - Ambient is near-black. If you can see a room without a flashlight, the
+;   - Ambient is near-black. If you can see a room without a beam, the
 ;     ambient is too high.
 ;   - Volumetric fog is dense enough that a 4.6-energy spot reads as a shaft,
 ;     but thin enough that a lit strip 30 m away still resolves.

@@ -1,6 +1,6 @@
 [gd_resource type="StandardMaterial3D" format=3]
 
-; Additive cone stapled to a crewmate's flashlight. The volumetric fog does most
+; Additive cone stapled to a crewmate's decryption beam. The volumetric fog does most
 ; of the work; this just guarantees the beam reads as a solid shaft of light even
 ; when the fog is thin or a peer is far away.
 

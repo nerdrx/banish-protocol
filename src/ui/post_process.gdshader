@@ -7,7 +7,7 @@ render_mode unshaded;
 // not to be noticed on their own.
 //
 // M4 will drive `damage` / `suffocation` from gameplay to push grain, aberration
-// and the vignette hard during low-oxygen and downed states.
+// and the vignette hard during low-Cycles and corrupted states.
 
 uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear;
 

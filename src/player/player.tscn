@@ -1,7 +1,7 @@
-[gd_scene load_steps=12 format=3]
+[gd_scene load_steps=16 format=3]
 
 [ext_resource type="Script" path="res://src/player/player.gd" id="1_player"]
-[ext_resource type="Material" path="res://assets/materials/avatar_shell.tres" id="2_suit"]
+[ext_resource type="Material" path="res://assets/materials/avatar_shell.tres" id="2_shell"]
 [ext_resource type="Material" path="res://assets/materials/beam_cone.tres" id="3_beam"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_body"]
@@ -14,20 +14,32 @@ height = 1.24
 radial_segments = 12
 rings = 4
 
-[sub_resource type="SphereMesh" id="SphereMesh_helmet"]
+[sub_resource type="SphereMesh" id="SphereMesh_dome"]
 radius = 0.235
 height = 0.47
 radial_segments = 14
 rings = 7
 
-[sub_resource type="BoxMesh" id="BoxMesh_stripe"]
-size = Vector3(0.62, 0.075, 0.62)
+[sub_resource type="BoxMesh" id="BoxMesh_pack"]
+size = Vector3(0.36, 0.46, 0.22)
+
+[sub_resource type="BoxMesh" id="BoxMesh_chest"]
+size = Vector3(0.62, 0.055, 0.62)
+
+[sub_resource type="BoxMesh" id="BoxMesh_waist"]
+size = Vector3(0.55, 0.035, 0.55)
+
+[sub_resource type="BoxMesh" id="BoxMesh_spine"]
+size = Vector3(0.05, 0.5, 0.05)
+
+[sub_resource type="BoxMesh" id="BoxMesh_shoulder"]
+size = Vector3(0.042, 0.42, 0.042)
+
+[sub_resource type="BoxMesh" id="BoxMesh_ring"]
+size = Vector3(0.47, 0.028, 0.47)
 
 [sub_resource type="BoxMesh" id="BoxMesh_visor"]
 size = Vector3(0.29, 0.11, 0.06)
-
-[sub_resource type="BoxMesh" id="BoxMesh_pack"]
-size = Vector3(0.36, 0.46, 0.22)
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_beam"]
 top_radius = 1.55
@@ -72,21 +84,43 @@ shape = SubResource("CapsuleShape3D_body")
 [node name="Torso" type="MeshInstance3D" parent="Body"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.78, 0)
 mesh = SubResource("CapsuleMesh_torso")
-surface_material_override/0 = ExtResource("2_suit")
+surface_material_override/0 = ExtResource("2_shell")
 
-[node name="Helmet" type="MeshInstance3D" parent="Body"]
+[node name="Dome" type="MeshInstance3D" parent="Body"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.58, 0)
-mesh = SubResource("SphereMesh_helmet")
-surface_material_override/0 = ExtResource("2_suit")
+mesh = SubResource("SphereMesh_dome")
+surface_material_override/0 = ExtResource("2_shell")
 
 [node name="Pack" type="MeshInstance3D" parent="Body"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.02, 0.28)
 mesh = SubResource("BoxMesh_pack")
-surface_material_override/0 = ExtResource("2_suit")
+surface_material_override/0 = ExtResource("2_shell")
 
-[node name="Stripe" type="MeshInstance3D" parent="Body"]
+[node name="Seams" type="Node3D" parent="Body"]
+
+[node name="Chest" type="MeshInstance3D" parent="Body/Seams"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.16, 0)
-mesh = SubResource("BoxMesh_stripe")
+mesh = SubResource("BoxMesh_chest")
+
+[node name="Waist" type="MeshInstance3D" parent="Body/Seams"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.62, 0)
+mesh = SubResource("BoxMesh_waist")
+
+[node name="Spine" type="MeshInstance3D" parent="Body/Seams"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.02, 0.4)
+mesh = SubResource("BoxMesh_spine")
+
+[node name="ShoulderL" type="MeshInstance3D" parent="Body/Seams"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.285, 1.02, -0.13)
+mesh = SubResource("BoxMesh_shoulder")
+
+[node name="ShoulderR" type="MeshInstance3D" parent="Body/Seams"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.285, 1.02, -0.13)
+mesh = SubResource("BoxMesh_shoulder")
+
+[node name="Ring" type="MeshInstance3D" parent="Body/Seams"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.66, 0)
+mesh = SubResource("BoxMesh_ring")
 
 [node name="Visor" type="MeshInstance3D" parent="Body"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, -0.21)
@@ -135,7 +169,7 @@ no_depth_test = false
 fixed_size = false
 render_priority = 4
 outline_render_priority = 3
-text = "SALVAGER"
+text = "AGENT"
 font_size = 64
 outline_size = 16
 outline_modulate = Color(0, 0, 0, 0.8)
