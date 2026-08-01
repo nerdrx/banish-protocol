@@ -1,0 +1,14 @@
+[gd_resource type="SystemFont" format=3]
+
+; No binary font shipped yet: we resolve a squarish grotesque from the system and
+; fall back down a chain that exists on every Linux/Windows box we target. If we
+; later license an OFL face (Rajdhani / Chakra Petch are the intended look), drop
+; the .ttf in this folder and swap the two variation resources to point at it.
+
+[resource]
+resource_name = "UIFont"
+font_names = PackedStringArray("Rajdhani", "Chakra Petch", "Titillium Web", "Eurostile", "Adwaita Sans", "Liberation Sans", "DejaVu Sans", "Noto Sans")
+font_weight = 500
+antialiasing = 1
+subpixel_positioning = 1
+allow_system_fallback = true

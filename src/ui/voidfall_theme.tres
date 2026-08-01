@@ -1,0 +1,138 @@
+[gd_resource type="Theme" load_steps=11 format=3]
+
+; Every control in the game pulls from this. Nothing should ever render in
+; default Godot grey.
+;
+; Palette: near-black hull, one ice-blue accent, desaturated text. Square
+; corners throughout — the UI is stencilled onto equipment, not a web page.
+
+[ext_resource type="Font" path="res://assets/fonts/ui_font_wide.tres" id="1_font"]
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_normal"]
+content_margin_left = 18.0
+content_margin_top = 10.0
+content_margin_right = 18.0
+content_margin_bottom = 10.0
+bg_color = Color(0.062, 0.072, 0.088, 0.94)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.16, 0.22, 0.3, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_hover"]
+content_margin_left = 18.0
+content_margin_top = 10.0
+content_margin_right = 18.0
+content_margin_bottom = 10.0
+bg_color = Color(0.09, 0.135, 0.18, 0.97)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.32, 0.62, 0.86, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_pressed"]
+content_margin_left = 18.0
+content_margin_top = 10.0
+content_margin_right = 18.0
+content_margin_bottom = 10.0
+bg_color = Color(0.13, 0.26, 0.36, 1)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.45, 0.82, 1, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_disabled"]
+content_margin_left = 18.0
+content_margin_top = 10.0
+content_margin_right = 18.0
+content_margin_bottom = 10.0
+bg_color = Color(0.045, 0.05, 0.058, 0.8)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.1, 0.12, 0.15, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_btn_focus"]
+content_margin_left = 18.0
+content_margin_top = 10.0
+content_margin_right = 18.0
+content_margin_bottom = 10.0
+bg_color = Color(0, 0, 0, 0)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.36, 0.78, 1, 0.65)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_edit_normal"]
+content_margin_left = 12.0
+content_margin_top = 9.0
+content_margin_right = 12.0
+content_margin_bottom = 9.0
+bg_color = Color(0.028, 0.033, 0.042, 0.96)
+border_width_bottom = 2
+border_color = Color(0.16, 0.24, 0.33, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_edit_focus"]
+content_margin_left = 12.0
+content_margin_top = 9.0
+content_margin_right = 12.0
+content_margin_bottom = 9.0
+bg_color = Color(0.04, 0.055, 0.07, 0.98)
+border_width_bottom = 2
+border_color = Color(0.36, 0.78, 1, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_panel"]
+content_margin_left = 26.0
+content_margin_top = 24.0
+content_margin_right = 26.0
+content_margin_bottom = 24.0
+bg_color = Color(0.035, 0.042, 0.052, 0.88)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.12, 0.17, 0.23, 1)
+
+[sub_resource type="StyleBoxFlat" id="StyleBoxFlat_hud_panel"]
+content_margin_left = 14.0
+content_margin_top = 10.0
+content_margin_right = 16.0
+content_margin_bottom = 10.0
+bg_color = Color(0.02, 0.026, 0.034, 0.55)
+border_width_left = 2
+border_color = Color(0.36, 0.78, 1, 0.55)
+
+[resource]
+default_font = ExtResource("1_font")
+default_font_size = 15
+Button/colors/font_color = Color(0.66, 0.74, 0.83, 1)
+Button/colors/font_hover_color = Color(0.85, 0.94, 1, 1)
+Button/colors/font_pressed_color = Color(1, 1, 1, 1)
+Button/colors/font_focus_color = Color(0.85, 0.94, 1, 1)
+Button/colors/font_disabled_color = Color(0.28, 0.32, 0.38, 1)
+Button/font_sizes/font_size = 15
+Button/styles/normal = SubResource("StyleBoxFlat_btn_normal")
+Button/styles/hover = SubResource("StyleBoxFlat_btn_hover")
+Button/styles/pressed = SubResource("StyleBoxFlat_btn_pressed")
+Button/styles/disabled = SubResource("StyleBoxFlat_btn_disabled")
+Button/styles/focus = SubResource("StyleBoxFlat_btn_focus")
+Label/colors/font_color = Color(0.6, 0.68, 0.78, 1)
+Label/colors/font_outline_color = Color(0, 0, 0, 1)
+Label/font_sizes/font_size = 15
+LineEdit/colors/font_color = Color(0.82, 0.9, 0.98, 1)
+LineEdit/colors/font_placeholder_color = Color(0.32, 0.38, 0.46, 1)
+LineEdit/colors/font_selected_color = Color(0.02, 0.04, 0.06, 1)
+LineEdit/colors/caret_color = Color(0.36, 0.78, 1, 1)
+LineEdit/colors/selection_color = Color(0.36, 0.78, 1, 0.5)
+LineEdit/font_sizes/font_size = 15
+LineEdit/styles/normal = SubResource("StyleBoxFlat_edit_normal")
+LineEdit/styles/focus = SubResource("StyleBoxFlat_edit_focus")
+Panel/styles/panel = SubResource("StyleBoxFlat_panel")
+PanelContainer/styles/panel = SubResource("StyleBoxFlat_panel")
+HudPanel/base_type = &"PanelContainer"
+HudPanel/styles/panel = SubResource("StyleBoxFlat_hud_panel")

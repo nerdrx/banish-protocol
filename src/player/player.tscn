@@ -1,0 +1,147 @@
+[gd_scene load_steps=12 format=3]
+
+[ext_resource type="Script" path="res://src/player/player.gd" id="1_player"]
+[ext_resource type="Material" path="res://assets/materials/avatar_shell.tres" id="2_suit"]
+[ext_resource type="Material" path="res://assets/materials/beam_cone.tres" id="3_beam"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_body"]
+radius = 0.34
+height = 1.8
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_torso"]
+radius = 0.32
+height = 1.24
+radial_segments = 12
+rings = 4
+
+[sub_resource type="SphereMesh" id="SphereMesh_helmet"]
+radius = 0.235
+height = 0.47
+radial_segments = 14
+rings = 7
+
+[sub_resource type="BoxMesh" id="BoxMesh_stripe"]
+size = Vector3(0.62, 0.075, 0.62)
+
+[sub_resource type="BoxMesh" id="BoxMesh_visor"]
+size = Vector3(0.29, 0.11, 0.06)
+
+[sub_resource type="BoxMesh" id="BoxMesh_pack"]
+size = Vector3(0.36, 0.46, 0.22)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_beam"]
+top_radius = 1.55
+bottom_radius = 0.045
+height = 9.0
+radial_segments = 16
+rings = 0
+cap_top = false
+cap_bottom = false
+
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_player"]
+properties/0/path = NodePath(".:sync_position")
+properties/0/spawn = true
+properties/0/replication_mode = 1
+properties/1/path = NodePath(".:sync_yaw")
+properties/1/spawn = true
+properties/1/replication_mode = 1
+properties/2/path = NodePath(".:sync_pitch")
+properties/2/spawn = true
+properties/2/replication_mode = 1
+properties/3/path = NodePath(".:sync_speed")
+properties/3/spawn = true
+properties/3/replication_mode = 1
+properties/4/path = NodePath(".:sync_grounded")
+properties/4/spawn = true
+properties/4/replication_mode = 2
+properties/5/path = NodePath(".:sync_beam")
+properties/5/spawn = true
+properties/5/replication_mode = 2
+
+[node name="Player" type="CharacterBody3D"]
+collision_layer = 2
+collision_mask = 3
+script = ExtResource("1_player")
+
+[node name="Collision" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_body")
+
+[node name="Body" type="Node3D" parent="."]
+
+[node name="Torso" type="MeshInstance3D" parent="Body"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.78, 0)
+mesh = SubResource("CapsuleMesh_torso")
+surface_material_override/0 = ExtResource("2_suit")
+
+[node name="Helmet" type="MeshInstance3D" parent="Body"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.58, 0)
+mesh = SubResource("SphereMesh_helmet")
+surface_material_override/0 = ExtResource("2_suit")
+
+[node name="Pack" type="MeshInstance3D" parent="Body"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.02, 0.28)
+mesh = SubResource("BoxMesh_pack")
+surface_material_override/0 = ExtResource("2_suit")
+
+[node name="Stripe" type="MeshInstance3D" parent="Body"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.16, 0)
+mesh = SubResource("BoxMesh_stripe")
+
+[node name="Visor" type="MeshInstance3D" parent="Body"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, -0.21)
+mesh = SubResource("BoxMesh_visor")
+
+[node name="Head" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.62, 0)
+
+[node name="Camera" type="Camera3D" parent="Head"]
+current = false
+fov = 74.0
+near = 0.05
+far = 260.0
+
+[node name="BeamRig" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.62, 0)
+
+[node name="Beam" type="SpotLight3D" parent="BeamRig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.02, -0.45)
+light_color = Color(0.87, 0.91, 1, 1)
+light_energy = 9.0
+light_indirect_energy = 0.35
+light_volumetric_fog_energy = 2.1
+light_specular = 0.5
+shadow_enabled = true
+shadow_bias = 0.035
+shadow_normal_bias = 1.4
+spot_range = 30.0
+spot_attenuation = 0.55
+spot_angle = 26.0
+spot_angle_attenuation = 1.7
+
+[node name="BeamCone" type="MeshInstance3D" parent="BeamRig"]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, 1, 0, -1, -4.37114e-08, 0, -0.02, -4.95)
+cast_shadow = 0
+mesh = SubResource("CylinderMesh_beam")
+material_override = ExtResource("3_beam")
+
+[node name="Nameplate" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.16, 0)
+pixel_size = 0.0034
+billboard = 1
+shaded = false
+double_sided = true
+no_depth_test = false
+fixed_size = false
+render_priority = 4
+outline_render_priority = 3
+text = "SALVAGER"
+font_size = 64
+outline_size = 16
+outline_modulate = Color(0, 0, 0, 0.8)
+
+[node name="Sync" type="MultiplayerSynchronizer" parent="."]
+root_path = NodePath("..")
+replication_interval = 0.05
+delta_interval = 0.05
+replication_config = SubResource("SceneReplicationConfig_player")

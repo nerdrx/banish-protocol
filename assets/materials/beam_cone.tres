@@ -1,0 +1,18 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+; Additive cone stapled to a crewmate's flashlight. The volumetric fog does most
+; of the work; this just guarantees the beam reads as a solid shaft of light even
+; when the fog is thin or a peer is far away.
+
+[resource]
+resource_name = "BeamCone"
+transparency = 1
+blend_mode = 1
+; CULL_BACK, deliberately. The cone is an open tube with outward normals, so
+; back-face culling makes it vanish the moment the camera is inside it. Without
+; this, standing in a crewmate's beam washes the entire frame out with a grey
+; additive wedge.
+cull_mode = 0
+shading_mode = 0
+disable_receive_shadows = true
+albedo_color = Color(0.62, 0.76, 1, 0.035)

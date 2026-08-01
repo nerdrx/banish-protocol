@@ -1,3 +1,12 @@
+# Godot 4+ engine cache / imported assets
+.godot/
+
+# Exports
+/build/
+/export/
+*.pck
+*.zip
+
 node_modules/
 dist/
 *.log

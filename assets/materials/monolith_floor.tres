@@ -1,0 +1,11 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+; Floor slab: darker than the walls and semi-gloss, so a beam sweep leaves a long
+; specular smear and the floor grid traces get a faint reflection under them.
+
+[resource]
+resource_name = "MonolithFloor"
+albedo_color = Color(0.062, 0.068, 0.079, 1)
+metallic = 0.16
+metallic_specular = 0.5
+roughness = 0.38

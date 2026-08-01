@@ -1,0 +1,11 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+; Data conduits, structural ribs and equipment casings. Slightly lighter and
+; glossier than the slabs so hardware separates from architecture.
+
+[resource]
+resource_name = "Conduit"
+albedo_color = Color(0.094, 0.101, 0.114, 1)
+metallic = 0.28
+metallic_specular = 0.42
+roughness = 0.52

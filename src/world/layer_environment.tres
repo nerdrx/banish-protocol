@@ -1,0 +1,65 @@
+[gd_resource type="Environment" format=3]
+
+; The Husk's look, in one resource.
+;
+; Rules of thumb it encodes:
+;   - Ambient is near-black. If you can see a room without a flashlight, the
+;     ambient is too high.
+;   - Volumetric fog is dense enough that a 4.6-energy spot reads as a shaft,
+;     but thin enough that a lit strip 30 m away still resolves.
+;   - Glow is on a screen blend so emissive trim blooms without blowing out.
+
+[resource]
+background_mode = 1
+background_color = Color(0.004, 0.005, 0.007, 1)
+background_energy_multiplier = 1.0
+ambient_light_source = 2
+ambient_light_color = Color(0.10, 0.13, 0.19, 1)
+ambient_light_sky_contribution = 0.0
+ambient_light_energy = 0.28
+reflected_light_source = 0
+tonemap_mode = 3
+tonemap_exposure = 1.05
+tonemap_white = 6.0
+ssao_enabled = true
+ssao_radius = 1.4
+ssao_intensity = 2.6
+ssao_power = 1.6
+ssao_detail = 0.6
+ssao_light_affect = 0.15
+ssao_ao_channel_affect = 0.0
+glow_enabled = true
+glow_normalized = false
+glow_intensity = 0.72
+glow_strength = 1.05
+glow_mix = 0.05
+glow_bloom = 0.05
+glow_blend_mode = 1
+glow_hdr_threshold = 1.1
+glow_hdr_scale = 2.0
+glow_hdr_luminance_cap = 12.0
+glow_levels/1 = 0.0
+glow_levels/2 = 0.6
+glow_levels/3 = 1.0
+glow_levels/4 = 0.8
+glow_levels/5 = 0.5
+glow_levels/6 = 0.25
+glow_levels/7 = 0.0
+fog_enabled = false
+volumetric_fog_enabled = true
+volumetric_fog_density = 0.032
+volumetric_fog_albedo = Color(0.33, 0.38, 0.46, 1)
+volumetric_fog_emission = Color(0.01, 0.013, 0.02, 1)
+volumetric_fog_emission_energy = 0.15
+volumetric_fog_gi_inject = 0.0
+volumetric_fog_anisotropy = 0.28
+volumetric_fog_length = 72.0
+volumetric_fog_detail_spread = 2.2
+volumetric_fog_ambient_inject = 0.0
+volumetric_fog_sky_affect = 0.0
+volumetric_fog_temporal_reprojection_enabled = true
+volumetric_fog_temporal_reprojection_amount = 0.92
+adjustment_enabled = true
+adjustment_brightness = 1.0
+adjustment_contrast = 1.08
+adjustment_saturation = 0.9

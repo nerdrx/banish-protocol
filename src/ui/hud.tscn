@@ -1,0 +1,161 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://src/ui/hud.gd" id="1_hud"]
+[ext_resource type="Theme" path="res://src/ui/voidfall_theme.tres" id="2_theme"]
+
+[node name="HUD" type="CanvasLayer"]
+layer = 2
+script = ExtResource("1_hud")
+
+[node name="Root" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+theme = ExtResource("2_theme")
+
+[node name="Crosshair" type="ColorRect" parent="Root"]
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -1.5
+offset_top = -1.5
+offset_right = 1.5
+offset_bottom = 1.5
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0.82, 0.91, 1, 0.45)
+
+[node name="CrewPanel" type="PanelContainer" parent="Root"]
+layout_mode = 1
+anchors_preset = 0
+offset_left = 24.0
+offset_top = 22.0
+offset_right = 232.0
+offset_bottom = 120.0
+grow_horizontal = 1
+grow_vertical = 1
+mouse_filter = 2
+theme_type_variation = &"HudPanel"
+
+[node name="Column" type="VBoxContainer" parent="Root/CrewPanel"]
+layout_mode = 2
+theme_override_constants/separation = 5
+
+[node name="Header" type="Label" parent="Root/CrewPanel/Column"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.36, 0.78, 1, 0.75)
+theme_override_font_sizes/font_size = 11
+text = "CREW"
+
+[node name="CrewList" type="VBoxContainer" parent="Root/CrewPanel/Column"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="LinkLabel" type="Label" parent="Root"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -220.0
+offset_top = -42.0
+offset_right = -24.0
+offset_bottom = -22.0
+grow_horizontal = 0
+grow_vertical = 0
+mouse_filter = 2
+theme_override_colors/font_color = Color(0.4, 0.5, 0.6, 1)
+theme_override_font_sizes/font_size = 12
+text = "LINK"
+horizontal_alignment = 2
+
+[node name="NoticeLabel" type="Label" parent="Root"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -260.0
+offset_top = -96.0
+offset_right = 260.0
+offset_bottom = -74.0
+grow_horizontal = 2
+grow_vertical = 0
+mouse_filter = 2
+theme_override_colors/font_color = Color(0.62, 0.82, 1, 1)
+theme_override_font_sizes/font_size = 13
+text = ""
+horizontal_alignment = 1
+
+[node name="PauseOverlay" type="Control" parent="Root"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Dim" type="ColorRect" parent="Root/PauseOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+color = Color(0.004, 0.006, 0.01, 0.78)
+
+[node name="Center" type="CenterContainer" parent="Root/PauseOverlay"]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+
+[node name="Console" type="PanelContainer" parent="Root/PauseOverlay/Center"]
+custom_minimum_size = Vector2(360, 0)
+layout_mode = 2
+
+[node name="Column" type="VBoxContainer" parent="Root/PauseOverlay/Center/Console"]
+layout_mode = 2
+theme_override_constants/separation = 14
+
+[node name="Title" type="Label" parent="Root/PauseOverlay/Center/Console/Column"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.82, 0.92, 1, 1)
+theme_override_font_sizes/font_size = 22
+text = "DIVE PAUSED"
+horizontal_alignment = 1
+
+[node name="Hint" type="Label" parent="Root/PauseOverlay/Center/Console/Column"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.34, 0.4, 0.5, 1)
+theme_override_font_sizes/font_size = 11
+text = "WASD MOVE   ·   SHIFT SPRINT   ·   SPACE JUMP   ·   F LIGHT   ·   E INTERACT"
+horizontal_alignment = 1
+autowrap_mode = 2
+
+[node name="ResumeButton" type="Button" parent="Root/PauseOverlay/Center/Console/Column"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "RESUME DIVE"
+
+[node name="LeaveButton" type="Button" parent="Root/PauseOverlay/Center/Console/Column"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "LEAVE DIVE"

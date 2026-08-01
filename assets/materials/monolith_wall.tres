@@ -1,0 +1,16 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+; Monolithic wall slab — matte, near-black, no sheen. Digital brutalism: these
+; read as poured mass, and every bit of visual interest on them comes from the
+; hairline circuit traces inlaid on top.
+;
+; Metallic stays at zero. A true metal has no diffuse response, so a head-mounted
+; beam aimed at a metallic slab returns nothing but an off-axis specular lobe and
+; the room renders black. Matte diffuse is what the decryption beam can resolve.
+
+[resource]
+resource_name = "MonolithWall"
+albedo_color = Color(0.112, 0.118, 0.132, 1)
+metallic = 0.0
+metallic_specular = 0.22
+roughness = 0.88

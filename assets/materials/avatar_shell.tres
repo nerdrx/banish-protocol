@@ -1,0 +1,12 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+; Intrusion-program avatar shell: sleek, dark, semi-gloss. Kept light enough in
+; value to catch a crewmate's beam — the player's identity is carried by the
+; emissive circuit seams, which Player._apply_identity() tints at runtime.
+
+[resource]
+resource_name = "AvatarShell"
+albedo_color = Color(0.128, 0.134, 0.152, 1)
+metallic = 0.25
+metallic_specular = 0.55
+roughness = 0.3

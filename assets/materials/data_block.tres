@@ -1,0 +1,11 @@
+[gd_resource type="StandardMaterial3D" format=3]
+
+; Stacked data blocks — cold, matte, faintly blue. Deliberately close to the
+; walls in value so they read as architecture until your beam crosses them.
+
+[resource]
+resource_name = "DataBlock"
+albedo_color = Color(0.108, 0.121, 0.148, 1)
+metallic = 0.05
+metallic_specular = 0.3
+roughness = 0.8
