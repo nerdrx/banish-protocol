@@ -1,4 +1,4 @@
-# VOIDFALL — Design Document
+# KERNELFALL — Design Document
 
 > 1–4 player co-op first-person roguelite. You are an invading program descending
 > through the security layers of a rogue AI to steal its data. Its antivirus is
@@ -173,7 +173,7 @@ Steal the data. Reach a backdoor. Exfiltrate before the system decompiles you.
 - Native exports: Linux + Windows from day one (export templates installed).
 
 ```
-voidfall/
+kernelfall/
   project.godot
   src/
     core/       autoloads: Net, GameState, Rng, Debug
