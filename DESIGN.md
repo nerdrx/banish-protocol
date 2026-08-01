@@ -234,6 +234,16 @@ nullvoid/
 - **M3.5 — Steamworks**: GodotSteam GDExtension, Steam lobbies + invites +
   join-in-progress, SteamMultiplayerPeer transport beside ENet, rich presence,
   Achievements autoload (local-first, Steam-mirrored), dev on App ID 480.
+- **M3.7 — Embodiment** (user-provided assets in `/mnt/.../3dprops/`):
+  **Gun_Surge.fbx** → the breaker: first-person viewmodel + third-person prop
+  socketed to crewmate hands, muzzle-anchored beam-lash VFX, NULLVOID material
+  pass (matte black + teal emissive slots), 0.01 import scale fix.
+  **CyberSentinel.fbx** → the Sentinel: 94-bone rigged cyber-beast (no baked
+  anims — by design it does NOT walk: frictionless glide with glitch-stutter
+  on direction change, procedural head-track via eye/head bones so it watches
+  players, jaw bone for the scream, IK claw plants on lunge). Red antivirus
+  emissive; Armour/LightMetal slots go monolith-matte. FBX→glTF via Blender
+  5.2 headless (pipeline verified). Crew avatars stay circuit-seam shells.
 - **M4 — The long game**: Compilers + permanent module tracks, per-player save
   files, backdoor-injection lobby flow, archive economy, threat-curve balancing.
 - **M5 — Expensive**: post/glitch polish, audio, screen shake, kill cams,
