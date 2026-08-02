@@ -157,11 +157,19 @@ func _rebuild() -> void:
 	var decals: int = 0
 	if _builder != null and is_instance_valid(_builder):
 		decals = _builder.find_children("*", "Decal", true, false).size()
-	print("[Layer] built %s  nodes=%d lights=%d shadowed=%d decals=%d" % [
+	var decay: String = ""
+	if _builder != null and is_instance_valid(_builder) and not Run.use_test_layer:
+		var census: PackedInt32Array = _builder.decay_census
+		var total: int = 0
+		for kind: int in census:
+			total += kind
+		decay = " decay=%d(displaced %d, shimmer %d, dead %d, arcing %d)" % [
+			total, census[1], census[2], census[3], census[4]]
+	print("[Layer] built %s  nodes=%d lights=%d shadowed=%d decals=%d%s" % [
 		"layer %d: hand-authored test layer" % Run.layer_number if Run.use_test_layer
 				else LayerParams.describe(Run.layer_number),
 		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)), lights, shadowed,
-		decals])
+		decals, decay])
 
 
 ## The longest corridor on the layer, entered from one end looking down it.
@@ -206,8 +214,71 @@ func _adopt_test_layer_furniture() -> void:
 		siphon_approaches.append(tap + Vector3(0.0, 0.0, 2.6))
 
 
-## Ambient falls with depth (LayerParams). The environment resource is duplicated
-## so a runtime tweak never writes back to the .tres shared by every layer.
+# ---------------------------------------------------------------- depth bands --
+#
+# DESIGN.md's aesthetic gradient has a colour axis as well as a brightness one:
+# "surface rings are clean modern datacenter-brutalism... deeper rings decay into
+# legacy architecture". M3.7 shipped the brightness half (LayerParams'
+# `ambient_scale` and `light_scale`) and left every ring the same colour, so a
+# layer-16 corridor was a layer-2 corridor with the dimmer down.
+#
+# Three anchors, lerped by layer number, and nothing else changes: no new assets,
+# no per-band lighting rigs, no material swaps. It is the cheapest possible
+# version of the biome-band backlog in DESIGN.md's M7 candidates, and it exists
+# mostly to answer one question the player should never have to ask out loud —
+# *how deep am I?* — without printing a number at them.
+#
+#   SURFACE   clean and cold. Public-facing infrastructure, still maintained,
+#             lit blue-white because somebody specified it that way.
+#   DRAINED   the teal bleeds out toward grey. Nothing is hostile yet; it is
+#             simply that nobody has been down here in a long time and the
+#             colour has gone out of the place.
+#   HOSTILE   warm undertones creeping into the shadows. Not red — red is
+#             reserved for the alert state and stays reserved — but the blacks
+#             stop being blue-black and start being brown-black, which the eye
+#             reads as *wrong* long before it can say why.
+#
+# The three ambients are within 15% of each other in luminance on purpose. This
+# is a hue shift, not an exposure change: the darkness law is owned by
+# `ambient_scale` and a grading pass is not allowed to quietly renegotiate it.
+const GRADE_AMBIENT: Array[Color] = [
+	Color(0.075, 0.115, 0.200),
+	Color(0.086, 0.104, 0.122),
+	Color(0.116, 0.094, 0.081),
+]
+const GRADE_FOG: Array[Color] = [
+	Color(0.32, 0.40, 0.50),
+	Color(0.36, 0.39, 0.41),
+	Color(0.47, 0.39, 0.34),
+]
+const GRADE_BACKGROUND: Array[Color] = [
+	Color(0.0030, 0.0042, 0.0068),
+	Color(0.0034, 0.0038, 0.0042),
+	Color(0.0050, 0.0038, 0.0031),
+]
+## Saturation drains through the middle band and comes fractionally back in the
+## deep one — the warmth has to be visible, and a fully desaturated frame cannot
+## carry a hue shift at all.
+const GRADE_SATURATION: Array[float] = [1.06, 0.88, 0.97]
+## Where each anchor lands. Layer 1 is pure surface; 10 is fully drained; 16 and
+## below is fully hostile. Between them it is a straight lerp, so a descent is a
+## slow slide rather than three steps.
+const GRADE_DRAINED_LAYER: float = 10.0
+const GRADE_HOSTILE_LAYER: float = 16.0
+
+
+## 0..2 position along the three grade anchors.
+static func grade_position(layer: int) -> float:
+	var n: float = float(maxi(layer, 1))
+	if n <= GRADE_DRAINED_LAYER:
+		return clampf(inverse_lerp(1.0, GRADE_DRAINED_LAYER, n), 0.0, 1.0)
+	return 1.0 + clampf(inverse_lerp(
+			GRADE_DRAINED_LAYER, GRADE_HOSTILE_LAYER, n), 0.0, 1.0)
+
+
+## Ambient falls with depth (LayerParams) and its *colour* shifts with it
+## (GRADE_*). The environment resource is duplicated so a runtime tweak never
+## writes back to the .tres shared by every layer.
 func _apply_environment() -> void:
 	var source: Environment = _world_environment.environment
 	if source == null:
@@ -220,6 +291,15 @@ func _apply_environment() -> void:
 		set_meta("base_ambient", source.ambient_light_energy)
 	scaled.ambient_light_energy = float(get_meta("base_ambient")) \
 			* float(params["ambient_scale"])
+
+	var band: float = grade_position(Run.layer_number)
+	var low: int = 0 if band < 1.0 else 1
+	var mix: float = band if band < 1.0 else band - 1.0
+	scaled.ambient_light_color = GRADE_AMBIENT[low].lerp(GRADE_AMBIENT[low + 1], mix)
+	scaled.volumetric_fog_albedo = GRADE_FOG[low].lerp(GRADE_FOG[low + 1], mix)
+	scaled.background_color = GRADE_BACKGROUND[low].lerp(GRADE_BACKGROUND[low + 1], mix)
+	scaled.adjustment_saturation = lerpf(
+			GRADE_SATURATION[low], GRADE_SATURATION[low + 1], mix)
 	_world_environment.environment = scaled
 
 

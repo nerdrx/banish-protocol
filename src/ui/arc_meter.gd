@@ -7,6 +7,12 @@ extends Control
 ## read as "diegetic program-shell UI" — a StyleBox ProgressBar always reads as
 ## an application, and nothing in this game should.
 ##
+## M4.7 restyles it as an **analog instrument on a phosphor tube** rather than a
+## digital arc. Same living behaviour, different material: the fill is amber
+## phosphor, the head hunts by a fraction of a pixel the way a moving-coil pointer
+## does, and the ticks above the reading are not "empty" — they are **burnt in**,
+## the ghost left on the glass by a gauge that has spent years sitting at full.
+##
 ## M3.8 turns the Cycles ring into something that is visibly *alive*:
 ##
 ##   * the fill is **segmented**, notched at regular intervals, and the fine tick
@@ -34,9 +40,9 @@ extends Control
 @export var segments: int = 96
 @export var tick_count: int = 12
 
-@export var track_color: Color = Color(0.13, 0.2, 0.27, 0.85)
-@export var fill_color: Color = Color(0.36, 0.86, 1.0)
-@export var tick_color: Color = Color(0.3, 0.45, 0.58, 0.7)
+@export var track_color: Color = Color(0.20, 0.13, 0.05, 0.75)
+@export var fill_color: Color = Color(0.98, 0.68, 0.22)
+@export var tick_color: Color = Color(0.62, 0.42, 0.18, 0.75)
 
 @export_group("Living ring")
 ## Notches cut into the fill. Zero draws one continuous arc (M2 behaviour).
@@ -46,6 +52,10 @@ extends Control
 @export var orbit_gap: float = 13.0
 ## Burnt ticks are drawn at this fraction of a live tick's length.
 @export var burnt_tick_scale: float = 0.45
+## Needle jitter, in pixels of radius. A moving-coil meter never sits perfectly
+## still; the pointer hunts by a fraction of a division. Tiny — this has to be
+## something you feel rather than something you can see happening.
+@export var needle_jitter: float = 0.55
 
 ## 0..1 gauge reading.
 var value: float = 1.0: set = _set_value
@@ -171,11 +181,13 @@ func _draw() -> void:
 	if ember > 0.001:
 		_draw_ember(centre, r, t, start, sweep, end)
 
-	# Leading cap: the bright head of the charge. Tinted toward the fill rather
-	# than pure white — at low readings a white dot on a short red stub is the
-	# brightest thing in the corner, and the eye goes to the wrong element.
-	var head: Vector2 = centre + Vector2(cos(end), sin(end)) * r
-	draw_circle(head, t * 0.52, fill_color.lerp(Color(1.0, 1.0, 1.0), 0.55))
+	# Leading cap: the bright head of the charge, hunting by half a pixel the way
+	# a needle does. Tinted toward the phosphor's hot value rather than to white —
+	# at low readings a white dot on a short red stub is the brightest thing in
+	# the corner, and the eye goes to the wrong element.
+	var hunt: float = (UiFx.hash01(floor(UiFx.clock() * 11.0)) - 0.5) * 2.0
+	var head: Vector2 = centre + Vector2(cos(end), sin(end)) * (r + hunt * needle_jitter)
+	draw_circle(head, t * 0.52, fill_color.lerp(UiFx.SYSTEM_HOT, 0.65))
 
 
 ## Fine ticks outside the arc. Everything above the current reading is *burnt*:
@@ -190,8 +202,10 @@ func _draw_ticks(centre: Vector2, r: float, t: float) -> void:
 		var length: float = 4.0 if live else 4.0 * burnt_tick_scale
 		var colour: Color = tick_color
 		if not live:
-			colour = Color(tick_color.r * 0.5, tick_color.g * 0.42, tick_color.b * 0.4,
-					tick_color.a * 0.38)
+			# Burn-in, not absence: a division the gauge has sat at for decades has
+			# etched itself into the phosphor and still shows faintly with nothing
+			# driving it. Same hue, a fifth of the brightness.
+			colour = Color(tick_color.r, tick_color.g, tick_color.b, tick_color.a * 0.30)
 		# Burnt ticks sit a hair off the ring; a perfectly aligned dead tick just
 		# looks like a dimmer live one.
 		var skew: float = 0.0 if live else (UiFx.hash01(float(i) * 3.7) - 0.5) * 2.4

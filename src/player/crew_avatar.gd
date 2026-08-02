@@ -124,7 +124,59 @@ const AIM_LIFT: float = 0.34
 ## on the owning peer**. Remote crewmates keep the honest pose, because from
 ## across a room the cheat would read as a program carrying its tool up by its
 ## chin. Same model, two truths, one of them for an audience of one.
-const FP_HOLD_OFFSET: Vector3 = Vector3(0.02, 0.075, -0.045)
+##
+## M4.7 re-anchors it. The M3.7 tuning put the receiver almost under the
+## crosshair, which reads as a weapon held up at the ready — an ADS pose — and
+## crowds the one part of the frame the player is actually looking at. The hold
+## moves right and down until the muzzle sits around two thirds of the way across
+## the frame and the bottom edge cuts through the stock, which is where a carried
+## tool belongs and where every shooter since Half-Life has put one.
+##
+## Right is +X and up is +Y in the avatar's own frame, so this is "further out,
+## and lower" — but only a little, because this bone carries the CHEST MESH. The
+## outboard travel that actually moves the weapon across the frame is done at the
+## shoulder instead; see FP_ARM_OFFSET.
+const FP_HOLD_OFFSET: Vector3 = Vector3(0.028, 0.052, -0.030)
+## The rest of the way out, applied to BOTH SHOULDERS rather than to the chest.
+##
+## Two things are going on here and both of them were learned the hard way.
+##
+## **Why not the chest.** Translating the chest far enough to put the muzzle at
+## two thirds of the frame width also translates the chest plate — a large pale
+## slab 30 cm from the lens — straight into view the moment the player looks
+## down. The shoulders carry the arms, the hands and the rifle, and carry no
+## torso geometry at all, so they can travel four times as far for free.
+##
+## **Why BOTH shoulders, and not just the one holding it.** `aim_idle` is a
+## two-handed hold: the right hand grips the receiver (the rifle is socketed to
+## `Right wrist`) and the LEFT hand is on the foregrip. Moving only the right
+## shoulder moves the right arm and the weapon and leaves the left hand exactly
+## where it was — a clawed hand floating in the middle of the frame holding
+## nothing, which is precisely as unsettling as it sounds.
+##
+## Applying the SAME world-space offset to both shoulders is a rigid translation
+## of the entire held-weapon assembly. The arms' relative geometry is untouched,
+## so grip contact is preserved **by construction** rather than by tuning: there
+## is no value of this constant that can separate a hand from the weapon, and
+## none of the four states below (rest, fire, look-down, wall-tuck) can either.
+##
+## Bone names from the rig (dump them with src/dev/inspect_models.gd):
+## Hips -> Spine -> Chest -> ChestUp -> {Left,Right} shoulder -> arm -> elbow -> wrist.
+const FP_ARM_BONES: Array[String] = ["Right shoulder", "Left shoulder"]
+const FP_ARM_OFFSET: Vector3 = Vector3(0.150, 0.052, -0.010)
+## Chest yaw for the first-person hold, in radians.
+##
+## Translating the hold outward alone leaves the barrel parallel to the view axis
+## and pointing at nothing, which reads as a rifle strapped to the side of the
+## camera. A couple of degrees of torso yaw cants the whole upper body so the
+## muzzle angles subtly back toward the crosshair — the weapon is *aimed at where
+## you are looking*, from off to one side, which is the read the classic offset
+## has always depended on.
+##
+## Positive rotates about world up, which swings the right shoulder — and the
+## rifle in its hand — outward while turning the barrel inward. Small: this is a
+## whole torso, and past about 0.1 the near shoulder starts entering frame.
+const FP_HOLD_YAW: float = 0.045
 ## Small numbers: this shifts the CHEST, and every joint from the shoulder down
 ## the arm multiplies it, so what reads as a 4 cm nudge at the sternum is a
 ## hand's width at the muzzle. The first tuning pass used 13 cm and put the
@@ -137,6 +189,19 @@ const FP_HOLD_OFFSET: Vector3 = Vector3(0.02, 0.075, -0.045)
 ## a pale slab across a third of the frame. If the weapon needs to show its side,
 ## rotate the socket, not the torso.
 const FP_HOLD_CANT: float = 0.0
+## Weapon collision, the avatar's half. See `Player._update_weapon_tuck` for the
+## probe and for why NULLVOID collides the weapon instead of rendering it through
+## a second camera.
+##
+## Applied to the same CHEST bone as the first-person hold, for the same reason:
+## the arms and the rifle have to come in as one piece, or the weapon slides out
+## of its own grip. Pitching the chest down by roughly three times AIM_LIFT is
+## what swings the barrel under the bottom of the frame; the offset then pulls
+## the whole hold back toward the sternum so the muzzle clears a wall the player
+## is standing flat against.
+const TUCK_PITCH: float = 0.58
+const TUCK_OFFSET: Vector3 = Vector3(-0.035, -0.022, 0.095)
+
 ## Where the animation tracks live, relative to the AnimationPlayer's root.
 const TRACK_PREFIX: String = "Armature/Skeleton3D"
 
@@ -163,6 +228,8 @@ var _skeleton: Skeleton3D = null
 var _neck_bone: int = -1
 var _head_bone: int = -1
 var _chest_bone: int = -1
+## Indices of FP_ARM_BONES, resolved once. Both shoulders, always moved together.
+var _arm_bones: PackedInt32Array = PackedInt32Array()
 var _accent_material: StandardMaterial3D = null
 var _hand: BoneAttachment3D = null
 var _eye: Node3D = null
@@ -178,8 +245,14 @@ var _flash_light: OmniLight3D = null
 
 ## How long the breaker's emitter stays hot after a shot.
 const FLASH_TIME: float = 0.09
+## Peak energy of the light the muzzle throws into the room. See
+## ViewModel.MUZZLE_FLASH_ENERGY — the two rigs hold the same weapon and it has to
+## discharge the same way in both.
+const MUZZLE_FLASH_ENERGY: float = 2.6
 
 var _look: Vector2 = Vector2.ZERO
+## 0..1 weapon-collision tuck, written by the owning Player once a frame.
+var _tuck: float = 0.0
 var _speed: float = 0.0
 var _down: float = 0.0
 var _was_down: bool = false
@@ -222,6 +295,13 @@ func _build(colour: Color) -> void:
 		_neck_bone = _skeleton.find_bone("Neck")
 		_head_bone = _skeleton.find_bone("Head")
 		_chest_bone = _skeleton.find_bone("Chest")
+		for arm_name: String in FP_ARM_BONES:
+			var found: int = _skeleton.find_bone(arm_name)
+			if found >= 0:
+				_arm_bones.append(found)
+			else:
+				push_warning("[CrewAvatar] no '%s' bone; the first-person hold "
+						% arm_name + "will be lopsided")
 		var hand: int = _skeleton.find_bone(HAND_BONE)
 		if hand >= 0:
 			_hand = BoneAttachment3D.new()
@@ -308,10 +388,23 @@ func socket_breaker(colour: Color) -> void:
 	_flash_light.name = "MuzzleFlash"
 	_flash_light.light_color = accent
 	_flash_light.light_energy = 0.0
-	_flash_light.omni_range = 5.5
-	_flash_light.omni_attenuation = 1.3
-	_flash_light.light_volumetric_fog_energy = 2.2
-	_flash_light.shadow_enabled = false
+	# Attenuation, not energy, is what was blowing the frame out.
+	#
+	# Godot's omni falloff is pow(distance, -attenuation), and this light lives
+	# INSIDE the hand holding it — roughly 0.1 m from the mesh it is brightest
+	# against. At the M3.7 attenuation of 1.3 that is a x20 near-field multiplier,
+	# so a 3-energy flash delivered ~60 to the player's own knuckles, blew them to
+	# paper, and the glow pass then spread that across the whole frame: firing in
+	# a dark corridor whited out the corridor. A gentle 0.6 decay costs nothing at
+	# range (a longer reach buys it back) and keeps the near field survivable.
+	_flash_light.omni_range = 9.0
+	_flash_light.omni_attenuation = 0.6
+	_flash_light.light_volumetric_fog_energy = 2.6
+	# Casting, so a crewmate firing across a room throws your silhouette up the
+	# wall for a frame. Free the rest of the time: at zero energy Godot skips the
+	# shadow atlas update entirely.
+	_flash_light.shadow_enabled = true
+	_flash_light.shadow_bias = 0.06
 	(_muzzle if _muzzle != null else gun).add_child(_flash_light)
 
 
@@ -329,9 +422,13 @@ func drive(delta: float, speed: float, heading: Vector3, down: float) -> void:
 	_flash = maxf(_flash - delta, 0.0)
 	var heat: float = _flash / FLASH_TIME
 	if _emitter_material != null:
-		_emitter_material.emission_energy_multiplier = 1.1 + heat * 9.0
+		# Peak dropped from 10.1 in M3.7. An emitter that far above the glow HDR
+		# threshold, 40 cm from the lens, bloomed across the entire frame — a shot
+		# fired in a dark corridor whited out the room it was supposed to light.
+		_emitter_material.emission_energy_multiplier = 1.1 + heat * 2.8
 	if _flash_light != null:
-		_flash_light.light_energy = heat * 3.4
+		# Squared, so the decay reads as a discharge rather than as a dimmer.
+		_flash_light.light_energy = heat * heat * MUZZLE_FLASH_ENERGY
 	if _accent_material != null:
 		# The seams go out as the process comes apart. A downed crewmate must not
 		# still be wearing their colour, or the crew cannot read the room.
@@ -386,10 +483,22 @@ func _track_head(delta: float, heading: Vector3) -> void:
 	# Chest first: the lift has to land before the neck and head are posed
 	# relative to it, or the head-look fights the lean.
 	if _has_aim and _down < 0.5:
-		_aim_bone(_chest_bone, Vector2(0.0, -AIM_LIFT),
+		# The tuck cancels the first-person lift and then keeps going, so a player
+		# pressed against a wall ends up below the honest low ready rather than
+		# merely back at it.
+		_aim_bone(_chest_bone, Vector2(
+					FP_HOLD_YAW if _first_person else 0.0,
+					-AIM_LIFT + TUCK_PITCH * _tuck),
 				FP_HOLD_CANT if _first_person else 0.0)
 		if _first_person:
-			_shift_bone(_chest_bone, FP_HOLD_OFFSET)
+			_shift_bone(_chest_bone, FP_HOLD_OFFSET + TUCK_OFFSET * _tuck)
+			# The arms take the outboard travel — both of them, by the same
+			# vector, so the two-handed grip travels as one rigid piece. They
+			# give it back as the weapon tucks: a hold being pulled in to clear a
+			# wall should come toward the body, not stay swung out beside it.
+			var reach: Vector3 = FP_ARM_OFFSET * (1.0 - _tuck * 0.55)
+			for arm: int in _arm_bones:
+				_shift_bone(arm, reach)
 	_aim_bone(_neck_bone, _look * NECK_SHARE)
 	_aim_bone(_head_bone, _look * (1.0 - NECK_SHARE))
 
@@ -438,6 +547,12 @@ func _aim_bone(bone: int, angles: Vector2, roll: float = 0.0) -> void:
 	# see Player._update_view, which calls drive() from _process.
 	_skeleton.set_bone_pose_rotation(bone,
 			delta * _skeleton.get_bone_pose_rotation(bone))
+
+
+## Weapon collision, 0 = clear, 1 = pressed against a wall. Written by the owning
+## Player every frame; only the first-person copy does anything with it.
+func set_tuck(amount: float) -> void:
+	_tuck = clampf(amount, 0.0, 1.0)
 
 
 ## One shot fired: light the emitter on the socketed rifle. Cosmetic and local —

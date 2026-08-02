@@ -53,7 +53,16 @@ const STAT_KEYS: Array[String] = ["runs", "exfils", "deletions", "data_banked"]
 
 ## Set before host()/join(); sent to the host on connect.
 var local_name: String = "AGENT"
-var local_color: Color = DEFAULT_COLORS[0]
+var local_color: Color = UiFx.PHOSPHOR_DEFAULT
+## What the program file on disk says the phosphor is, as distinct from what this
+## session is rendering in.
+##
+## They differ in exactly one case and it matters: `--color` is a capture flag —
+## "photograph the HUD in green" — and a dev tool that quietly rewrote the
+## developer's own saved colour every time they took a screenshot would be a dev
+## tool nobody could safely run twice. `save_progress` writes THIS one; the menu's
+## picker is the only thing that ever moves it.
+var _file_color: Color = UiFx.PHOSPHOR_DEFAULT
 
 ## Populated when we leave a session, consumed and cleared by the main menu.
 var last_status_message: String = ""
@@ -241,6 +250,17 @@ func load_progress() -> void:
 	var version: int = int(data.get("version", 1))
 	deepest_backdoor = maxi(int(data.get("deepest_backdoor", 0)), 0)
 	archive = maxi(int(data.get("archive", 0)), 0)
+	# Absent in a v1/v2 file written before M4.7, which is exactly the case the
+	# default covers — an untouched program ships Northcairn amber.
+	var saved_colour: String = String(data.get("color", ""))
+	if not saved_colour.is_empty() and Color.html_is_valid(saved_colour):
+		local_color = UiFx.clamp_phosphor(Color.html(saved_colour))
+	_file_color = local_color
+	# One call coats every gauge, label and panel in the game — see UiFx's
+	# palette block. Done here rather than in the menu so a session that skips
+	# the menu entirely (every automated run, the dedicated server, a
+	# `--autohost` capture) still renders in the player's own phosphor.
+	UiFx.set_phosphor(local_color)
 	modules = _clean_modules(data.get("modules", {}) as Dictionary)
 	var stored: Dictionary = data.get("stats", {}) as Dictionary
 	for key: String in STAT_KEYS:
@@ -341,6 +361,12 @@ func save_progress() -> void:
 		"archive": archive,
 		"modules": modules,
 		"stats": stats,
+		# The shell marker, which since M4.7 is also the phosphor the player's own
+		# interface is coated with — so it is a setting worth surviving a restart
+		# rather than something re-picked every launch. Stored as a hex string
+		# because a Color round-trips through JSON as four floats and reads as
+		# noise in a file a player might open.
+		"color": _file_color.to_html(false),
 	}, "\t")
 	if not _write_text(SAVE_TEMP, payload):
 		return
@@ -358,3 +384,13 @@ func _write_text(path: String, text: String) -> bool:
 	file.store_string(text)
 	file.close()
 	return true
+
+
+## The player choosing their phosphor, from the injection console's picker. The
+## one path that is allowed to change what the program file says — see
+## `_file_color`.
+func choose_phosphor(colour: Color) -> void:
+	local_color = UiFx.clamp_phosphor(colour)
+	_file_color = local_color
+	UiFx.set_phosphor(local_color)
+	save_progress()

@@ -47,6 +47,10 @@ static func create(from_graph: LayerGraph) -> ProcLayerBuilder:
 	builder.name = "ProcLayerBuilder"
 	builder.graph = from_graph
 	builder.light_scale = float(from_graph.params["light_scale"])
+	# The architecture-decay pass hashes off these two and nothing else — see
+	# GeometryKit's DECAY_* block for why it must never touch `_rng`.
+	builder.layer_number = from_graph.layer_number
+	builder.layer_seed = from_graph.layer_seed
 	return builder
 
 
@@ -344,7 +348,7 @@ func _light_room(room: Dictionary) -> void:
 		var wash: SpotLight3D = LightRig.accent(_fixtures,
 				_wall_point(rect, side, 0.85, _rng.randf_range(2.4, 3.2), start),
 				_wall_point(rect, side, 0.35, _rng.randf_range(1.0, 1.8), finish),
-				(_rng.randf_range(3.4, 4.8) + boost * 0.6) * light_scale,
+				(_rng.randf_range(2.1, 3.0) + boost * 0.5) * light_scale,
 				LightRig.AMBER if warm else LightRig.KEY_COLD,
 				# NARROW, not wide. A 70-degree cone is the showcase's number, and
 				# it is right for a 10 m wall; pointed 24 m down a generated room's
@@ -376,7 +380,7 @@ func _light_room(room: Dictionary) -> void:
 		var target: Vector3 = _wall_point(rect, side, 0.3, _rng.randf_range(0.9, 1.6),
 				along + 0.6)
 		var key: SpotLight3D = LightRig.key(_fixtures, mount, target,
-				(_rng.randf_range(5.4, 7.6) + boost) * light_scale,
+				(_rng.randf_range(3.6, 5.0) + boost * 0.8) * light_scale,
 				gobos[i % gobos.size()], _rng.randf_range(42.0, 52.0),
 				LightRig.AMBER if warm else LightRig.KEY_COLD, reach)
 		key.name = "Key_r%d_%d" % [index, i]
@@ -391,7 +395,7 @@ func _light_room(room: Dictionary) -> void:
 	# engine to buy nothing.
 	LightRig.key(_fixtures, Vector3(mid.x, height - 0.4, mid.y),
 			Vector3(mid.x, 0.0, mid.y),
-			(_rng.randf_range(3.0, 4.6) + boost) * light_scale,
+			(_rng.randf_range(2.2, 3.4) + boost * 0.7) * light_scale,
 			LightRig.GOBO_APERTURE, _rng.randf_range(46.0, 58.0),
 			LightRig.AMBER if warm else LightRig.KEY_COLD,
 			height + 6.0, false).name = "Key_shaft_r%d" % index
@@ -405,7 +409,7 @@ func _light_room(room: Dictionary) -> void:
 	if height > STOREY + 0.1:
 		LightRig.accent(_fixtures, Vector3(mid.x, height * 0.42, mid.y),
 				Vector3(mid.x + rect.size.x * 0.2, height, mid.y - rect.size.y * 0.2),
-				0.85 * light_scale, LightRig.AMBER if warm else LightRig.KEY_COLD,
+				0.60 * light_scale, LightRig.AMBER if warm else LightRig.KEY_COLD,
 				64.0, LightRig.GOBO_DUST, height * 1.6).name = "Accent_up_r%d" % index
 
 	# --- practicals --------------------------------------------------------
@@ -485,7 +489,7 @@ func _light_corridor(corridor: Dictionary) -> void:
 		# chamfers and panel recesses in the kit ever show up.
 		var target: Vector3 = Vector3(cross - side * 1.2, 0.55, t - 1.6) if along == "z" \
 				else Vector3(t - 1.6, 0.55, cross - side * 1.2)
-		var energy: float = _rng.randf_range(3.6, 5.4) * light_scale
+		var energy: float = _rng.randf_range(2.4, 3.6) * light_scale
 		if i == caster:
 			var key: SpotLight3D = LightRig.key(_fixtures, mount, target, energy,
 					LightRig.GOBO_SLATS if i % 2 == 0 else LightRig.GOBO_GRATE, 54.0)

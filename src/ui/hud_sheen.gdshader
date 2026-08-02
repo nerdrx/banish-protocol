@@ -84,5 +84,13 @@ void fragment() {
 		value = value * (1.0 - dropout * 0.9) + dropout * degrade * 0.06;
 	}
 
-	COLOR = vec4(tint.rgb * value * amount, 1.0);
+	// Alpha carries the value, and this is not cosmetic.
+	//
+	// Until M4.7 this wrote alpha 1.0, which is harmless when the additive blend
+	// lands on an opaque backbuffer — the alpha channel of the screen is not
+	// looked at. The interface now renders into a TRANSPARENT SubViewport (the
+	// CRT tube), where `dst.a += 1.0` turns every sheen rect into a solid black
+	// rectangle over the world. Writing the sheen's own value into alpha makes
+	// the rect as transparent as it is dark, which is what it always meant.
+	COLOR = vec4(tint.rgb * value * amount, clamp(value * amount, 0.0, 1.0));
 }

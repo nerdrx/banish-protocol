@@ -23,10 +23,15 @@ const BAND: float = 128.0
 const ROOM_MIN: Vector2 = Vector2(34.0, 22.0)
 const ROOM_MAX: Vector2 = Vector2(96.0, 54.0)
 
-const ROOM_COLOUR: Color = Color(0.36, 0.78, 1.0, 0.13)
-const LINK_COLOUR: Color = Color(0.36, 0.78, 1.0, 0.07)
-const TRUNK_COLOUR: Color = Color(0.36, 0.86, 1.0, 0.2)
-const LABEL_COLOUR: Color = Color(0.36, 0.78, 1.0, 0.16)
+## Plotter phosphor. M4.7 moves the schematic off MOTHER's teal and onto the
+## console's own amber, because this drawing is not hers — it is Northcairn
+## documentation of her, drifting past on a terminal that has been left on. Dimmer
+## than M3.8's as well: this is background activity behind a console, and the
+## brief it now answers to is "classified terminal", not "arcade attract mode".
+const ROOM_COLOUR: Color = Color(0.98, 0.68, 0.22, 0.085)
+const LINK_COLOUR: Color = Color(0.98, 0.68, 0.22, 0.045)
+const TRUNK_COLOUR: Color = Color(1.0, 0.80, 0.36, 0.135)
+const LABEL_COLOUR: Color = Color(0.98, 0.68, 0.22, 0.10)
 
 static var _font: Font = preload("res://assets/fonts/ui_font_wide.tres")
 

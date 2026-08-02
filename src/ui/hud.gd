@@ -30,11 +30,16 @@ extends CanvasLayer
 const PING_INTERVAL: float = 0.5
 const NOTICE_DURATION: float = 4.0
 
-const COLOUR_OK: Color = UiFx.SYSTEM
-const COLOUR_WARNING: Color = UiFx.HOSTILE
-const COLOUR_AMBER: Color = UiFx.WARNING
-const COLOUR_DIM: Color = UiFx.DIM
-const COLOUR_TEXT: Color = UiFx.TEXT
+## Local aliases for the palette. Members rather than constants since M4.7: the
+## nominal phosphor is the player's own colour and is not known until the program
+## file has loaded, so it cannot be baked into a `const` at parse time. The three
+## that CAN still be constant are left as reads of the constants they alias, so
+## nothing here can accidentally become re-tintable later.
+@onready var COLOUR_OK: Color = UiFx.SYSTEM
+@onready var COLOUR_WARNING: Color = UiFx.HOSTILE
+@onready var COLOUR_AMBER: Color = UiFx.WARNING
+@onready var COLOUR_DIM: Color = UiFx.DIM
+@onready var COLOUR_TEXT: Color = UiFx.TEXT
 
 ## Width the flare-pip row has to live inside, and the gap between pips. A maxed
 ## Cache carries eight flares; at the M3 pip width that row would have run out of
@@ -51,6 +56,7 @@ const GHOST_DECAY: float = 0.55
 const PARALLAX_GAIN: float = 1.8
 
 const SHEEN_SHADER: Shader = preload("res://src/ui/hud_sheen.gdshader")
+const CRT_SHADER: Shader = preload("res://src/ui/crt.gdshader")
 
 @onready var _root: Control = $Root
 
@@ -138,6 +144,28 @@ var _glyph_tick: int = -1
 ## Labels that flicker as the interface degrades.
 var _flicker_labels: Array[Label] = []
 
+# --- the tube ---------------------------------------------------------------
+## The interface's own viewport, the container compositing it back, and the
+## full-rect fader that gives the phosphor its decay. See `_build_tube`.
+var _tube: SubViewport = null
+var _screen: SubViewportContainer = null
+var _crt: ShaderMaterial = null
+var _fixed: Control = null
+## 0..1 how far the tube has warmed up. Cold on injection.
+var _warmup: float = 0.0
+
+# --- crosshair --------------------------------------------------------------
+var _reticle: Crosshair = null
+## Phosphor decay weights for the two big readouts, and the values they were
+## last showing.
+var _ghost_cycles: float = 0.0
+var _ghost_data: float = 0.0
+var _last_cycles_text: String = ""
+var _last_data_text: String = ""
+var _focus_open: float = 0.0
+var _hit_tick: float = 0.0
+var _kill_burst: float = 0.0
+
 # --- holographic depth ------------------------------------------------------
 var _parallax: Vector2 = Vector2.ZERO
 var _parallax_velocity: Vector2 = Vector2.ZERO
@@ -196,10 +224,13 @@ func _ready() -> void:
 	_on_layer_changed(Run.layer_number)
 	_rebuild_crew()
 
+	_build_tube()
 	_install_depth()
 	_install_glitch_rig()
+	_build_crosshair()
 	_build_gate_panel()
 	_begin_boot()
+	Run.local_shot.connect(_on_local_shot)
 
 	# The host already has a player when the HUD loads; clients get the signal.
 	var existing: Node = Net.get_player(Net.local_id())
@@ -246,8 +277,218 @@ func _process(delta: float) -> void:
 	_update_boot(delta)
 	_update_degradation()
 	_update_glitch(delta)
+	_update_crosshair(delta)
 	_update_parallax(delta)
 	_update_debrief(delta)
+	_update_tube(delta)
+
+
+# ---------------------------------------------------------------------- tube --
+
+## Puts the whole interface inside a CRT.
+##
+## The rig is three nodes and it is worth understanding why each one is there,
+## because the obvious alternative — a full-screen shader laid over everything —
+## is wrong for a reason that is art direction rather than engineering: it would
+## put scanlines on MOTHER's architecture. The entire premise (see
+## `crt.gdshader`) is that your instrument is old human hardware and her world is
+## not. The two cannot share a tube.
+##
+##   `_screen`   a SubViewportContainer wearing crt.gdshader. This is the glass:
+##               it samples the interface and applies curvature, grille, roll and
+##               the analog faults. Input passes straight through it into the
+##               viewport, so the pause console's buttons still work.
+##   `_tube`     the SubViewport the interface actually renders into.
+##
+## ## Phosphor persistence, and the version of it that did not ship
+##
+## The elegant implementation is a framebuffer that is never cleared, with a
+## full-rect multiply drawn first to decay it — one rect, no fetches, and *every*
+## element on the interface gets correct temporal decay for free, including ones
+## nobody has written yet. It is implemented (crt_persist.gdshader) and it is not
+## switched on, because in a real interface it is a trap.
+##
+## Feedback of that kind is only stable for elements that are opaque or absent.
+## Anything drawn at partial alpha every frame **accumulates**: a cluster plate at
+## 0.35 alpha with 0.81-per-frame survival settles at 0.74 and reads as a solid
+## black box; every additive sheen saturates to white over about a second. The
+## first capture of this rig had four black slabs where the readouts should have
+## been. Fixing that means stripping the translucency out of the entire HUD to
+## suit an effect, which is the tail wagging the dog.
+##
+## So the decay is bounded instead, and applied where it actually reads: the
+## shader smears each lit dot sideways (spatial persistence, always on), and a
+## readout that CHANGES leaves a ghost of its previous value for a few frames
+## (`_update_phosphor`). Those are the two cases a player can see. A gauge head
+## trailing by two pixels is not one of them, and it is not worth the interface
+## it would cost.
+##
+## `Root` and `Fixed` are reparented in rather than being moved in the scene
+## file. Every `@onready` and every `%UniqueName` in this class has already
+## resolved by the time this runs, and unique names are registered against the
+## scene's owner rather than against a parent, so both keep working afterwards.
+## Doing it here also means the .tscn stays a plain description of the layout and
+## the CRT stays one idea in one place.
+func _build_tube() -> void:
+	_fixed = $Fixed
+
+	_screen = SubViewportContainer.new()
+	_screen.name = "Screen"
+	_screen.stretch = true
+	_screen.set_anchors_preset(Control.PRESET_FULL_RECT)
+	# PASS, not IGNORE: the container has to be hit-testable for input to reach
+	# the viewport behind it, but must not swallow anything itself.
+	_screen.mouse_filter = Control.MOUSE_FILTER_PASS
+	_crt = ShaderMaterial.new()
+	_crt.shader = CRT_SHADER
+	_crt.set_shader_parameter("amount", UiFx.TUBE_AMOUNT)
+	# The grille costs real contrast — it is a multiply, and it is multiplying
+	# text that was already authored dim. The gain buys that back so the tube is
+	# a texture over the readouts rather than a filter dimming them.
+	_crt.set_shader_parameter("gain", 1.28)
+	_crt.set_shader_parameter("scanline_strength", 0.16)
+	_crt.set_shader_parameter("vignette", 0.26)
+	_crt.set_shader_parameter("phosphor", Vector3(
+			UiFx.SYSTEM.r, UiFx.SYSTEM.g * 1.05, UiFx.SYSTEM.b * 1.3))
+	_screen.material = _crt
+	add_child(_screen)
+
+	_tube = SubViewport.new()
+	_tube.name = "Tube"
+	_tube.transparent_bg = true
+	_tube.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+	_tube.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	# The interface is 2D. Handing it its own 3D world would make it allocate one.
+	_tube.own_world_3d = false
+	_tube.gui_disable_input = false
+	_screen.add_child(_tube)
+
+	# `reparent`, not remove_child + add_child. The latter clears `owner`, and the
+	# scene's `%UniqueName` registry is keyed on owner — so every `%CyclesRing` in
+	# this file would resolve to null the moment the interface moved into the
+	# tube. That failure is silent until the first frame that touches one.
+	for panel: Control in [$Root, _fixed]:
+		panel.reparent(_tube, false)
+
+	# Automation photographs a warm tube. The degauss wobble is a boot animation
+	# like any other, and a capture armed for frame N must not depend on whether
+	# the coil had settled — `--hud-state boot` is the deliberate exception.
+	_warmup = 0.0 if Debug.hud_state == "boot" else 1.0
+
+
+## Drives the glass. Everything here is a state the rest of the HUD has already
+## computed; the tube is a pure consumer, exactly like the HUD is of Run.
+func _update_tube(delta: float) -> void:
+	if _crt == null:
+		return
+	if _warmup < 1.0:
+		_warmup = minf(_warmup + delta / maxf(UiFx.TUBE_WARMUP, 0.01), 1.0)
+	_crt.set_shader_parameter("warmup", _warmup)
+	# The damage flinch reaches the glass as a loss of horizontal hold, and the
+	# draining pool reaches it as signal failure. Same two numbers the readouts
+	# are already using — one fault, told twice, in two vocabularies.
+	_crt.set_shader_parameter("damage", _glitch)
+	_crt.set_shader_parameter("degrade", _degrade * 0.85)
+	_update_phosphor(delta)
+
+
+## Phosphor persistence, the half of it that reads.
+##
+## A CRT dot that has been struck keeps glowing after the beam moves on, so a
+## readout that changes value shows the OLD value fading underneath the new one
+## for a few frames. That is the artefact a player actually notices on a period
+## instrument — the Cycles count dropping leaves a smear of the number it used to
+## be — and it is the one worth spending anything on.
+##
+## Implemented on the ghost labels the flinch already owns, because they are
+## already there, already positioned and already free when nothing is happening.
+## A readout that has not changed costs one string comparison.
+func _update_phosphor(delta: float) -> void:
+	_ghost_cycles = maxf(_ghost_cycles - delta / UiFx.PHOSPHOR_HALFLIFE * 0.5, 0.0)
+	_ghost_data = maxf(_ghost_data - delta / UiFx.PHOSPHOR_HALFLIFE * 0.5, 0.0)
+	# The ghost has to hold the value the readout USED to show, so it is written
+	# from the cached string a frame before that cache is updated. A ghost showing
+	# the new number is just a blurry copy of the new number.
+	if _cycles_value.text != _last_cycles_text:
+		_arm_ghost(_cycles_ghosts, _cycles_value, _last_cycles_text)
+		_last_cycles_text = _cycles_value.text
+		_ghost_cycles = 1.0
+	if _data_value.text != _last_data_text:
+		_arm_ghost(_data_ghosts, _data_value, _last_data_text)
+		_last_data_text = _data_value.text
+		_ghost_data = 1.0
+	# Nothing to do while a flinch owns the ghosts: a hold slip and a value change
+	# landing on the same frame would fight over the same two labels, and the
+	# flinch is the louder event.
+	if _glitch > 0.001:
+		return
+	_phosphor_ghost(_cycles_ghosts, _ghost_cycles)
+	_phosphor_ghost(_data_ghosts, _ghost_data)
+
+
+func _arm_ghost(ghosts: Array[Label], source: Label, previous: String) -> void:
+	for ghost: Label in ghosts:
+		ghost.text = previous
+		ghost.position = source.position
+
+
+func _phosphor_ghost(ghosts: Array[Label], weight: float) -> void:
+	for i: int in ghosts.size():
+		# Left where they were, at the value they were showing — the ghost is the
+		# OLD reading, so it must not be re-texted while it is decaying.
+		ghosts[i].modulate.a = weight * (0.5 if i == 0 else 0.22)
+
+
+# --------------------------------------------------------------- crosshair --
+
+func _build_crosshair() -> void:
+	# The M2 ColorRect stays in the scene as the layout anchor and stops being
+	# drawn: everything the reticle does now is drawn by Crosshair, and a stray
+	# 2x2 white square underneath it would be the one element on the interface
+	# that never picked up a state.
+	_crosshair.color = Color(0.0, 0.0, 0.0, 0.0)
+	_reticle = Crosshair.new()
+	_reticle.name = "Reticle"
+	_reticle.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_reticle.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_fixed.add_child(_reticle)
+	_boot_nodes.append(_reticle)
+
+
+## Local-only, and predicted rather than authoritative — the same standing as the
+## beam-lash the shooter draws a round trip before the host agrees with it. See
+## `Player._update_breaker`.
+func _on_local_shot(did_hit: bool, killed: bool) -> void:
+	if killed:
+		_kill_burst = 1.0
+	if did_hit or killed:
+		_hit_tick = 1.0
+
+
+func _update_crosshair(delta: float) -> void:
+	if _reticle == null:
+		return
+	var want: float = 0.0
+	var heat: float = 0.0
+	var locked: bool = false
+	if _player != null and is_instance_valid(_player):
+		want = 1.0 if _player.focus_available and not _player.focus_prompt.is_empty() \
+				else 0.0
+		locked = _player.breaker_locked()
+		# Only the top of the heat band reaches the reticle. Warning a player at
+		# 30% heat is warning them constantly, and a warning that is always on is
+		# not a warning.
+		heat = clampf(inverse_lerp(UiFx.CROSS_HEAT_FRACTION, 1.0,
+				_player.breaker_heat()), 0.0, 1.0)
+	_focus_open = UiFx.chase(_focus_open, want, UiFx.CROSS_OPEN_RATE, delta)
+
+	_reticle.focus = _focus_open
+	_reticle.heat = 1.0 if locked else heat
+	_reticle.locked = locked
+	_hit_tick = maxf(_hit_tick - delta / UiFx.HIT_TICK_TIME, 0.0)
+	_kill_burst = maxf(_kill_burst - delta / UiFx.KILL_BURST_TIME, 0.0)
+	_reticle.hit = _hit_tick
+	_reticle.kill = _kill_burst
 
 
 # --------------------------------------------------------------------- boot --
@@ -419,7 +660,7 @@ func _update_cycles(delta: float) -> void:
 	_cycles_ring.fill_color = colour
 	_cycles_value.add_theme_color_override("font_color", colour)
 	_cycles_caption.add_theme_color_override("font_color",
-			COLOUR_WARNING if alarm else Color(0.36, 0.78, 1.0, 0.75))
+			COLOUR_WARNING if alarm else Color(UiFx.SYSTEM.r, UiFx.SYSTEM.g, UiFx.SYSTEM.b, 0.72))
 
 	_cycles_value.text = "%03d" % int(ceilf(Run.cycles))
 	_cycles_cap.text = "/ %d" % int(Run.cycles_max)
@@ -526,7 +767,7 @@ func _update_kit() -> void:
 	# threshold, so it is read off the local loadout rather than off Balance.
 	var heavy: bool = Run.local_buffered() > int(Modules.local_loadout()["carry_free"])
 	_data_value.add_theme_color_override("font_color",
-			Color(1.0, 0.72, 0.3) if heavy else Color(0.42, 0.95, 1.0))
+			COLOUR_AMBER if heavy else UiFx.SYSTEM_HOT)
 
 	var heat: float = 0.0
 	var locked: bool = false
@@ -547,8 +788,10 @@ func _update_kit() -> void:
 		_size_pips(capacity)
 	for i: int in _pips.size():
 		_pips[i].visible = i < capacity
-		_pips[i].color = Color(0.62, 0.95, 1.0) if i < stock \
-				else Color(0.12, 0.18, 0.24, 0.9)
+		# A pip is a lit phosphor block or an unlit one. The unlit state is not a
+		# darker version of the lit colour — it is the tube with nothing on it.
+		_pips[i].color = UiFx.SYSTEM_HOT if i < stock \
+				else Color(0.16, 0.11, 0.05, 0.85)
 
 
 # -------------------------------------------------------------------- alerts --
@@ -649,9 +892,21 @@ func _install_glitch_rig() -> void:
 	_flicker_labels = [_cycles_caption, _kit_label, _integrity_label, _cycles_cap]
 
 
+## Phosphor ghosts for the big readouts.
+##
+## M3.8 made these a chromatic split — a red copy one way, a cyan copy the other
+## — which is what a digital display does when its colour channels come apart. A
+## monochrome amber tube has no channels to separate. What it does instead is
+## lose horizontal hold: the same picture, in the same colour, shifted sideways,
+## with the older copy dimmer because its phosphor has already started to decay.
+##
+## So both ghosts are now the readout's own colour and both go the SAME way, at
+## different distances. That is a shear, not a fringe, and it is the difference
+## between "my monitor was knocked" and "my monitor is a modern one that is
+## broken in an impossible way".
 func _make_ghosts(source: Label) -> Array[Label]:
 	var made: Array[Label] = []
-	for tint: Color in [Color(1.0, 0.18, 0.22), Color(0.18, 0.95, 1.0)]:
+	for tint: Color in [UiFx.SYSTEM_HOT, UiFx.SYSTEM]:
 		var ghost: Label = Label.new()
 		ghost.text = source.text
 		ghost.horizontal_alignment = source.horizontal_alignment
@@ -690,13 +945,18 @@ func _update_glitch(delta: float) -> void:
 
 
 func _split(ghosts: Array[Label], source: Label) -> void:
-	var offset: float = _glitch * UiFx.GLITCH_SPLIT
+	# Both trailing the same way, the nearer one brighter. The direction is
+	# hashed per flinch rather than fixed, so two hits in a row do not shear
+	# identically — a repeated identical artefact reads as an animation.
+	var direction: float = 1.0 if UiFx.hash01(floor(UiFx.clock() * 5.0)) < 0.5 else -1.0
+	var offset: float = _glitch * UiFx.GLITCH_SLIP * direction
 	for i: int in ghosts.size():
 		var ghost: Label = ghosts[i]
 		if ghost.text != source.text:
 			ghost.text = source.text
-		ghost.modulate.a = _glitch * 0.75
-		ghost.position = source.position + Vector2(offset if i == 0 else -offset, 0.0)
+		ghost.modulate.a = _glitch * (0.55 if i == 0 else 0.28)
+		ghost.position = source.position \
+				+ Vector2(offset * (0.45 if i == 0 else 1.0), 0.0)
 
 
 ## Your own callsign coming apart for a fifth of a second. It is the one label on
@@ -860,7 +1120,7 @@ func _crew_row(id: int) -> Control:
 	label.add_theme_font_size_override("font_size", 13)
 	var is_self: bool = id == Net.local_id()
 	label.add_theme_color_override("font_color",
-			Color(0.88, 0.94, 1.0) if is_self else Color(0.55, 0.62, 0.72))
+			UiFx.TEXT if is_self else UiFx.DIM)
 	row.add_child(label)
 	if is_self:
 		# Held so the damage flinch can corrupt it — see `_corrupt_callsign`.
@@ -927,7 +1187,7 @@ func _refresh_link() -> void:
 	else:
 		var ping: int = Net.ping_ms(1)
 		_link_label.text = "LINK %d ms" % ping
-		var quality: Color = Color(0.4, 0.85, 0.6)
+		var quality: Color = UiFx.SYSTEM
 		if ping > 120:
 			quality = Color(0.95, 0.45, 0.4)
 		elif ping > 60:
@@ -958,7 +1218,7 @@ func _build_gate_panel() -> void:
 	_gate_panel.size = Vector2(520.0, 150.0)
 	_gate_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_gate_panel.visible = false
-	$Fixed.add_child(_gate_panel)
+	_fixed.add_child(_gate_panel)
 
 	var plate: ColorRect = ColorRect.new()
 	plate.color = Color(0.05, 0.015, 0.02, 0.9)
@@ -1038,6 +1298,11 @@ func _show_notice(message: String) -> void:
 
 func _set_paused(paused: bool) -> void:
 	_pause.visible = paused
+	# Controller navigation: an overlay that opens with nothing focused is an
+	# overlay a pad cannot use. Mouse and keyboard are unaffected — focus is
+	# additive, and clicking still works exactly as it did.
+	if paused:
+		_resume_button.grab_focus.call_deferred()
 	# Join-in-progress is the whole point of a Steam lobby: the pause console is
 	# where a host reaches the overlay's invite dialog mid-intrusion. Hidden
 	# entirely on the DIRECT transport, where there is nothing to invite into.
@@ -1064,7 +1329,7 @@ func _on_run_ended(summary: Dictionary) -> void:
 	var success: bool = bool(summary.get("success", false))
 	_summary_title.text = "EXFILTRATION COMPLETE" if success else "INTRUSION TERMINATED"
 	_summary_title.add_theme_color_override("font_color",
-			Color(0.42, 0.95, 1.0) if success else COLOUR_WARNING)
+			UiFx.SYSTEM_HOT if success else COLOUR_WARNING)
 
 	var lines: PackedStringArray = PackedStringArray([
 		"REASON            %s" % String(summary.get("reason", "UNKNOWN")),
@@ -1109,6 +1374,7 @@ func _on_run_ended(summary: Dictionary) -> void:
 	else:
 		lines.append("ARCHIVE           %d   (UNCHANGED)" % GameState.archive)
 
+	_summary_button.grab_focus.call_deferred()
 	_summary_body.text = "\n".join(lines)
 	_summary_body.visible_ratio = 0.0
 	_debrief_lines = lines.size()
@@ -1123,7 +1389,7 @@ func _on_run_ended(summary: Dictionary) -> void:
 			if success and mine > 0 else "ARCHIVE"
 	_banked_value.text = str(_banked_from)
 	_banked_value.add_theme_color_override("font_color",
-			Color(0.42, 0.95, 1.0) if success else COLOUR_DIM)
+			UiFx.SYSTEM_HOT if success else COLOUR_DIM)
 
 	if DisplayServer.get_name() != "headless":
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)

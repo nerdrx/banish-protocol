@@ -18,10 +18,10 @@ const SLIDE_DISTANCE: int = 56
 ## over the screen.
 const MAX_VISIBLE: int = 4
 
-const ACCENT: Color = Color(0.36, 0.78, 1.0)
-const SLAB: Color = Color(0.062, 0.072, 0.088, 0.95)
-const TEXT_BRIGHT: Color = Color(0.88, 0.95, 1.0)
-const TEXT_DIM: Color = Color(0.44, 0.53, 0.63)
+## Read live rather than bound at parse time: the nominal phosphor is the
+## player's own colour (UiFx's palette block), and a card that unlocked before
+## they picked one would be stuck wearing the default.
+const SLAB: Color = Color(0.055, 0.040, 0.020, 0.93)
 
 @onready var _stack: VBoxContainer = %Stack
 
@@ -57,19 +57,34 @@ func show_card(title: String, note: String) -> void:
 	column.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_child(column)
 
-	column.add_child(_label("ACHIEVEMENT UNLOCKED", 11, ACCENT.darkened(0.15)))
-	column.add_child(_label(title.to_upper(), 18, TEXT_BRIGHT))
+	column.add_child(_label("ACHIEVEMENT UNLOCKED", 11, UiFx.SYSTEM.darkened(0.15)))
+	column.add_child(_label(title.to_upper(), 18, UiFx.TEXT))
 	if not note.is_empty():
-		column.add_child(_label(note.to_upper(), 11, TEXT_DIM))
+		column.add_child(_label(note.to_upper(), 11, UiFx.DIM))
 
 	_stack.add_child(slot)
 
+	# Spring in, not ease in. TRANS_BACK overshoots and settles, which is what a
+	# physical card dropped into a rack does; a cubic ease is what a web page
+	# does. The overshoot is small (Godot's default BACK is ~10%) and it lands
+	# inside SLIDE_IN, so the card is readable within a third of a second either
+	# way — the difference is entirely in how it got there.
 	var tween: Tween = create_tween()
 	tween.set_parallel(true)
-	tween.tween_property(slot, "modulate:a", 1.0, SLIDE_IN)
+	tween.tween_property(slot, "modulate:a", 1.0, SLIDE_IN * 0.6)
 	tween.tween_method(func(value: int) -> void:
 		slot.add_theme_constant_override("margin_left", value),
-		SLIDE_DISTANCE, 0, SLIDE_IN).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		SLIDE_DISTANCE, 0, SLIDE_IN).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	# Scanline reveal: the card draws itself top to bottom the way the tube draws
+	# a frame, by growing its own clip rather than by fading. Runs alongside the
+	# spring and finishes first, so the card is fully drawn before it stops moving.
+	slot.clip_contents = true
+	var full: float = 0.0
+	tween.tween_method(func(value: float) -> void:
+		if full <= 0.0:
+			full = maxf(slot.size.y, 1.0)
+		slot.custom_minimum_size.y = full * value,
+		0.12, 1.0, UiFx.TOAST_REVEAL).set_trans(Tween.TRANS_LINEAR)
 	tween.set_parallel(false)
 	tween.tween_interval(HOLD)
 	tween.tween_property(slot, "modulate:a", 0.0, FADE_OUT)
@@ -88,7 +103,7 @@ func _card_style() -> StyleBoxFlat:
 	style.border_width_top = 1
 	style.border_width_right = 1
 	style.border_width_bottom = 1
-	style.border_color = Color(ACCENT.r, ACCENT.g, ACCENT.b, 0.6)
+	style.border_color = Color(UiFx.SYSTEM.r, UiFx.SYSTEM.g, UiFx.SYSTEM.b, 0.6)
 	style.shadow_color = Color(0.0, 0.0, 0.0, 0.45)
 	style.shadow_size = 10
 	return style

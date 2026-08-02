@@ -37,6 +37,26 @@ uniform float hostile : hint_range(0.0, 1.0) = 0.0;
 // Independent dying-fixture flicker, driven per-instance from script.
 uniform float flicker : hint_range(0.0, 1.0) = 0.0;
 
+// --- per-instance channels (M4.7) --------------------------------------------
+//
+// `instance uniform` rather than a material override, and that distinction is
+// the whole reason the kit corruption pass is affordable. A ShaderMaterial
+// override on one wall module pulls it out of the batch it shares with the
+// other nine hundred; an instance uniform is a few bytes in the instance record
+// and the draw call is untouched. Every corrupted module in an 18-layer soak
+// costs the same as an uncorrupted one.
+//
+// `decay` is the architecture rotting with depth (GeometryKit._corrupt_module):
+// this particular channel is mostly dead, with the occasional half-hearted
+// surge. `decay_phase` decorrelates them, so two dying segments in the same
+// corridor never stutter in unison — which would read as an animation rather
+// than as failure.
+instance uniform float decay : hint_range(0.0, 1.0) = 0.0;
+instance uniform float decay_phase = 0.0;
+// Driven by src/world/flicker.gd when a dying fixture is bound to its housing,
+// so the light and the emissive it is mounted in drop out together.
+instance uniform float emissive_gain : hint_range(0.0, 1.0) = 1.0;
+
 float hash11(float p) {
 	return fract(sin(p * 78.233) * 43758.5453);
 }
@@ -62,6 +82,20 @@ void fragment() {
 		float f = hash11(floor(TIME * 22.0) + 3.7);
 		level *= mix(1.0, smoothstep(0.30, 0.62, f) * 0.85 + 0.15, flicker);
 	}
+
+	// Architecture decay. Deliberately mostly OFF: a channel that stutters
+	// continuously is a strobe, and a dead channel that comes back once every few
+	// seconds is a system failing. The surge is short, dim, and never reaches the
+	// healthy level — this segment is not going to recover.
+	if (decay > 0.001) {
+		float beat = TIME * 2.4 + decay_phase * 37.13;
+		float slot = hash11(floor(beat) + decay_phase * 11.7);
+		float alive = step(0.79, slot)
+				* (0.18 + 0.42 * hash11(floor(beat) + 5.1))
+				* (0.5 + 0.5 * sin(fract(beat) * 3.14159));
+		level = mix(level, level * alive, decay);
+	}
+	level *= emissive_gain;
 
 	vec3 col = mix(flow_color, hostile_color, hostile);
 

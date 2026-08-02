@@ -47,6 +47,14 @@ signal exfil_changed
 ## M3.5 events. These carry no new state — they name moments the run already
 ## replicates, so `Achievements` can listen instead of polling.
 signal process_deleted(by_peer: int, kind: String)  ## A breaker shot killed something.
+## The local avatar's own shot resolved, for crosshair feedback ONLY.
+##
+## Emitted locally by Player and never replicated — no RPC signature changes, no
+## extra bytes. `hit` is the shooter's own prediction (the same one that decides
+## where its lash stops, a round trip before the host agrees); `killed` is the
+## authoritative flag coming back off `_breaker_shot`. Presentation may be
+## predicted; a kill confirmation may not.
+signal local_shot(hit: bool, killed: bool)
 signal restored(peer_id: int, by_peer: int)         ## Somebody was brought back up.
 
 # --- world config -----------------------------------------------------------

@@ -18,22 +18,27 @@ extends Node3D
 ##
 ## Same trick, same reason, and the same constant family as `Player._update_beam`.
 ##
-## ## What this is NOT
+## ## Wall clipping
 ##
-## It is not rendered through a separate viewport with its own near plane, which
-## is the usual way to stop a viewmodel poking through a wall. That costs a
-## second camera and a second render pass per player. At NULLVOID's held-low,
-## short-barrel framing the intersection case is rare enough to defer, and it is
-## noted as a known gap rather than pretended away.
+## Not solved with a separate viewport and its own near plane — the usual answer,
+## and the wrong one here, because the *primary* first-person rig in this game is
+## an embodied body (Player._embody) and this floating prop is only the fallback
+## for a missing crew model. Two different anti-clipping techniques for the same
+## weapon would be two different feels for the same button.
+##
+## So this wears the same weapon-collision tuck the avatar does: the owning
+## Player probes ahead of the lens and hands both rigs a 0..1 crowding weight,
+## and the hold springs down and back toward the chest. See
+## `Player._update_weapon_tuck` for the probe and the argument.
 
 ## Where the weapon sits relative to the lens: right, low, and pushed forward
 ## enough to clear the near plane.
 ## Pushed back rather than in: the Surge is 0.86 m long, and held at a third of
 ## a metre it filled a quarter of the frame and ran off the right edge. Half a
 ## metre out it reads as carried without ever becoming the subject.
-const REST_POSITION: Vector3 = Vector3(0.23, -0.20, -0.46)
+const REST_POSITION: Vector3 = Vector3(0.30, -0.245, -0.44)
 ## Canted inward and nose-down a touch, so it reads as held rather than mounted.
-const REST_ROTATION: Vector3 = Vector3(-0.035, 0.065, 0.05)
+const REST_ROTATION: Vector3 = Vector3(-0.035, 0.120, 0.05)
 ## Viewmodel scale.
 ##
 ## The usual way to stop a held rifle swallowing the frame is a second camera at
@@ -61,6 +66,19 @@ const RECOIL_DAMP: float = 9.0
 
 ## Muzzle emitter, hot for this long after a shot.
 const FLASH_TIME: float = 0.09
+## Peak energy of the light the muzzle throws into the room.
+##
+## M3.7 lit the emitter and gave the flash light 3.4 energy with no shadow, which
+## in a room this dark is a soft teal bubble around your own hands. A cutter
+## discharging should put one frame of hard structure on the wall next to you —
+## so the light casts, reaches further, and rides a squared falloff so the decay
+## reads as a discharge rather than as a dimmer.
+const MUZZLE_FLASH_ENERGY: float = 2.6
+
+## Weapon collision: where the hold ends up when a wall is right in front of the
+## lens. Down, back, and canted over — the same gesture the avatar's chest makes.
+const TUCK_POSITION: Vector3 = Vector3(0.06, -0.19, 0.30)
+const TUCK_ROTATION: Vector3 = Vector3(0.85, 0.22, 0.30)
 
 const BODY_COLOUR: Color = Color(0.048, 0.05, 0.058)
 const TRIM_COLOUR: Color = Color(0.10, 0.11, 0.125)
@@ -72,6 +90,8 @@ var _sight_material: StandardMaterial3D = null
 var _flash_light: OmniLight3D = null
 
 var _sway: Vector2 = Vector2.ZERO
+## 0..1 weapon-collision tuck, written by the owning Player once a frame.
+var _tuck: float = 0.0
 var _recoil: float = 0.0
 var _recoil_velocity: float = 0.0
 var _flash: float = 0.0
@@ -133,10 +153,23 @@ func _build(tint: Color) -> void:
 	_flash_light.name = "MuzzleFlash"
 	_flash_light.light_color = accent
 	_flash_light.light_energy = 0.0
-	_flash_light.omni_range = 5.5
-	_flash_light.omni_attenuation = 1.3
-	_flash_light.light_volumetric_fog_energy = 2.2
-	_flash_light.shadow_enabled = false
+	# Attenuation, not energy, is what was blowing the frame out.
+	#
+	# Godot's omni falloff is pow(distance, -attenuation), and this light lives
+	# INSIDE the hand holding it — roughly 0.1 m from the mesh it is brightest
+	# against. At the M3.7 attenuation of 1.3 that is a x20 near-field multiplier,
+	# so a 3-energy flash delivered ~60 to the player's own knuckles, blew them to
+	# paper, and the glow pass then spread that across the whole frame: firing in
+	# a dark corridor whited out the corridor. A gentle 0.6 decay costs nothing at
+	# range (a longer reach buys it back) and keeps the near field survivable.
+	_flash_light.omni_range = 9.0
+	_flash_light.omni_attenuation = 0.6
+	_flash_light.light_volumetric_fog_energy = 2.6
+	# Casting. One shadow map that is only ever rendered on the frames a shot is
+	# in flight — the light sits at zero energy the rest of the time, and Godot
+	# skips the atlas update for a light contributing nothing.
+	_flash_light.shadow_enabled = true
+	_flash_light.shadow_bias = 0.06
 	if _muzzle != null:
 		_muzzle.add_child(_flash_light)
 	else:
@@ -154,6 +187,11 @@ func muzzle_point() -> Vector3:
 	if _muzzle != null and is_instance_valid(_muzzle):
 		return _muzzle.global_position
 	return global_position
+
+
+## Weapon collision, 0 = clear, 1 = pressed against a wall.
+func set_tuck(amount: float) -> void:
+	_tuck = clampf(amount, 0.0, 1.0)
 
 
 ## One shot fired: kick the spring and light the emitter.
@@ -181,11 +219,11 @@ func drive(delta: float, look: Vector2, lateral: float, bob: Vector3) -> void:
 	_recoil_velocity += (-_recoil * RECOIL_RETURN - _recoil_velocity * RECOIL_DAMP) * delta
 	_recoil += _recoil_velocity * delta
 
-	position = REST_POSITION + Vector3(
+	position = REST_POSITION + TUCK_POSITION * _tuck + Vector3(
 			-_sway.x * SWAY_YAW - lateral * LEAN + bob.x * BOB_SCALE,
 			_sway.y * SWAY_PITCH + bob.y * BOB_SCALE + _recoil * RECOIL_RISE,
 			_recoil * RECOIL_KICK * 2.0)
-	rotation = REST_ROTATION + Vector3(
+	rotation = REST_ROTATION + TUCK_ROTATION * _tuck + Vector3(
 			_sway.y * 0.07 - _recoil * 0.5,
 			_sway.x * 0.09,
 			-_sway.x * 0.06)
@@ -195,6 +233,10 @@ func drive(delta: float, look: Vector2, lateral: float, bob: Vector3) -> void:
 	if _emitter_material != null:
 		# Idles at a low glow — the tool is powered even when you are not cutting,
 		# which is most of what stops it reading as a prop.
-		_emitter_material.emission_energy_multiplier = 1.1 + heat * 9.0
+		_emitter_material.emission_energy_multiplier = 1.1 + heat * 2.8
 	if _flash_light != null:
-		_flash_light.light_energy = heat * 3.4
+		# The flash is now a real light on the world as well as on the weapon:
+		# energy well above the emitter's own glow, a short reach, and a heavy fog
+		# contribution so a shot fired into a dark corridor puts one frame of
+		# structure on the walls beside you. See CrewAvatar for the socketed twin.
+		_flash_light.light_energy = heat * heat * MUZZLE_FLASH_ENERGY

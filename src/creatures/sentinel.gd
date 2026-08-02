@@ -106,6 +106,11 @@ var _swing_cooldown: float = 0.0
 var _swing: float = 0.0
 ## Local: eases 0 -> 1 on an alarm so the whole body flares, on every peer.
 var _alarm_flash: float = 0.0
+## The purge arc's shimmer quad, its material, and 0..1 how far the distortion
+## has travelled across it. Zero means "not swinging"; the mesh is hidden then.
+var _arc: MeshInstance3D = null
+var _arc_material: ShaderMaterial = null
+var _arc_sweep: float = 0.0
 var _hurt_flash: float = 0.0
 ## 0 -> 1 collapse once it goes down.
 var _death: float = 0.0
@@ -131,6 +136,7 @@ func aim_point() -> Vector3:
 
 func _assemble() -> void:
 	health = Balance.SENTINEL_HEALTH
+	_build_purge_arc()
 
 	# Sized to the authored mesh (0.85 m wide, 2.6 m tall). The box monolith it
 	# replaces was 3.4 m with a 0.68 m radius; leaving that in place would have
@@ -581,12 +587,79 @@ func _raise_alarm() -> void:
 	_alarm_flash = 1.0
 
 
+# ------------------------------------------------------------- the purge arc --
+#
+# DESIGN.md: the Sentinel is "area denial", and its swing is "wide and slow" so
+# that standing in front of one is a decision rather than an accident. Until M4.7
+# that decision was communicated by a red flash on the creature — which tells you
+# it swung, and nothing at all about WHERE.
+#
+# The arc is now a physical thing in the room: a quad laid in front of the
+# creature covering exactly the cone `_purge_hit` measures against, distorting
+# whatever is behind it. See nv_heat_shimmer.gdshader for why a refraction rather
+# than an emissive fan. The important property is that it is drawn from the same
+# two Balance constants the damage uses, so what you see and what hits you cannot
+# drift apart.
+
+## How long the shimmer takes to cross the arc. Matched to the swing's own
+## telegraph rather than to the cooldown: the distortion is the wind-up, so it
+## has to be over by the time the damage lands.
+const ARC_SWEEP_TIME: float = 0.42
+
+
+func _build_purge_arc() -> void:
+	var quad: QuadMesh = QuadMesh.new()
+	# Sized off the same numbers `_purge_hit` tests, so the tell and the hitbox
+	# are the same shape. Width is the chord across the arc at full range.
+	quad.size = Vector2(
+			2.0 * Balance.SENTINEL_PURGE_RANGE
+					* sin(deg_to_rad(Balance.SENTINEL_PURGE_ARC_DEG)),
+			Balance.SENTINEL_PURGE_RANGE * 1.15)
+	_arc = MeshInstance3D.new()
+	_arc.name = "PurgeArc"
+	_arc.mesh = quad
+	# Laid flat and pushed out in front of the creature, at chest height — the
+	# height a program standing in front of one is actually occupying.
+	_arc.position = Vector3(0.0, 1.25, -Balance.SENTINEL_PURGE_RANGE * 0.5)
+	_arc.rotation = Vector3(-PI * 0.5, 0.0, 0.0)
+	_arc.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_arc.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	_arc_material = ShaderMaterial.new()
+	_arc_material.shader = load("res://src/shaders/nv_heat_shimmer.gdshader") as Shader
+	_arc_material.set_shader_parameter("sweep", 0.0)
+	_arc.material_override = _arc_material
+	_arc.visible = false
+	add_child(_arc)
+
+
 ## Every peer sees the swing whether or not it connected — a purge you dodged has
 ## to look like a purge you dodged. Only the host knows whether it landed, and
 ## only the host's own copy bothers to weight the flash by it.
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _purge_swing(landed: bool = false) -> void:
 	_alarm_flash = maxf(_alarm_flash, 0.7 if landed else 0.45)
+	# Every peer runs the shimmer, whether or not the swing connected on theirs.
+	# A purge you dodged has to look exactly like a purge you did not.
+	_arc_sweep = 0.0001
+
+
+## The shimmer, on every peer. Costs a screen fetch on one quad for four tenths
+## of a second per swing, and nothing at all the rest of the time — the mesh is
+## hidden, so it is not submitted.
+func _update_purge_arc(delta: float) -> void:
+	if _arc == null or not is_instance_valid(_arc):
+		return
+	if _arc_sweep <= 0.0:
+		if _arc.visible:
+			_arc.visible = false
+		return
+	_arc_sweep = minf(_arc_sweep + delta / ARC_SWEEP_TIME, 1.0)
+	if not _arc.visible:
+		_arc.visible = true
+	_arc_material.set_shader_parameter("sweep", _arc_sweep)
+	if _arc_sweep >= 1.0:
+		_arc_sweep = 0.0
+		_arc.visible = false
 
 
 func _process(delta: float) -> void:
@@ -596,6 +669,7 @@ func _process(delta: float) -> void:
 
 	_alarm_flash = maxf(_alarm_flash - delta * 1.6, 0.0)
 	_hurt_flash = maxf(_hurt_flash - delta * 3.0, 0.0)
+	_update_purge_arc(delta)
 	if not _is_host:
 		# Clients do not run `_watch_heading` (it lives in the host's `_act`), so
 		# they detect the same turn off the pose they are being streamed. Same

@@ -97,6 +97,46 @@ var _grid_material: StandardMaterial3D
 ## needing to know about the threat curve.
 var light_scale: float = 1.0
 
+# --- architecture decay (M4.7) ----------------------------------------------
+#
+# DESIGN.md's aesthetic gradient, applied to the building itself rather than only
+# to its signage: "Deeper = older = corrupted: z-fighting shimmer zones,
+# dead-pixel clusters, geometry that repeats wrong."
+#
+# M3.7 deferred this because the 110 generated decals were already carrying the
+# whole depth gradient on their own, and adding a second decay axis on top of an
+# untested one would have made both impossible to judge. With the decals now
+# reading as printed signage under a working wall wash (see LightRig._aim), the
+# signage says *what the layer is* and the architecture has to say *how old it
+# is* — those are different jobs and the kit was always meant to do the second.
+#
+# **Determinism.** Every decision below is a pure hash of (world position, layer
+# seed), exactly like DecalLib's — never `_rng`. That is a hard requirement, not
+# a preference: the dressing RNG is a shared stream, and a corruption pass that
+# consumed it would shift every crate, tap and Sentinel post on the layer the
+# moment somebody retuned the decay curve. It also means four clients agree on
+# which panel is broken without a byte on the wire, and the `--dumplayer` graph
+# is untouched.
+#
+## Layer the architecture starts coming apart at. Everything above this is
+## public-facing infrastructure and is maintained; the rot is a deep-ring fact.
+const DECAY_START_LAYER: int = 8
+## Layer the decay curve tops out at, and the fraction of wall slots corrupted
+## there. A third is a lot — but it is a third split four ways across four very
+## different faults, so no single one of them ever becomes the layer's texture.
+const DECAY_FULL_LAYER: int = 18
+const DECAY_MAX: float = 0.34
+
+## Which layer this builder is standing up, and its seed. Set by the procedural
+## builder; the hand-authored test layer leaves them at the surface values and
+## therefore never decays, which is correct — it is a greybox, not a ring.
+var layer_number: int = 1
+var layer_seed: int = 0
+## Faults actually placed, by kind. Printed in the layer census — "the deep
+## layers decay" is a claim, and a claim about generation should be a number in a
+## log rather than an impression from a screenshot.
+var decay_census: PackedInt32Array = PackedInt32Array([0, 0, 0, 0, 0])
+
 
 func _ready() -> void:
 	build()
@@ -866,20 +906,28 @@ func _wall_slot(center: Vector3, yaw: float, dark: bool = false) -> void:
 	var options: Array = ["WALL_4x4_PANEL", "WALL_4x4_ARMOR", "WALL_2x4_CABLE"] if dark \
 			else WALL_VARIANTS
 	var variant: String = _pick(center.x, center.z, 11, options)
+	# One roll per slot, taken before anything is placed so the fault a slot draws
+	# never depends on which module the variant table happened to hand it.
+	var fault: int = _decay_fault(center)
 	if variant == "SPLIT_2M":
 		# Two 2 m service modules filling one 4 m slot.
 		var right: Vector3 = Vector3(cos(deg_to_rad(yaw)), 0.0, -sin(deg_to_rad(yaw)))
 		var first: bool = absi(hash(center)) % 2 == 0
-		_put("WALL_2x4_VENT" if first else "WALL_2x4_CABLE", center - right * 1.0, yaw)
+		_corrupt_module(_put("WALL_2x4_VENT" if first else "WALL_2x4_CABLE",
+				center - right * 1.0, yaw), center, yaw, fault)
 		_put("WALL_2x4_CABLE" if first else "WALL_2x4_VENT", center + right * 1.0, yaw)
 	elif variant == "WALL_2x4_CABLE" and dark:
 		var side: Vector3 = Vector3(cos(deg_to_rad(yaw)), 0.0, -sin(deg_to_rad(yaw)))
-		_put("WALL_2x4_CABLE", center - side * 1.0, yaw)
+		_corrupt_module(_put("WALL_2x4_CABLE", center - side * 1.0, yaw),
+				center, yaw, fault)
 		_put("WALL_2x4_CABLE", center + side * 1.0, yaw)
 	else:
-		_put(variant, center, yaw)
-		if variant == "WALL_4x4_TRACE" and not dark:
-			_trace_glow(center, yaw)
+		_corrupt_module(_put(variant, center, yaw), center, yaw, fault)
+		# A dead segment does not get a practical. That is the point of it: the
+		# channel is out, so the wash it used to throw onto the panel is out too,
+		# and the module goes properly dark rather than dark-but-lit.
+		if variant == "WALL_4x4_TRACE" and not dark and fault != FAULT_DEAD_TRACE:
+			_trace_glow(center, yaw, fault == FAULT_FLICKER_TRACE)
 
 
 ## Every trace module carries its own light.
@@ -894,7 +942,7 @@ func _wall_slot(center: Vector3, yaw: float, dark: bool = false) -> void:
 ## bare bulb hovering inside the trace rectangle, which is a worse artefact than
 ## the problem it solves; out here it is a wash with no source of its own and the
 ## emissive geometry stays the thing you look at.
-func _trace_glow(center: Vector3, yaw: float) -> void:
+func _trace_glow(center: Vector3, yaw: float, failing: bool = false) -> void:
 	var normal: Vector3 = Vector3(sin(deg_to_rad(yaw)), 0.0, cos(deg_to_rad(yaw)))
 	var light: OmniLight3D = OmniLight3D.new()
 	light.name = "Practical_trace"
@@ -910,6 +958,114 @@ func _trace_glow(center: Vector3, yaw: float) -> void:
 	light.set_meta("authored_color", light.light_color)
 	light.set_meta("base_energy", light.light_energy)
 	_fixtures.add_child(light)
+	if failing:
+		# ARC rather than DYING: a trace channel is a data path, and what a failing
+		# one should look like is a bad connection sparking, not a fluorescent tube
+		# giving up. Phase-offset from the slot's own position so no two failing
+		# segments on a wall ever stutter together.
+		LightRig.flicker(light, FlickerLight.Mode.ARC,
+				fposmod(center.x * 0.37 + center.z * 0.71, 6.0))
+
+
+# ------------------------------------------------------------ decay (M4.7) --
+
+## Which fault, if any, this wall slot draws. See the DECAY_* constants.
+##
+## Two hashes: one decides *whether* the slot is corrupted at all, the second
+## decides which of the four faults it gets. Separate on purpose — sharing one
+## hash between the two questions makes the fault correlate with the roll, so
+## every barely-corrupted slot would draw the same fault and the rarest one would
+## never appear at all.
+const FAULT_NONE: int = 0
+const FAULT_DISPLACED: int = 1
+const FAULT_SHIMMER: int = 2
+const FAULT_DEAD_TRACE: int = 3
+const FAULT_FLICKER_TRACE: int = 4
+
+
+## 0 above DECAY_START_LAYER, ramping to DECAY_MAX at DECAY_FULL_LAYER.
+static func decay_chance(layer: int) -> float:
+	if layer < DECAY_START_LAYER:
+		return 0.0
+	var t: float = clampf(float(layer - DECAY_START_LAYER)
+			/ float(maxi(DECAY_FULL_LAYER - DECAY_START_LAYER, 1)), 0.0, 1.0)
+	# Starts at a fraction rather than at zero. A curve that begins at exactly
+	# nothing means layer 8 — the layer the rot is supposed to *start* on — is
+	# byte-for-byte as clean as layer 1, and the gradient only becomes visible
+	# three rings later. One bad panel per room is the right way to open.
+	return DECAY_MAX * lerpf(0.18, 1.0, t)
+
+
+func _decay_fault(center: Vector3) -> int:
+	var chance: float = decay_chance(layer_number)
+	if chance <= 0.0:
+		return FAULT_NONE
+	if DecalLib.roll(center.x, center.z, 6101, layer_seed) > chance:
+		return FAULT_NONE
+	return FAULT_DISPLACED + int(
+			DecalLib.roll(center.x, center.z, 6217, layer_seed) * 4.0) % 4
+
+
+## Applies one fault to one placed module.
+##
+## Every branch is deliberately *small*. The failure mode this pass has to avoid
+## is a deep layer that reads as broken rather than as old — a wall with a
+## visibly wrong panel in it is unsettling, a wall made of visibly wrong panels
+## is a bug report. Nothing here moves geometry far enough to open a hole, and
+## the colliders are untouched in every case, so a decayed wall is still a wall.
+func _corrupt_module(module: MeshInstance3D, center: Vector3, yaw: float,
+		fault: int) -> void:
+	if module == null or fault == FAULT_NONE:
+		return
+	decay_census[fault] += 1
+	var normal: Vector3 = Vector3(sin(deg_to_rad(yaw)), 0.0, cos(deg_to_rad(yaw)))
+	var jitter: float = DecalLib.roll(center.x, center.z, 6329, layer_seed)
+
+	match fault:
+		FAULT_DISPLACED:
+			# The panel has come off its mounts. Pushed a few centimetres out of
+			# true and rolled a degree or two, which the grazing wall wash catches
+			# as a hard shadow line the neighbouring panels do not have. Well
+			# inside the 0.4 m wall thickness, so nothing pokes into the corridor
+			# behind it.
+			module.position += normal * lerpf(-0.055, 0.045, jitter)
+			module.rotation.z += lerpf(-0.035, 0.035, jitter)
+			module.rotation.y += lerpf(-0.018, 0.018,
+					DecalLib.roll(center.x, center.z, 6421, layer_seed))
+		FAULT_SHIMMER:
+			_shimmer_patch(center, yaw, jitter)
+		FAULT_DEAD_TRACE, FAULT_FLICKER_TRACE:
+			# The channel itself. `decay` is an instance uniform on nv_dataflow, so
+			# this costs bytes in the instance record rather than a material
+			# override — a corrupted module still batches with every clean one.
+			module.set_instance_shader_parameter("decay",
+					1.0 if fault == FAULT_DEAD_TRACE else 0.72)
+			module.set_instance_shader_parameter("decay_phase", jitter * 17.0)
+
+
+## DESIGN.md's "z-fighting shimmer zones", built on purpose for once.
+##
+## A thin plate laid exactly coplanar with the module's detailed face, in the same
+## material. The depth buffer cannot separate them, so the patch flickers between
+## the two surfaces as the camera moves — the precise artefact that says "this
+## geometry was written by something that has been running too long without a
+## defragment". It is decoration with no collider and no light, and it is the
+## cheapest thing in this whole milestone: one shared BoxMesh per patch.
+func _shimmer_patch(center: Vector3, yaw: float, jitter: float) -> void:
+	var patch: MeshInstance3D = MeshInstance3D.new()
+	patch.name = "DecayShimmer"
+	var plate: BoxMesh = BoxMesh.new()
+	plate.size = Vector3(lerpf(1.1, 2.6, jitter), lerpf(0.9, 2.2, jitter), 0.004)
+	patch.mesh = plate
+	patch.material_override = MAT_MONOLITH
+	# Exactly on the face. Not 1 mm proud — the fight IS the effect, and offsetting
+	# it to "fix" the artefact removes the entire point of the patch.
+	patch.position = center + Vector3(sin(deg_to_rad(yaw)), 0.0, cos(deg_to_rad(yaw))) \
+			* (WALL_THICKNESS * 0.5) + Vector3(0.0, lerpf(1.0, 2.9, jitter), 0.0)
+	patch.rotation.y = deg_to_rad(yaw)
+	patch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	patch.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	_geometry.add_child(patch)
 
 
 ## A run of wall slots along one edge of a space, at one storey.

@@ -80,8 +80,94 @@ const FLARE_LOFT: float = 2.4
 
 # --- screen shake ------------------------------------------------------------
 const SHAKE_DECAY: float = 3.4
-const SHAKE_TRANSLATION: float = 0.09
-const SHAKE_ROLL: float = 0.035
+## M4.7: the shake is now mostly ROTATIONAL and driven by coherent noise rather
+## than by a sum of sines applied to the camera's position.
+##
+## Positional jitter is what a camera does when somebody is shaking the tripod;
+## rotational jitter is what a camera does when somebody is shaking the *operator*,
+## and the second one is the one that reads as impact. It also does not fight the
+## bob, does not slide the near geometry through the frame, and — because it is a
+## rotation — it costs the player no aim: the crosshair is drawn on the frame, and
+## the frame turns with the shake.
+##
+## A little translation survives, an order of magnitude below M3's, because a
+## purely rotational shake on a fixed pivot reads oddly smooth.
+const SHAKE_TRANSLATION: float = 0.012
+const SHAKE_YAW: float = 0.026
+const SHAKE_PITCH: float = 0.020
+const SHAKE_ROLL: float = 0.030
+## Noise frequency, in octaves per second. Two channels an irrational ratio apart
+## so the shake never visibly repeats.
+const SHAKE_FREQUENCY: float = 11.0
+
+# --- idle sway ---------------------------------------------------------------
+## Breathing, for the moments the avatar is doing nothing at all. Standing
+## perfectly still is the one thing that makes a first-person camera read as a
+## floating tripod, and the fix costs two sines. Deliberately slower than a real
+## breath (a ~5.2 s cycle rather than ~4) — at true breathing rate a player
+## notices it, and the whole point is that they do not.
+const SWAY_PERIOD: float = 5.2
+const SWAY_VERTICAL: float = 0.0075
+const SWAY_LATERAL: float = 0.0045
+const SWAY_ROLL: float = 0.0022
+
+# --- landing ------------------------------------------------------------------
+## The dip picks up a matching pitch: a body absorbing a landing folds forward as
+## well as down. Small, because the dip is the thing the player feels and the
+## pitch is only what stops it reading as an elevator.
+const DIP_PITCH: float = 0.55
+
+# --- sprint FOV ---------------------------------------------------------------
+## Two rates, not one. A sprint that arrives at the same speed it leaves feels
+## like a slider being dragged; a fast attack and a slow release feels like the
+## process committing and then coasting down. The kick overshoots a hair on the
+## way in and never on the way out.
+const FOV_ATTACK: float = 7.5
+const FOV_RELEASE: float = 3.6
+const FOV_OVERSHOOT: float = 0.16
+
+# --- weapon collision ---------------------------------------------------------
+#
+# DESIGN.md has no line about this and does not need one: a rifle sticking
+# through a wall is the single most common way a first-person game admits it is a
+# first-person game.
+#
+# **The technique, and why this one.** NULLVOID renders a true embodied body
+# (`Player._embody`) — the breaker is socketed to the avatar's own right-hand
+# bone, and the arms holding it are the same skinned mesh as the chest and legs
+# you see when you look down. That rules out the two textbook fixes:
+#
+#   * a **second camera + render-layer composite** would have to take the arms
+#     and the weapon into a separate pass while the chest and legs they are
+#     attached to stay in the world one, which severs the body at the shoulder.
+#     It also costs a full extra viewport per player — and with this project's
+#     environment (volumetric fog, SSAO, SSIL, SSR, glow) a second pass over the
+#     same World3D re-runs all of it, which is not a cost an 18-layer soak at 60
+#     fps has room for. Giving the pass its own World3D avoids that but throws
+#     away the body's own shadow, which M3.7 deliberately kept.
+#   * a **camera-space shrink with compensated FOV** works on a floating
+#     viewmodel prop and not on a body: shrinking the rig shrinks the legs the
+#     player is standing on.
+#
+# So NULLVOID does what every game with a real first-person body does — Tarkov,
+# Insurgency, Ready or Not — and **collides the weapon**. Two short probes ahead
+# of the lens measure how much room the barrel has; when a wall closes inside
+# WEAPON_CLEAR the hold springs down and back toward the chest, and by the time
+# the player's nose is against the panel the breaker is at a low ready under the
+# bottom of the frame instead of halfway into the next room.
+#
+# It is presentation only. The shot still originates at the camera and travels
+# along the camera's forward axis (`_update_breaker`), the host still re-casts
+# that same ray, and the tuck moves nothing but the lash's drawn origin. Pressing
+# yourself against a wall does not change what you can hit.
+## Room the barrel wants ahead of the lens before the hold starts coming in.
+const WEAPON_CLEAR: float = 1.30
+## Fully tucked once the obstruction is this close.
+const WEAPON_TUCK_AT: float = 0.55
+## How fast the hold reacts. Fast in (a wall arrives suddenly), slower out (a
+## weapon that snaps back up the instant you step away reads as a spring toy).
+const WEAPON_TUCK_IN: float = 16.0
+const WEAPON_TUCK_OUT: float = 7.0
 
 # --- identity (set by Net._spawn_player on every peer before tree entry) -----
 var player_name: String = "AGENT"
@@ -139,6 +225,19 @@ var _corrupt_light: OmniLight3D = null
 # --- screen shake (local lens only) -----------------------------------------
 var _shake: float = 0.0
 var _shake_seed: float = 0.0
+## Coherent noise for the rotational shake. One instance, three channels read at
+## different offsets — allocated once, sampled per frame, never re-created.
+var _shake_noise: FastNoiseLite = null
+
+# --- landing / sprint / sway (local lens only) -------------------------------
+var _dip_pitch: float = 0.0
+var _fov_kick: float = 0.0
+## 0..1 how tucked the breaker is against a near wall. See WEAPON_CLEAR.
+var _tuck: float = 0.0
+
+# --- beam dust ---------------------------------------------------------------
+## Motes drifting in the beam cone. Local player only; see `_build_beam_dust`.
+var _beam_dust: CPUParticles3D = null
 
 # --- optics (M4) ------------------------------------------------------------
 ## The beam this avatar was authored with, captured before any module widens it.
@@ -175,6 +274,10 @@ func _ready() -> void:
 	_last_sync_position = sync_position
 	sync_yaw = rotation.y
 	_shake_seed = float(peer_id) * 7.13
+	_shake_noise = FastNoiseLite.new()
+	_shake_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	_shake_noise.frequency = 1.0
+	_shake_noise.seed = peer_id
 	_apply_identity()
 	_build_avatar()
 	_build_kit()
@@ -196,6 +299,7 @@ func _ready() -> void:
 			camera.add_child(_view_model)
 		nameplate.visible = false
 		beam_cone.visible = false
+		_build_beam_dust()
 		_capture_mouse()
 	else:
 		camera.current = false
@@ -520,9 +624,18 @@ func _simulate_local(delta: float) -> void:
 	sync_speed = Vector3(velocity.x, 0.0, velocity.z).length()
 	sync_grounded = is_on_floor()
 
-	camera.fov = lerpf(camera.fov,
-			SPRINT_FOV if (sprinting and sync_speed > WALK_SPEED * 0.6) else BASE_FOV,
-			1.0 - exp(-FOV_LERP * delta))
+	# Sprint kick. Tracked as a 0..1 weight rather than as a raw FOV so the attack
+	# and the release can run at different rates and the overshoot has something
+	# to overshoot *from*.
+	var running: bool = sprinting and sync_speed > WALK_SPEED * 0.6
+	var kick_rate: float = FOV_ATTACK if running else FOV_RELEASE
+	_fov_kick = UiFx.chase(_fov_kick, 1.0 if running else 0.0, kick_rate, delta)
+	# The overshoot is a bump on the way up only — sin() of the weight peaks in
+	# the middle of the transition and is zero at both ends, so a settled sprint
+	# sits exactly on SPRINT_FOV and a settled walk exactly on BASE_FOV.
+	var bump: float = sin(_fov_kick * PI) * FOV_OVERSHOOT if running else 0.0
+	camera.fov = lerpf(BASE_FOV, SPRINT_FOV, _fov_kick) \
+			+ bump * (SPRINT_FOV - BASE_FOV)
 
 	if Debug.aim_antivirus:
 		_track_nearest_antivirus(delta)
@@ -577,8 +690,14 @@ func _update_breaker(frozen: bool) -> void:
 	_breaker.pull_trigger()
 	# Predicted endpoint, drawn this frame. The host re-casts the same ray and
 	# decides what actually died — this is only where the streak stops.
+	var aimed: Antivirus = Antivirus.pick_target(
+			get_tree(), get_world_3d().direct_space_state, from, direction,
+			_breaker_range())
 	_breaker.show_lash(muzzle, _breaker_endpoint(from, direction))
 	add_shake(0.22)
+	# Crosshair feedback, predicted off the same target selection the lash uses.
+	# The kill half of it waits for the host (see `show_breaker_shot`).
+	Run.local_shot.emit(aimed != null, false)
 	Run.request_breaker(from, direction)
 
 
@@ -639,6 +758,7 @@ func show_breaker_shot(origin: Vector3, endpoint: Vector3, killed: bool, mine: b
 		return
 	if killed:
 		add_shake(0.85)
+		Run.local_shot.emit(true, true)
 
 
 ## Breaker state, read by the HUD's heat indicator.
@@ -885,24 +1005,50 @@ func _update_view(delta: float) -> void:
 
 	_dip_velocity += (-_dip_offset * DIP_STIFFNESS - _dip_velocity * DIP_DAMPING) * delta
 	_dip_offset += _dip_velocity * delta
+	# The pitch rides the same spring rather than one of its own: a landing that
+	# dips and folds on two different curves reads as two separate events.
+	_dip_pitch = _dip_offset * DIP_PITCH
 
 	# Shake rides on top of bob rather than replacing it, so a hit while running
-	# reads as a hit while running. Driven from the clock at two incommensurate
-	# rates, which is cheaper than noise and does not loop audibly.
+	# reads as a hit while running.
+	#
+	# Read off `UiFx.clock()`, which counts frames during an automated run, so a
+	# capture armed for frame N photographs the same shake on every machine.
 	_shake = maxf(_shake - SHAKE_DECAY * delta * _shake, 0.0)
 	if _shake < 0.002:
 		_shake = 0.0
-	var t: float = float(Time.get_ticks_msec()) / 1000.0 + _shake_seed
-	var kick: Vector3 = Vector3(
-			sin(t * 47.0) * 0.6 + sin(t * 23.0) * 0.4,
-			sin(t * 39.0) * 0.6 + sin(t * 17.0) * 0.4, 0.0) * _shake * SHAKE_TRANSLATION
+	var t: float = UiFx.clock() + _shake_seed
+	var swing: Vector3 = Vector3.ZERO
+	if _shake > 0.0:
+		# Three channels of the same noise field, far enough apart on one axis
+		# that they never correlate. Simplex rather than a sine stack: a sine
+		# stack has a beat frequency, and at low amplitude the eye finds it.
+		var phase: float = t * SHAKE_FREQUENCY
+		swing = Vector3(
+				_shake_noise.get_noise_2d(phase, 0.0),
+				_shake_noise.get_noise_2d(phase, 37.0),
+				_shake_noise.get_noise_2d(phase, 71.0)) * _shake
 
 	camera.position = Vector3(
-			horizontal * BOB_HORIZONTAL * _bob_weight + kick.x,
-			vertical * BOB_VERTICAL * _bob_weight + _dip_offset + kick.y,
+			horizontal * BOB_HORIZONTAL * _bob_weight + swing.x * SHAKE_TRANSLATION,
+			vertical * BOB_VERTICAL * _bob_weight + _dip_offset
+					+ swing.y * SHAKE_TRANSLATION,
 			0.0)
-	camera.rotation.z = horizontal * BOB_ROLL * _bob_weight \
-			+ sin(t * 31.0) * _shake * SHAKE_ROLL
+	# Breathing. Only while genuinely idle, cross-faded against the bob weight so
+	# the two can never both be on the lens at once.
+	var still: float = clampf(1.0 - _bob_weight * 3.0, 0.0, 1.0)
+	var breath: float = UiFx.clock() * TAU / SWAY_PERIOD + _shake_seed
+	if still > 0.001:
+		camera.position += Vector3(
+				sin(breath * 0.7) * SWAY_LATERAL,
+				sin(breath) * SWAY_VERTICAL, 0.0) * still
+
+	camera.rotation.x = _dip_pitch + swing.y * SHAKE_PITCH
+	camera.rotation.y = swing.x * SHAKE_YAW
+	camera.rotation.z = horizontal * BOB_ROLL * _bob_weight + swing.z * SHAKE_ROLL \
+			+ sin(breath * 0.53) * SWAY_ROLL * still
+
+	_update_weapon_tuck(delta)
 
 	if _view_model != null and is_instance_valid(_view_model):
 		# Fed the same bob the lens got, so the weapon rides the walk cycle
@@ -917,6 +1063,110 @@ func _update_view(delta: float) -> void:
 	_update_collapse(delta)
 	_update_beam(delta, speed)
 	_update_nameplate()
+
+
+## How much room the breaker has, and the hold's spring toward it.
+##
+## Two probes, not one: the barrel does not live on the view axis. The first ray
+## runs straight down the lens (the case where you walk face-first into a panel);
+## the second runs from the same origin toward where the muzzle actually is, low
+## and right, which is the case that used to put the emitter inside a rib column
+## while the crosshair still had a clear metre of corridor.
+##
+## Local avatar only — a remote crewmate keeps the honest hold, and probing the
+## world once per frame per player would be three rays nobody can see.
+func _update_weapon_tuck(delta: float) -> void:
+	if not _is_local:
+		return
+	var want: float = 0.0
+	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
+	if space != null and Run.local_running():
+		var basis: Basis = camera.global_transform.basis
+		var eye: Vector3 = camera.global_position
+		var nearest: float = WEAPON_CLEAR
+		for direction: Vector3 in [-basis.z,
+				(-basis.z + basis.x * 0.42 - basis.y * 0.22).normalized()]:
+			var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+					eye, eye + direction * WEAPON_CLEAR)
+			# World geometry only. An interactable's probe volume is not a wall,
+			# and lowering the breaker every time you look at a siphon tap would
+			# be a very confusing feature.
+			query.collision_mask = 1
+			query.exclude = [get_rid()]
+			var hit: Dictionary = space.intersect_ray(query)
+			if not hit.is_empty():
+				nearest = minf(nearest, eye.distance_to(Vector3(hit["position"])))
+		want = clampf(inverse_lerp(WEAPON_CLEAR, WEAPON_TUCK_AT, nearest), 0.0, 1.0)
+
+	var rate: float = WEAPON_TUCK_IN if want > _tuck else WEAPON_TUCK_OUT
+	_tuck = UiFx.chase(_tuck, want, rate, delta)
+	if _avatar != null and is_instance_valid(_avatar):
+		_avatar.set_tuck(_tuck)
+	if _view_model != null and is_instance_valid(_view_model):
+		_view_model.set_tuck(_tuck)
+
+
+## Motes drifting in your own beam.
+##
+## DESIGN.md asks for "volumetric haze (beams read as shafts)", and the fog
+## delivers the shaft — but a shaft with nothing suspended in it is a clean
+## optical effect rather than a torch in a dusty room. Thirty CPU particles
+## parented to the beam rig, drifting slowly across the cone, are what make the
+## light look like it is passing through *air*.
+##
+## Local player only and deliberately tiny: this is per-player cost in a
+## four-crew, and the whole budget for the effect is one emitter.
+func _build_beam_dust() -> void:
+	_beam_dust = CPUParticles3D.new()
+	_beam_dust.name = "BeamDust"
+	_beam_dust.amount = 30
+	_beam_dust.lifetime = 4.2
+	_beam_dust.preprocess = 4.0
+	_beam_dust.local_coords = false
+	# A slab a few metres out in front of the lens rather than the whole cone:
+	# motes at the far end of a 30 m beam are a pixel and cost the same as ones
+	# you can see.
+	_beam_dust.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	_beam_dust.emission_box_extents = Vector3(1.5, 1.1, 2.6)
+	_beam_dust.position = Vector3(0.0, 0.0, -3.2)
+	# Barely moving. Dust in still air falls; it does not fly.
+	_beam_dust.direction = Vector3(0.0, -1.0, 0.0)
+	_beam_dust.spread = 55.0
+	_beam_dust.initial_velocity_min = 0.02
+	_beam_dust.initial_velocity_max = 0.11
+	_beam_dust.gravity = Vector3(0.0, -0.014, 0.0)
+	_beam_dust.damping_min = 0.02
+	_beam_dust.damping_max = 0.06
+	_beam_dust.scale_amount_min = 0.006
+	_beam_dust.scale_amount_max = 0.017
+
+	var speck: QuadMesh = QuadMesh.new()
+	speck.size = Vector2.ONE
+	_beam_dust.mesh = speck
+
+	var material: StandardMaterial3D = StandardMaterial3D.new()
+	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	material.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	# Without this the billboard basis replaces the per-particle scale wholesale
+	# and every mote renders as a full-size quad — which, at a 1 m QuadMesh three
+	# metres from the lens, is a wall of white rectangles rather than dust.
+	material.billboard_keep_scale = true
+	material.vertex_color_use_as_albedo = true
+	material.albedo_color = Color(0.72, 0.85, 1.0, 0.30)
+	material.disable_receive_shadows = true
+	_beam_dust.material_override = material
+	# Fade in and out rather than popping: a mote that appears is a bug, a mote
+	# that drifts into the light is weather.
+	var ramp: Gradient = Gradient.new()
+	ramp.offsets = PackedFloat32Array([0.0, 0.22, 0.72, 1.0])
+	ramp.colors = PackedColorArray([
+		Color(1.0, 1.0, 1.0, 0.0), Color(1.0, 1.0, 1.0, 0.85),
+		Color(1.0, 1.0, 1.0, 0.7), Color(1.0, 1.0, 1.0, 0.0)])
+	_beam_dust.color_ramp = ramp
+
+	beam_rig.add_child(_beam_dust)
 
 
 ## The downed shell, on every peer. The avatar sinks, its seams go out, and a red
@@ -1006,6 +1256,10 @@ func _apply_beam_visuals() -> void:
 	var live: bool = sync_beam and Run.is_running(peer_id)
 	beam.visible = live
 	beam_cone.visible = live and not _is_local
+	# Motes are only motes while something is lighting them.
+	if _beam_dust != null and is_instance_valid(_beam_dust) \
+			and _beam_dust.emitting != live:
+		_beam_dust.emitting = live
 
 
 func _process(delta: float) -> void:

@@ -70,6 +70,8 @@ var _last_position: Vector3 = Vector3.ZERO
 var _measured_speed: float = 0.0
 var _hurt_flash: float = 0.0
 var _death: float = 0.0
+## The dying coal left at the point of deletion. See `_play_death`.
+var _ember: OmniLight3D = null
 
 
 func _assemble() -> void:
@@ -399,10 +401,46 @@ func _play_death() -> void:
 	burst.gravity = Vector3(0.0, -7.0, 0.0)
 	burst.scale_amount_min = 0.05
 	burst.scale_amount_max = 0.16
+	# The fragments TUMBLE. A shell coming apart throws pieces that turn in the
+	# air; particles that keep a fixed orientation read as sparks, and sparks are
+	# what a thing made of electricity does, not what a thing made of plating does.
+	burst.angular_velocity_min = -520.0
+	burst.angular_velocity_max = 520.0
+	burst.damping_min = 0.4
+	burst.damping_max = 1.6
 	var fragment: BoxMesh = BoxMesh.new()
 	fragment.size = Vector3.ONE
 	burst.mesh = fragment
-	burst.material_override = CreatureKit.emissive(SENSOR_COLOUR, 3.0)
+	# Lit, not emissive.
+	#
+	# M3 made the fragments a flat emissive red, which meant a Scrubber deleted in
+	# a pitch-black nest still threw thirty glowing chips — the one thing in the
+	# room that did not need your beam to be visible, in a game whose second
+	# pillar is that light is the only thing that renders anything. They are
+	# plating now: dark, rough, faintly metallic, and they catch the player's beam
+	# and the muzzle flash that killed them. In the dark you see almost nothing,
+	# which is correct and much worse.
+	var shard: StandardMaterial3D = CreatureKit.matte(SHELL_COLOUR.lightened(0.06),
+			0.45, 0.55)
+	shard.emission_enabled = true
+	shard.emission = SENSOR_COLOUR
+	# Just enough that a fragment carries a coal of the thing it came out of.
+	shard.emission_energy_multiplier = 0.55
+	burst.mesh.material = shard
+	# The ember: a short red glow at the point of deletion, decaying over about a
+	# second. This is what actually reads in a dark room — one dying coal where a
+	# process used to be.
+	var ember: OmniLight3D = OmniLight3D.new()
+	ember.name = "DeathEmber"
+	ember.position = Vector3(0.0, BODY_HEIGHT, 0.0)
+	ember.light_color = SENSOR_COLOUR
+	ember.light_energy = 0.0
+	ember.omni_range = 4.5
+	ember.omni_attenuation = 0.8
+	ember.light_volumetric_fog_energy = 2.2
+	ember.shadow_enabled = false
+	add_child(ember)
+	_ember = ember
 	add_child(burst)
 
 
@@ -496,5 +534,12 @@ func _die_visual(delta: float) -> void:
 	_light.light_energy = 6.0 * sin(clampf(1.0 - _death, 0.0, 1.0) * PI) + fade
 	_sensor_material.emission_energy_multiplier = 9.0 * fade
 	_trim_material.emission_energy_multiplier = 1.4 * fade
+	if _ember != null and is_instance_valid(_ember):
+		# One hard flash as the process is deallocated, then a coal. Cubed rather
+		# than squared: the tail has to be long enough to still be there when the
+		# fragments have stopped moving, and dim enough not to light the room.
+		var through: float = clampf(1.0 - _death, 0.0, 1.0)
+		_ember.light_energy = 5.0 * sin(minf(through * 3.4, 1.0) * PI * 0.5) \
+				* pow(_death, 3.0)
 	if _death <= 0.001:
 		queue_free()

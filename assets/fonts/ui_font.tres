@@ -1,14 +1,34 @@
 [gd_resource type="SystemFont" format=3]
 
-; No binary font shipped yet: we resolve a squarish grotesque from the system and
-; fall back down a chain that exists on every Linux/Windows box we target. If we
-; later license an OFL face (Rajdhani / Chakra Petch are the intended look), drop
-; the .ttf in this folder and swap the two variation resources to point at it.
+; The interface's typeface — Northcairn-era, not MOTHER's.
+;
+; M4.7 moves this from a squarish grotesque to a **monospace face with
+; antialiasing off**, and both halves of that matter:
+;
+;   MONO   because the readouts are instrument readouts. Tabular numerals mean a
+;          Cycles count ticking from 099 to 100 does not shuffle the glyphs
+;          beside it, a crew roster lines up in columns without a container, and
+;          every number on the screen occupies the same width it did last frame.
+;          On a HUD that is being read in a firefight that is not a style choice.
+;
+;   NO AA  because this is a phosphor tube, and a phosphor tube does not
+;          antialias. Hard glyph edges plus the CRT grille reads as a dot-matrix
+;          character generator; a smoothly antialiased glyph on a scanlined
+;          screen reads as modern text with a filter over it, which is exactly
+;          the tell the whole art direction is trying to avoid.
+;
+; Full hinting and subpixel positioning off keep every stem on a whole pixel, so
+; the glyphs stay crisp under the tube's barrel warp instead of shimmering.
+;
+; The chain resolves a mono face on any Linux/Windows box we target. If we later
+; license an OFL bitmap face (a period terminal face is the intended look), drop
+; the .ttf here and this is the only file that changes.
 
 [resource]
 resource_name = "UIFont"
-font_names = PackedStringArray("Rajdhani", "Chakra Petch", "Titillium Web", "Eurostile", "Adwaita Sans", "Liberation Sans", "DejaVu Sans", "Noto Sans")
-font_weight = 500
-antialiasing = 1
-subpixel_positioning = 1
+font_names = PackedStringArray("Noto Sans Mono", "DejaVu Sans Mono", "Liberation Mono", "Consolas", "Courier New", "monospace")
+font_weight = 600
+antialiasing = 0
+subpixel_positioning = 0
+hinting = 2
 allow_system_fallback = true

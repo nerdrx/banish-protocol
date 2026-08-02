@@ -38,6 +38,9 @@ extends Node
 ##                                 uplink | corridor (looking down the longest
 ##                                 one — the shot that judges the architecture) |
 ##                                 decal (stand 3 m off a wall sign and read it) |
+##                                 wallhug (nose against that wall instead — the
+##                                 shot that proves the breaker does not clip
+##                                 through it) |
 ##                                 crew (the nearest corrupted crewmate)
 ##   --pitch RADIANS               override the lens pitch every `--goto` sets.
 ##                                 Negative looks down; -1.2 is "at your own
@@ -112,6 +115,11 @@ extends Node
 ##                   shutter lands in by luck, and it is the frame that proves the
 ##                   panel speaks the same glitch vocabulary as everything else.
 ##                   Pair it with `--compiler`.
+##         compiling (M4.7) pin the Compiler panel's COMPILING beat at its
+##                   midpoint — the row locked, the progress band mid-sweep, the
+##                   tier pip not yet filled. The beat is 0.62 s long and
+##                   automation deliberately skips it, so this is the only way to
+##                   photograph it. Pair it with `--compiler --buy TRACK`.
 ##
 ##       `full`/`warn`/`low` are shorthand for `--cycles N`: they set the real
 ##       pool the host starts with, so the colour, the heartbeat, the shader
@@ -244,6 +252,9 @@ var _address: String = "127.0.0.1"
 var _port: int = Net.DEFAULT_PORT
 var _name_override: String = ""
 var _color_index: int = 0
+## `--color RRGGBB`. Overrides the program file's phosphor for this session only.
+var _forced_color: Color = Color.WHITE
+var _has_forced_color: bool = false
 
 var _dump_seed: int = 0
 var _dump_layer: int = 1
@@ -272,6 +283,12 @@ var _buy_delay: float = 1.2
 ## cowl both fit in frame, close enough that the readout rows still resolve.
 const COMPILER_STANDOFF: float = 2.9
 
+## How close `--goto wallhug` parks the avatar to a wall. Inside the capsule's
+## own radius plus a hair, so the depenetration step leaves the lens roughly
+## half a metre off the panel — comfortably inside Player.WEAPON_CLEAR, which is
+## the whole point of the probe.
+const WALLHUG_STANDOFF: float = 0.72
+
 ## Seconds of shader-compilation and layer-build time excluded from the census.
 const FPS_WARMUP: float = 4.0
 
@@ -292,6 +309,11 @@ func _ready() -> void:
 	# instant it hosts or joins, and a forced build that arrives after that
 	# announcement is a build the host never hears about.
 	_apply_program_overrides()
+	# Before any interface exists: the phosphor is a palette-wide token and
+	# something built earlier than this would bake the default into itself.
+	if _has_forced_color:
+		GameState.local_color = _forced_color
+		UiFx.set_phosphor(_forced_color)
 	automated = not _mode.is_empty() or not screenshot_path.is_empty() \
 			or auto_quit_after > 0.0 or steam_selftest
 	if automated:
@@ -449,7 +471,15 @@ func _parse_args(args: PackedStringArray) -> void:
 			"--color":
 				if i + 1 < args.size():
 					i += 1
-					_color_index = args[i].to_int()
+					# A swatch index OR a hex colour. Since M4.7 the shell marker is
+					# also the phosphor the whole interface is coated with, so
+					# "photograph the HUD in green" is something a capture has to be
+					# able to ask for.
+					if Color.html_is_valid(args[i]):
+						_forced_color = UiFx.clamp_phosphor(Color.html(args[i]))
+						_has_forced_color = true
+					else:
+						_color_index = args[i].to_int()
 			"--seed":
 				if i + 1 < args.size():
 					i += 1
@@ -598,7 +628,7 @@ func _apply_hud_state() -> void:
 			start_cycles = 45.0
 		"low":
 			start_cycles = 10.0
-		"boot", "damage", "debrief", "decompile", "refused":
+		"boot", "damage", "debrief", "decompile", "refused", "compiling":
 			pass
 		_:
 			push_warning("[Debug] unknown --hud-state '%s'" % hud_state)
@@ -726,8 +756,17 @@ func _steam_selftest() -> void:
 
 
 func _pick_color(fallback_index: int) -> Color:
-	var index: int = _color_index if _color_index > 0 else fallback_index
-	return GameState.DEFAULT_COLORS[index % GameState.DEFAULT_COLORS.size()]
+	if _has_forced_color:
+		return _forced_color
+	if _color_index > 0:
+		return GameState.DEFAULT_COLORS[
+				_color_index % GameState.DEFAULT_COLORS.size()]
+	# No override at all: the program file's own phosphor, so an automated run
+	# photographs the interface the player would actually be looking at rather
+	# than a swatch nobody picked.
+	return GameState.local_color if fallback_index == 0 \
+			else GameState.DEFAULT_COLORS[
+					fallback_index % GameState.DEFAULT_COLORS.size()]
 
 
 # ----------------------------------------------------------------- dumplayer --
@@ -909,6 +948,22 @@ func _teleport_local(where: String) -> void:
 			pick, str(spot.snapped(Vector3.ONE * 0.1)),
 			str(stand.snapped(Vector3.ONE * 0.1)),
 			"sanctuary" if machine != null and machine.sanctuary else "hidden"])
+	elif where == "wallhug":
+		# Nose against a wall, looking straight at it. The only way to photograph
+		# the weapon-collision tuck (Player._update_weapon_tuck): standing back at
+		# reading distance the hold is clear and there is nothing to see, and no
+		# automated run is ever going to walk itself into a panel by accident.
+		var sign: Decal = _pick_decal(layer)
+		if sign == null:
+			push_warning("[Debug] no decals on this layer to stand against")
+			return
+		var out: Vector3 = sign.global_transform.basis.y.normalized()
+		var stand: Vector3 = sign.global_position + out * WALLHUG_STANDOFF
+		avatar.teleport_to(Vector3(stand.x, 0.35, stand.z),
+				atan2(out.x, out.z), _pitch_for(0.0))
+		print("[Debug] wall-hugging %.2f m off '%s' at %s" % [
+			WALLHUG_STANDOFF, String(sign.name),
+			str(sign.global_position.snapped(Vector3.ONE * 0.1))])
 	elif where == "decal":
 		# Art-direction probe: stand off a wall sign and look at it. Signage that
 		# cannot be read at three metres is not signage, and there is no other way

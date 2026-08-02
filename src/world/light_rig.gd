@@ -48,10 +48,31 @@ const DECAY: float = 0.85
 ## straight down at the floor, which is exactly where the default UP basis is
 ## degenerate; without this every ceiling light silently keeps its identity
 ## rotation and the whole rig aims north.
+##
+## `use_model_front` is FALSE, and that is the whole point of this comment.
+##
+## M3.7 shipped this call with the flag set to `true`, which asks Godot to point
+## the node's **+Z** at the target. A Light3D emits along its **-Z**, exactly like
+## a camera — so every key and every accent in the game was aimed 180 degrees away
+## from the surface it was placed to light. Every wall wash raked the wrong wall,
+## every gobo threw its slats into the void behind the fixture, and the hero
+## aperture shaft over each room fired at the ceiling.
+##
+## That single flag is the root cause of the two symptoms M4.7 was opened to
+## chase. Rooms read as "emissive inlays floating in black" because nothing was
+## lighting the panels the inlays are cut into; and wall decals read as
+## emission-only backlit e-ink because a *printed* sign has nothing to reflect
+## when the only light in the room is pointing at the far side of it. The decal
+## pipeline was never broken — see `src/dev/decal_probe.tscn`, which renders an
+## albedo decal onto the kit's own ShaderMaterial correctly the moment a light
+## actually faces it.
+##
+## The energies in ProcLayerBuilder were tuned against the broken aim, so they
+## came down with this fix rather than after it.
 static func _aim(node: Node3D, target: Vector3) -> void:
 	var dir: Vector3 = (target - node.global_position).normalized()
 	var up: Vector3 = Vector3.UP if absf(dir.dot(Vector3.UP)) < 0.995 else Vector3.FORWARD
-	node.look_at(target, up, true)
+	node.look_at(target, up, false)
 
 
 ## Layer 2. Cold, shadowed, gobo'd, aimed down. `look_at` is a world point.

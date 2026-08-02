@@ -61,7 +61,44 @@ RED = (150, 34, 32)
 # dark swallows.
 INK = (150, 158, 170)
 INK_DIM = (96, 102, 112)
-PANEL = (26, 28, 33)
+
+# The backing plate.
+#
+# M4.7 raised this from (26, 28, 33), and the arithmetic is worth writing down
+# because getting it wrong is what made every sign in the game read as a hole.
+# The kit's wall albedo is **0.095 linear**, and these PNGs are imported as
+# **sRGB** — so the value that matches the wall is not 24/255, it is
+#   srgb(0.095) = 1.055 * 0.095^(1/2.4) - 0.055 = 0.341  ->  87.
+# At 26 the plate was ten times darker than the panel it is printed on, so an
+# albedo decal — even a correctly applied one — painted a black rectangle onto
+# the wall and the only thing left to see was the emission. Sitting a little
+# under the wall reads as different stock; sitting a tenth of it reads as a
+# rendering fault.
+PANEL = (58, 62, 70)
+# The builders' plates: same reasoning, warmer, and a touch more faded.
+PANEL_LEGACY = (56, 53, 47)
+
+# --- what is allowed to emit ---------------------------------------------------
+#
+# DESIGN.md: "Dim albedo + restrained emissive... Never glowing billboards."
+# Until M4.7 every plate self-illuminated its own body text at ~20% of its
+# printed value, which was a workaround for the fact that nothing in the room was
+# lighting the wall (see LightRig._aim). With the fixtures aimed correctly the
+# walls are lit, printed signage reads as printed, and emission goes back to
+# being what it was supposed to be: the few things on a sign that are genuinely
+# powered.
+#
+# Emissive, still: accent rules and status pips (the plate has a supply),
+# wayfinding arrows (navigation is load-bearing, and an arrow you cannot find in
+# an unlit corridor is a sign that failed at its job), hazard chevrons at a
+# whisper, and the arrival room's layer numerals.
+#
+# Not emissive, ever again: body copy, sublines, invented glyph blocks, and
+# anything at all on a Northcairn plate.
+GLOW_BODY = 0.0
+GLOW_ARROW = 1.0
+GLOW_CHEVRON = 0.14
+GLOW_NUMERAL = 0.13
 
 
 def font(size):
@@ -72,8 +109,26 @@ def font(size):
 
 
 def new_plate(w, h, panel=PANEL):
-    """A blank sign: the printed backing plate, plus its emission layer."""
+    """A blank sign: the printed backing plate, plus its emission layer.
+
+    The plate is not a flat fill. It carries a shallow bevel — a lifted top and
+    left edge, a shadowed bottom and right — because a sign is a physical object
+    screwed to a wall, and under the grazing wall wash the kit is lit by, that
+    2 px of value difference is what makes it read as standing proud of the panel
+    rather than as printing on it.
+    """
     albedo = Image.new("RGBA", (w, h), panel + (255,))
+    draw = ImageDraw.Draw(albedo)
+    lift = tuple(min(255, int(c * 1.55) + 6) for c in panel)
+    drop = tuple(int(c * 0.45) for c in panel)
+    for i in range(3):
+        fade = 1.0 - i / 3.0
+        top = tuple(int(panel[k] + (lift[k] - panel[k]) * fade) for k in range(3))
+        bottom = tuple(int(panel[k] + (drop[k] - panel[k]) * fade) for k in range(3))
+        draw.line([(i, i), (w - 1 - i, i)], fill=top + (255,))
+        draw.line([(i, i), (i, h - 1 - i)], fill=top + (255,))
+        draw.line([(i, h - 1 - i), (w - 1 - i, h - 1 - i)], fill=bottom + (255,))
+        draw.line([(w - 1 - i, i), (w - 1 - i, h - 1 - i)], fill=bottom + (255,))
     emission = Image.new("RGBA", (w, h), (0, 0, 0, 255))
     return albedo, emission
 
@@ -82,13 +137,15 @@ def text(draw, xy, body, size, fill, anchor="lt", spacing_px=0, emission=None,
          glow=0.0):
     """Draws onto the albedo, and optionally a dimmed copy onto the emission.
 
-    MOTHER's signage is backlit e-ink, not paint on steel. That is a fiction
-    decision and a practical one at once: in a game whose walls are 0.095 albedo
-    and whose only light is a torch you are pointing somewhere else, a purely
-    reflective sign is a sign nobody ever reads. A body text that self-illuminates
-    at about a fifth of its printed value stays invisible across a dark room,
-    resolves the moment a beam finds it, and — crucially — is legible at three
-    metres even in a corridor with no fixture in it.
+    `glow` is a *fraction of the printed value*, and for body copy it is now
+    zero — see GLOW_BODY. Until M4.7 everything on these plates self-illuminated
+    at about a fifth of its ink value, which was a plausible-sounding fiction
+    ("MOTHER's signage is backlit e-ink") invented to work around a lighting bug:
+    no fixture in the game was actually pointing at a wall, so a purely
+    reflective sign was a sign nobody could ever read. With the wall wash landing
+    the fiction is unnecessary and actively wrong — a corridor of faintly
+    self-lit paragraphs is the billboard look DESIGN.md rules out. Signage is
+    paint again, and the wash is what reads it to you.
     """
     if emission is not None and glow > 0.0:
         text(emission, xy, body, size,
@@ -230,15 +287,12 @@ def plate_statement(body, accent, size=44, sub=None, glyphs=False):
         de = ImageDraw.Draw(e)
         rule(a, e, (44, 44), (10, h - 88), accent, 1.0)
         text(da, (78, 96), body, size, INK + (255,), "lm", spacing_px=3,
-             emission=de, glow=0.22)
+             emission=de, glow=GLOW_BODY)
         if sub:
             text(da, (78, 154), sub, 24, INK_DIM + (255,), "lm", spacing_px=2,
-                 emission=de, glow=0.14)
+                 emission=de, glow=GLOW_BODY)
         if glyphs:
             glyph_block(da, w - 250, 60, 190, h - 120, INK_DIM + (255,), rng, 0.4)
-            glyph_block(ImageDraw.Draw(e), w - 250, 60, 190, h - 120,
-                        tuple(int(c * 0.16) for c in INK_DIM) + (255,),
-                        random.Random(hash(body) & 0xFFFF), 0.4)
         pips(a, e, w - 300 if not glyphs else 78, h - 46, 4, accent, 6, 8, 0.8)
         return a, e
     return build
@@ -251,12 +305,13 @@ def plate_wayfind(body, accent, arrow=""):
         da = ImageDraw.Draw(a)
         rule(a, e, (0, 0), (w, 9), accent, 0.85)
         text(da, (60, 128), body, 52, INK + (255,), "lm", spacing_px=4,
-             emission=ImageDraw.Draw(e), glow=0.24)
+             emission=ImageDraw.Draw(e), glow=GLOW_BODY)
         if arrow:
             text(da, (w - 70, 128), arrow, 96, accent + (255,), "rm")
             # Only the arrow glows. The words are paint.
             de = ImageDraw.Draw(e)
-            text(de, (w - 70, 128), arrow, 96, accent + (255,), "rm")
+            text(de, (w - 70, 128), arrow, 96,
+                 tuple(int(c * GLOW_ARROW) for c in accent) + (255,), "rm")
         return a, e
     return build
 
@@ -268,9 +323,9 @@ def plate_numeral(digits):
         da = ImageDraw.Draw(a)
         de = ImageDraw.Draw(e)
         text(da, (w // 2, 40), "LAYER", 40, INK_DIM + (255,), "mt", spacing_px=8,
-             emission=de, glow=0.18)
+             emission=de, glow=GLOW_BODY)
         text(da, (w // 2, h // 2 + 30), digits, 260, INK + (255,), "mm", spacing_px=6,
-             emission=de, glow=0.20)
+             emission=de, glow=GLOW_NUMERAL)
         rule(a, e, (110, h - 74), (w - 220, 8), TEAL, 0.9)
         return a, e
     return build
@@ -288,9 +343,9 @@ def plate_hazard(colour, body, size=46):
             pts = [(i * step, 0), (i * step + 30, 0),
                    (i * step + 30 - 26, 44), (i * step - 26, 44)]
             da.polygon(pts, fill=colour + (255,))
-            de.polygon(pts, fill=tuple(int(c * 0.22) for c in colour) + (255,))
+            de.polygon(pts, fill=tuple(int(c * GLOW_CHEVRON) for c in colour) + (255,))
         text(da, (w // 2, 150), body, size, INK + (255,), "mm", spacing_px=4,
-             emission=de, glow=0.20)
+             emission=de, glow=GLOW_BODY)
         return a, e
     return build
 
@@ -301,9 +356,6 @@ def plate_glyphs(accent):
         a, e = new_plate(w, h)
         da = ImageDraw.Draw(a)
         glyph_block(da, 46, 46, w - 92, h - 130, INK_DIM + (255,), rng, 0.62)
-        glyph_block(ImageDraw.Draw(e), 46, 46, w - 92, h - 130,
-                    tuple(int(c * 0.16) for c in INK_DIM) + (255,),
-                    random.Random(4242), 0.62)
         rule(a, e, (46, h - 66), (w - 92, 7), accent, 0.75)
         return a, e
     return build
@@ -315,16 +367,16 @@ def plate_legacy(body, sub):
     answering to anyone, and nothing on it has been maintained since."""
     def build(rng):
         w, h = 1024, 256
-        a, e = new_plate(w, h, (30, 28, 25))
+        a, e = new_plate(w, h, PANEL_LEGACY)
         da = ImageDraw.Draw(a)
         de = ImageDraw.Draw(e)
         # The builders' plates are barely lit. Whatever used to drive them has
         # not been serviced since MOTHER stopped answering, and a sign that is
         # nearly out says that better than any amount of dirt.
         text(da, (60, 104), body, 46, (168, 156, 132, 255), "lm", spacing_px=5,
-             emission=de, glow=0.09)
+             emission=de, glow=GLOW_BODY)
         text(da, (62, 168), sub, 26, (110, 102, 88, 255), "lm", spacing_px=3,
-             emission=de, glow=0.06)
+             emission=de, glow=GLOW_BODY)
         # A pip that is painted and does NOT light. The most quietly unsettling
         # thing on any of these plates.
         ImageDraw.Draw(a).rectangle([w - 96, 108, w - 60, 144],

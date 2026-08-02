@@ -15,6 +15,19 @@ extends Node3D
 const GRAVITY: float = 11.0
 const DRAG: float = 0.12
 const COLOUR: Color = Color(0.62, 0.95, 1.0)
+## Flicker curve.
+##
+## M3 drove this with two sines summed, which produces a smooth wobble — the
+## wrong shape entirely. A burning flare does not wobble: it sits, gutters, and
+## catches again. The curve below is a fast four-octave value noise with a floor
+## under it, so most of the time the light is steady and every second or so it
+## drops hard for a few frames and recovers. That asymmetry is the whole read.
+const FLICKER_RATE: float = 9.0
+const FLICKER_DEPTH: float = 0.28
+## Smoke. A burning charge on a floor throws a thin column that the flare's own
+## light catches from underneath — which is what makes the flare read as sitting
+## in a room rather than as a light source parked in one.
+const SMOKE_COUNT: int = 18
 ## The last stretch of the burn dims and stutters — a flare running out is a
 ## warning, not a surprise.
 const DYING_FRACTION: float = 0.22
@@ -28,6 +41,8 @@ var _life: float = Balance.FLARE_LIFETIME
 var _light: OmniLight3D = null
 var _material: StandardMaterial3D = null
 var _shell: Node3D = null
+var _smoke: CPUParticles3D = null
+var _noise: FastNoiseLite = null
 
 
 static func create(id: int, peer_id: int, origin: Vector3, velocity: Vector3) -> Flare:
@@ -85,6 +100,56 @@ func _assemble() -> void:
 	_light.shadow_bias = 0.06
 	add_child(_light)
 
+	_noise = FastNoiseLite.new()
+	_noise.noise_type = FastNoiseLite.TYPE_VALUE
+	_noise.frequency = 1.0
+	_noise.fractal_octaves = 4
+	# Per-flare, so two flares burning in the same room never gutter together —
+	# which would read as the room flickering rather than as two separate fires.
+	_noise.seed = flare_id * 7919
+
+	# The wisp. Off until it lands: a flare still in the air is not on fire yet
+	# as far as the room is concerned, and a smoke trail following a thrown object
+	# reads as a rocket.
+	_smoke = CPUParticles3D.new()
+	_smoke.name = "Smoke"
+	_smoke.emitting = false
+	_smoke.amount = SMOKE_COUNT
+	_smoke.lifetime = 2.6
+	_smoke.local_coords = false
+	_smoke.position = Vector3(0.0, 0.14, 0.0)
+	_smoke.direction = Vector3.UP
+	_smoke.spread = 14.0
+	_smoke.initial_velocity_min = 0.30
+	_smoke.initial_velocity_max = 0.62
+	_smoke.gravity = Vector3(0.0, 0.16, 0.0)
+	_smoke.damping_min = 0.25
+	_smoke.damping_max = 0.55
+	_smoke.scale_amount_min = 0.16
+	_smoke.scale_amount_max = 0.44
+	var puff: QuadMesh = QuadMesh.new()
+	puff.size = Vector2.ONE
+	_smoke.mesh = puff
+	var smoke_material: StandardMaterial3D = StandardMaterial3D.new()
+	smoke_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	smoke_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	smoke_material.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	smoke_material.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	smoke_material.billboard_keep_scale = true
+	smoke_material.vertex_color_use_as_albedo = true
+	# Additive and very dim: this is smoke lit from below by the flare, not smoke
+	# with a colour of its own. Anything opaque here would read as a fog machine.
+	smoke_material.albedo_color = Color(COLOUR.r, COLOUR.g, COLOUR.b, 0.055)
+	smoke_material.disable_receive_shadows = true
+	_smoke.material_override = smoke_material
+	var ramp: Gradient = Gradient.new()
+	ramp.offsets = PackedFloat32Array([0.0, 0.18, 1.0])
+	ramp.colors = PackedColorArray([
+		Color(1.0, 1.0, 1.0, 0.0), Color(1.0, 1.0, 1.0, 0.85),
+		Color(1.0, 1.0, 1.0, 0.0)])
+	_smoke.color_ramp = ramp
+	add_child(_smoke)
+
 
 func _ready() -> void:
 	add_to_group("flares")
@@ -107,15 +172,24 @@ func _physics_process(delta: float) -> void:
 		_shell.rotation.y += delta * 0.4
 
 	var fraction: float = _life / Balance.FLARE_LIFETIME
-	var t: float = float(Time.get_ticks_msec()) / 1000.0
-	var flutter: float = 0.9 + sin(t * 21.0) * 0.06 + sin(t * 7.3) * 0.04
+	var t: float = UiFx.clock()
+	# Value noise biased upward: `max` against a floor means the curve spends most
+	# of its time near the top and only occasionally dips, which is guttering.
+	var raw: float = _noise.get_noise_1d(t * FLICKER_RATE) * 0.5 + 0.5
+	var flutter: float = 1.0 - FLICKER_DEPTH * (1.0 - maxf(raw, 0.35)) / 0.65
 	var dying: float = 1.0
 	if fraction < DYING_FRACTION:
-		# Stutter harder and dimmer as it burns out.
+		# Guttering wins as it burns out: the dips get deeper and more frequent
+		# until the light is off more than it is on.
 		dying = clampf(fraction / DYING_FRACTION, 0.0, 1.0)
-		flutter *= 0.55 + 0.45 * absf(sin(t * 13.0))
+		var death_roll: float = _noise.get_noise_1d(t * FLICKER_RATE * 2.6) * 0.5 + 0.5
+		flutter *= lerpf(0.25 + 0.75 * death_roll, 1.0, dying)
 	_light.light_energy = 6.5 * flutter * dying
 	_material.emission_energy_multiplier = 5.0 * flutter * dying
+	# The smoke thins as the charge burns down; a dead flare stops smoking a beat
+	# after it stops burning rather than at the same instant.
+	if _smoke != null and _smoke.emitting and fraction < 0.06:
+		_smoke.emitting = false
 
 
 ## Ballistic flight with a raycast for the step, so a fast flare cannot tunnel
@@ -144,3 +218,5 @@ func _fly(delta: float) -> void:
 	_landed = true
 	_velocity = Vector3.ZERO
 	_shell.rotation = Vector3(0.0, _shell.rotation.y, 0.0)
+	if _smoke != null:
+		_smoke.emitting = true

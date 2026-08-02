@@ -36,7 +36,11 @@ func _process(delta: float) -> void:
 	# it down instead of fighting it.
 	_light.light_energy = float(_light.get_meta("base_energy", base_energy)) * k
 	if _emissive != null:
-		_emissive.set_instance_shader_parameter("flicker_gain", k)
+		# `emissive_gain` is an `instance uniform` on nv_dataflow. It used to be
+		# written as "flicker_gain", which no shader in the project has ever
+		# declared — so binding a housing to its light was a silent no-op from
+		# M3.7 until M4.7. The name now matches the shader.
+		_emissive.set_instance_shader_parameter("emissive_gain", k)
 
 
 ## Optional: tie a mesh's emission to the same curve.

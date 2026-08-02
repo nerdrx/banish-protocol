@@ -288,11 +288,11 @@ fiction-earns-the-mechanics reasoning, art direction language.
 
 ![Scrubber](.github/assets/screenshots/scrubber.png)
 
-*Layer architecture: chamfered panel modules, hanging duct runs, a hero doorframe at the end of the dark, and the floor mirroring all of it:*
+*Layer architecture: chamfered panel modules under a grazing wall wash, hanging duct runs, a hero doorframe at the end of the dark, and the floor mirroring all of it. Your instrument is amber phosphor; MOTHER's world is not:*
 
 ![Corridor architecture](.github/assets/screenshots/layer.png)
 
-*MOTHER talks to her own processes. Deeper layers have been losing glyphs for a long time:*
+*MOTHER talks to her own processes — printed signage, read by your beam rather than lit from within. Deeper layers have been losing glyphs for a long time, and by layer 18 the architecture itself is coming apart with them:*
 
 ![Signage](.github/assets/screenshots/signage.png)
 
@@ -316,7 +316,7 @@ fiction-earns-the-mechanics reasoning, art direction language.
 
 ![Data vault](.github/assets/screenshots/vault.png)
 
-*The injection console — MOTHER's own schematic of the stack drifting past behind it, her chatter along the bottom rule. Committing to a dive decompiles the screen:*
+*The injection console — a Northcairn-era CRT terminal, curved glass and all, with the layer stack plotted behind it and MOTHER's chatter along the bottom rule. The shell marker you pick is the phosphor your whole interface is coated in. Committing to a dive decompiles the screen:*
 
 ![Main menu](.github/assets/screenshots/menu.png)
 

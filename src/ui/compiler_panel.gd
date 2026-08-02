@@ -36,6 +36,10 @@ const CONFIRM_TIME: float = 1.1
 ## reflex, this is a machine refusing you, and it wants a beat to land.
 const REFUSE_TIME: float = 0.55
 
+## Named the actions rather than the keys, because the actions are what a pad is
+## bound to as well.
+const FOOTER_HINT: String = "↑↓ SELECT   ·   ACCEPT COMPILE   ·   BACK CLOSE"
+
 var terminal: CompilerTerminal = null
 
 var _rows: Array[Control] = []
@@ -49,6 +53,13 @@ var _refuse_reason: String = ""
 
 var _panel: Control = null
 var _subtitle: Label = null
+## The COMPILING beat: seconds remaining, and which row is locked while it runs.
+var _beat: float = 0.0
+var _beat_row: int = -1
+var _beat_track: String = ""
+## Tier pips animate in on open and on a purchase rather than appearing filled.
+var _pip_fill: float = 0.0
+var _pip_row: int = -1
 var _wallet: Label = null
 var _footer: Label = null
 var _sheen: ColorRect = null
@@ -113,12 +124,45 @@ func close() -> void:
 func _build() -> void:
 	var accent: Color = UiFx.WARNING if terminal.sanctuary else UiFx.SYSTEM
 
+	# The Compiler wears the same tube the HUD does.
+	#
+	# It is worth being explicit about the authorship here, because the fiction
+	# has two machines in it. The terminal in the wall is MOTHER's — sleek, teal,
+	# hers. What you are looking at is not the terminal: it is *your* readout of
+	# the terminal, rendered on your own Northcairn hardware, which is why the
+	# panel is amber and scanlined and the machine it is talking to is not. The
+	# sanctuary terminals keep their warm accent on top of that, so "this one is
+	# older than she is" still reads.
+	var screen: SubViewportContainer = SubViewportContainer.new()
+	screen.name = "Screen"
+	screen.stretch = true
+	screen.set_anchors_preset(Control.PRESET_FULL_RECT)
+	screen.mouse_filter = Control.MOUSE_FILTER_PASS
+	var glass: ShaderMaterial = ShaderMaterial.new()
+	glass.shader = Hud.CRT_SHADER
+	glass.set_shader_parameter("amount", UiFx.TUBE_AMOUNT)
+	glass.set_shader_parameter("gain", 1.24)
+	glass.set_shader_parameter("scanline_strength", 0.15)
+	# Flatter than the HUD's. A panel you are reading dense numbers off wants less
+	# glass between you and the numbers than a readout you glance at.
+	glass.set_shader_parameter("curvature", 0.032)
+	glass.set_shader_parameter("vignette", 0.20)
+	screen.material = glass
+	add_child(screen)
+
+	var tube: SubViewport = SubViewport.new()
+	tube.name = "Tube"
+	tube.transparent_bg = true
+	tube.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	tube.own_world_3d = false
+	screen.add_child(tube)
+
 	var shade: ColorRect = ColorRect.new()
 	shade.name = "Shade"
-	shade.color = Color(0.0, 0.02, 0.04, 0.72)
+	shade.color = Color(0.02, 0.012, 0.004, 0.74)
 	shade.set_anchors_preset(Control.PRESET_FULL_RECT)
 	shade.mouse_filter = Control.MOUSE_FILTER_STOP
-	add_child(shade)
+	tube.add_child(shade)
 
 	# Centred by a container, not by hand.
 	#
@@ -131,7 +175,7 @@ func _build() -> void:
 	centre.name = "Centre"
 	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
 	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(centre)
+	tube.add_child(centre)
 
 	var holder: Control = Control.new()
 	holder.name = "Panel"
@@ -173,7 +217,7 @@ func _build() -> void:
 		_rows.append(row)
 
 	column.add_child(_rule(accent))
-	_footer = _text(column, "↑↓ SELECT   ·   ENTER COMPILE   ·   ESC CLOSE", 12, UiFx.DIM)
+	_footer = _text(column, FOOTER_HINT, 12, UiFx.DIM)
 
 	# One panel-wide sheen sweep, the same shader the menu console and every HUD
 	# cluster wear. It is what stops a rectangle of text reading as a rectangle
@@ -201,7 +245,7 @@ func _build() -> void:
 func _framed(parent: Control, accent: Color) -> Control:
 	var back: ColorRect = ColorRect.new()
 	back.name = "Plate"
-	back.color = Color(0.015, 0.05, 0.075, 0.94)
+	back.color = Color(0.045, 0.030, 0.012, 0.93)
 	back.set_anchors_preset(Control.PRESET_FULL_RECT)
 	back.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(back)
@@ -309,6 +353,15 @@ func _rule(accent: Color) -> Control:
 
 # -------------------------------------------------------------------- input --
 
+## Keyboard, mouse and pad, from one path.
+##
+## The panel navigates on `ui_up` / `ui_down` / `ui_accept` / `ui_cancel` rather
+## than on raw keys, and Godot binds those to the D-pad, the left stick and the
+## south/east face buttons by default — so gamepad support here is a property of
+## having used the actions in the first place, and the M4.7 accessibility item
+## costs this file nothing but the note saying so. Rows still take the mouse
+## (hover selects, click buys); the three input methods do not know about each
+## other.
 func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel"):
 		close()
@@ -357,7 +410,17 @@ func _on_purchased(peer_id: int, track: String, _tier: int,
 		_from_buffer: int, _from_archive: int) -> void:
 	if peer_id != Net.local_id():
 		return
-	_confirm = CONFIRM_TIME
+	# The beat, then the confirmation. A purchase that resolves instantly reads as
+	# a list item toggling; a purchase that visibly *takes a moment to compile*
+	# reads as a machine doing work on your behalf — which, in a game whose entire
+	# meta-progression is "modules compiled into your source", is the one
+	# interaction that has to feel like something happened.
+	_beat = UiFx.COMPILE_BEAT
+	_beat_row = _row_of(track)
+	_beat_track = track
+	_pip_row = _beat_row
+	_pip_fill = 0.0
+	_confirm = CONFIRM_TIME + UiFx.COMPILE_BEAT
 	_confirm_row = _row_of(track)
 	_refuse = 0.0
 
@@ -392,6 +455,28 @@ func _process(delta: float) -> void:
 	_reveal += delta
 	_confirm = maxf(_confirm - delta, 0.0)
 	_refuse = maxf(_refuse - delta, 0.0)
+	if _beat > 0.0:
+		_beat = maxf(_beat - delta, 0.0)
+		if _beat <= 0.0:
+			# The beat has finished; the pips fill on the far side of it, with an
+			# ease, so the tier arriving is the last thing that happens rather
+			# than the first.
+			_pip_fill = 0.0001
+	elif _pip_fill > 0.0:
+		_pip_fill = minf(_pip_fill + delta / UiFx.COMPILE_PIP_FILL, 1.0)
+	# Automation photographs the finished panel unless it has been sent to
+	# photograph a specific beat. Without this a soak would spend two thirds of a
+	# second per purchase looking at a progress shimmer.
+	if Debug.automated and Debug.hud_state != "compiling":
+		_beat = 0.0
+		_pip_fill = 1.0
+	elif Debug.hud_state == "compiling":
+		# Pinned mid-beat. 0.62 s is not a window a shutter lands in by luck, and
+		# this is the frame that proves the panel does any of this at all.
+		_beat = UiFx.COMPILE_BEAT * 0.45
+		if _beat_row < 0:
+			_beat_row = _selected
+			_beat_track = _track_at(_selected)
 	# `--hud-state refused` pins the glitch. It is 0.55 s long by design and no
 	# shutter lands inside it by luck — the same reasoning, and the same escape
 	# hatch, as the HUD's pinned damage flinch.
@@ -425,7 +510,7 @@ func _refresh() -> void:
 		_footer.text = "REFUSED  ·  %s" % _refuse_reason
 		_footer.add_theme_color_override("font_color", UiFx.HOSTILE)
 	else:
-		_footer.text = "↑↓ SELECT   ·   ENTER COMPILE   ·   ESC CLOSE"
+		_footer.text = FOOTER_HINT
 		_footer.add_theme_color_override("font_color", UiFx.DIM)
 
 
@@ -467,15 +552,22 @@ func _refresh_row(index: int) -> void:
 	# Tier pips. Filled to what you have compiled, hollow for what the track
 	# still holds, and the ones this terminal cannot sell you are drawn as bars
 	# rather than circles — "not here" is a different answer from "not yet".
-	var pips: String = ""
+	var pips: PackedStringArray = PackedStringArray()
 	for t: int in total:
 		if t < tier:
-			pips += "●"
+			pips.append("●")
 		elif t + 1 <= terminal.stock_tier:
-			pips += "○"
+			pips.append("○")
 		else:
-			pips += "▪"
-	(row.get_node("Pips") as Label).text = pips
+			pips.append("▪")
+	# The tier that just landed fills with an ease rather than appearing filled:
+	# the last pip is drawn hollow until the beat finishes and then snaps solid,
+	# which is the tick at the end of the COMPILING sequence.
+	if index == _pip_row and _pip_fill < 1.0 and tier > 0:
+		var eased: float = 1.0 - pow(1.0 - _pip_fill, 3.0)
+		if eased < 0.72:
+			pips[tier - 1] = "○"
+	(row.get_node("Pips") as Label).text = "".join(pips)
 	(row.get_node("Pips") as Label).add_theme_color_override("font_color", lit)
 
 	var effect: Label = row.get_node("Effect") as Label
@@ -495,13 +587,41 @@ func _refresh_row(index: int) -> void:
 		price.add_theme_color_override("font_color",
 				UiFx.SYSTEM_HOT if affordable else UiFx.HOSTILE)
 
+	# --- the COMPILING beat ---------------------------------------------------
+	#
+	# Three states in 0.62 s, and none of them is a spinner:
+	#   LOCKED    the row stops being interactive and says what it is doing
+	#   SHIMMER   a bright band travels the price cell left to right, once
+	#   STAMP     "COMPILED" lands, and the tier pip fills behind it with a tick
+	if _beat > 0.0 and index == _beat_row:
+		var through: float = 1.0 - _beat / maxf(UiFx.COMPILE_BEAT, 0.01)
+		name_label.add_theme_color_override("font_color", UiFx.SYSTEM_HOT)
+		# A three-cell shimmer sliding across a fixed-width field. Mono type is
+		# doing real work here: the band is the same width on every frame because
+		# every glyph is.
+		var cells: int = 11
+		var head: int = int(through * float(cells + 3)) - 3
+		var band: String = ""
+		for cell: int in cells:
+			band += "█" if cell >= head and cell < head + 3 else "░"
+		price.text = band
+		price.add_theme_color_override("font_color", UiFx.SYSTEM_HOT)
+		(row.get_node("Marker") as ColorRect).color = UiFx.SYSTEM_HOT
+		_apply_glitch(row, index, price)
+		return
+
 	# A purchase that landed: the row runs hot and falls back.
 	if _confirm > 0.0 and index == _confirm_row:
-		var heat: float = _confirm / CONFIRM_TIME
+		var heat: float = clampf(_confirm / CONFIRM_TIME, 0.0, 1.0)
 		name_label.add_theme_color_override("font_color",
 				UiFx.TEXT.lerp(UiFx.SYSTEM_HOT, heat))
-		price.text = "COMPILED  ✓"
-		price.add_theme_color_override("font_color", UiFx.SYSTEM_HOT)
+		# The stamp. Held solid for most of its life and released at the end, so
+		# it reads as something that was pressed onto the row rather than as a
+		# label fading in and out.
+		price.text = "COMPILED ✓"
+		var stamp: Color = UiFx.SYSTEM_HOT
+		stamp.a = clampf(_confirm / (CONFIRM_TIME * 0.35), 0.0, 1.0)
+		price.add_theme_color_override("font_color", stamp)
 
 	_apply_glitch(row, index, price)
 
