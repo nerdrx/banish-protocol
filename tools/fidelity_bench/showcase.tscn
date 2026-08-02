@@ -1,0 +1,495 @@
+[gd_scene load_steps=26 format=3]
+
+; THE FIDELITY SHOWCASE — one dark room, lit only by practicals you can see.
+;
+; This is the Isolation benchmark, composed. Everything the milestone built is
+; standing in it at once: the gobo library on three fixtures, all three material
+; families, all three hero props, and the game's own environment (AgX at 0.78,
+; volumetric fog at 0.030, SSR, SSIL, the 1.65 glow threshold) unmodified.
+;
+; THE RULE THE SCENE IS BUILT AROUND: every light in here is a fixture the
+; player can walk up to and point at. There is no key light hanging in the void,
+; no fill, no ambient cheat beyond the environment's own near-black. If a corner
+; is dark it is because nobody put a lamp there. That is DESIGN.md pillar 2 and
+; pillar 6 enforced at the same time, and it is the only way a room can look
+; photographed rather than lit.
+;
+; The five sources, and what justifies each:
+;   1. TRIPOD WORK LIGHT (warm 3050 K, vent-slat gobo). Somebody is servicing
+;      the coolant stack against the left wall. They brought a lamp, ran a cable
+;      to a battery block, opened a toolbox, and have not come back.
+;   2. DUCT APERTURE (cold 6200 K, drip-grate gobo, behind a real slatted
+;      grille). A service run above the ceiling that still has power. Its light
+;      falls through the grating as the room's one hero shaft.
+;   3. BACKLIT SLAT PANEL, wall (emissive-only fallback). A fixture whose
+;      ballast is dead — it glows and it does not light. In frame beside a
+;      working one, on purpose: this is the graceful degrade being photographed
+;      rather than described.
+;   4. BACKLIT SLAT PANEL, under-counter (real AreaLight3D). The comms desk's
+;      task light, washing the floor in front of the console.
+;   5. CRT TERMINALS, three of them, the middle one retrofitted with a textured
+;      AreaLight3D. The comms-room reference in one object.
+;
+; TWO CAMERAS, one per reference frame:
+;   CamSlats   — "work light through slats in haze". Shoot the beam side-on so
+;                the volumetric does the work and the slats break over the
+;                machinery in front of the wall.
+;   CamScreens — "screens casting green light". The console, its phosphor cast,
+;                the under-counter wash, and gold lagging to carry the specular.
+;
+;   tools/fidelity_bench/shoot.sh res://tools/fidelity_bench/showcase.tscn \
+;       <out>.png 1920x1080 240 CamSlats
+;   tools/fidelity_bench/shoot.sh res://tools/fidelity_bench/showcase.tscn \
+;       <out>.png 1920x1080 240 CamScreens
+
+[ext_resource type="Environment" path="res://src/world/layer_environment.tres" id="1_env"]
+[ext_resource type="PackedScene" path="res://assets/props/fidelity/work_light.tscn" id="2_worklight"]
+[ext_resource type="PackedScene" path="res://assets/props/fidelity/slat_diffuser_panel.tscn" id="3_panel"]
+[ext_resource type="PackedScene" path="res://assets/props/fidelity/crt_terminal.tscn" id="4_term"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_brushed_steel.tres" id="5_steel"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_mli_gold.tres" id="6_mli"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_hazard_band.tres" id="7_hazard"]
+[ext_resource type="Texture2D" path="res://assets/gobos/gobo_drip_grate.png" id="8_gobo_grate"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_wall"]
+; Painted bulkhead. Mid-dark rather than near-black: the darkness in this room
+; is meant to come from having no light in it, not from the walls being made of
+; a material that reflects 1% — which is the mistake that makes a "dark" room
+; look like a bug report.
+albedo_color = Color(0.295, 0.302, 0.318, 1)
+metallic = 0.0
+roughness = 0.68
+
+[sub_resource type="StandardMaterial3D" id="Mat_floor"]
+; Glossier than the walls, so the practicals get a wet-floor return and SSR has
+; something to do. Half the apparent brightness in the reference frames is the
+; floor handing the light back.
+albedo_color = Color(0.205, 0.212, 0.228, 1)
+metallic = 0.05
+roughness = 0.29
+
+[sub_resource type="StandardMaterial3D" id="Mat_dark"]
+albedo_color = Color(0.105, 0.108, 0.115, 1)
+metallic = 0.1
+roughness = 0.72
+
+[sub_resource type="BoxMesh" id="Box_floor"]
+size = Vector3(13, 0.3, 11)
+
+[sub_resource type="BoxMesh" id="Box_wall_x"]
+size = Vector3(0.3, 3.9, 11)
+
+[sub_resource type="BoxMesh" id="Box_wall_z"]
+size = Vector3(13, 3.9, 0.3)
+
+[sub_resource type="BoxMesh" id="Box_ceiling"]
+size = Vector3(13, 0.3, 11)
+
+[sub_resource type="BoxMesh" id="Box_rib"]
+size = Vector3(13, 0.26, 0.34)
+
+[sub_resource type="BoxMesh" id="Box_pier"]
+size = Vector3(0.62, 3.6, 0.62)
+
+[sub_resource type="BoxMesh" id="Box_unit"]
+size = Vector3(1, 1, 1)
+
+[sub_resource type="BoxMesh" id="Box_grille_bar"]
+size = Vector3(1.5, 0.045, 0.075)
+
+[sub_resource type="CylinderMesh" id="Cyl_pipe"]
+top_radius = 0.24
+bottom_radius = 0.24
+height = 4.2
+radial_segments = 20
+rings = 1
+
+[sub_resource type="CylinderMesh" id="Cyl_drum"]
+top_radius = 0.52
+bottom_radius = 0.52
+height = 1.35
+radial_segments = 24
+rings = 1
+
+[sub_resource type="StandardMaterial3D" id="Mat_indicator"]
+; The one thing in the room that is on because a machine is running. Amber,
+; tiny, and under the glow threshold on purpose — it is a status lamp, not a
+; light source, and if it blooms it starts competing with the practicals.
+albedo_color = Color(0.08, 0.05, 0.02, 1)
+metallic = 0.0
+roughness = 0.35
+emission_enabled = true
+emission = Color(1, 0.58, 0.16, 1)
+emission_energy_multiplier = 1.4
+
+[sub_resource type="CameraAttributesPractical" id="CamAttr"]
+exposure_multiplier = 1.0
+
+[node name="FidelityShowcase" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = ExtResource("1_env")
+camera_attributes = SubResource("CamAttr")
+
+; ============================================================= the shell ======
+
+[node name="Shell" type="Node3D" parent="."]
+
+[node name="Floor" type="MeshInstance3D" parent="Shell"]
+position = Vector3(0, -0.15, 0)
+mesh = SubResource("Box_floor")
+surface_material_override/0 = SubResource("Mat_floor")
+
+[node name="Ceiling" type="MeshInstance3D" parent="Shell"]
+position = Vector3(0, 3.75, 0)
+mesh = SubResource("Box_ceiling")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="WallLeft" type="MeshInstance3D" parent="Shell"]
+position = Vector3(-6.15, 1.8, 0)
+mesh = SubResource("Box_wall_x")
+surface_material_override/0 = SubResource("Mat_wall")
+
+[node name="WallRight" type="MeshInstance3D" parent="Shell"]
+position = Vector3(6.15, 1.8, 0)
+mesh = SubResource("Box_wall_x")
+surface_material_override/0 = SubResource("Mat_wall")
+
+[node name="WallBack" type="MeshInstance3D" parent="Shell"]
+position = Vector3(0, 1.8, -5.15)
+mesh = SubResource("Box_wall_z")
+surface_material_override/0 = SubResource("Mat_wall")
+
+[node name="WallFront" type="MeshInstance3D" parent="Shell"]
+position = Vector3(0, 1.8, 5.15)
+mesh = SubResource("Box_wall_z")
+surface_material_override/0 = SubResource("Mat_wall")
+
+; Ceiling ribs. The intricacy law's midground: a big volume with a bare ceiling
+; reads as a box, and every one of these gives the duct light something to break
+; over on its way down.
+[node name="Rib1" type="MeshInstance3D" parent="Shell"]
+position = Vector3(0, 3.47, -3.2)
+mesh = SubResource("Box_rib")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Rib2" type="MeshInstance3D" parent="Shell"]
+position = Vector3(0, 3.47, -0.4)
+mesh = SubResource("Box_rib")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Rib3" type="MeshInstance3D" parent="Shell"]
+position = Vector3(0, 3.47, 2.4)
+mesh = SubResource("Box_rib")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Pier" type="MeshInstance3D" parent="Shell"]
+position = Vector3(0.4, 1.8, -3.3)
+mesh = SubResource("Box_pier")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="PierBand" type="MeshInstance3D" parent="Shell"]
+position = Vector3(0.4, 0.42, -3.3)
+mesh = SubResource("Box_unit")
+scale = Vector3(0.66, 0.44, 0.66)
+surface_material_override/0 = ExtResource("7_hazard")
+
+; ================================================== 2. the duct aperture ======
+; A service run above the ceiling that still has power. The grille bars are REAL
+; geometry casting real shadows; the gobo on the spot behind them adds the
+; structure the bars are too coarse to carry. Both, not either — the bars give
+; the shaft its hard silhouette, the gobo gives it its grain.
+
+[node name="Duct" type="Node3D" parent="."]
+position = Vector3(-2.6, 0, -4.15)
+
+[node name="Surround" type="MeshInstance3D" parent="Duct"]
+position = Vector3(0, 3.5, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(1.75, 0.5, 1.05)
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Bar1" type="MeshInstance3D" parent="Duct"]
+position = Vector3(0, 3.31, -0.35)
+mesh = SubResource("Box_grille_bar")
+surface_material_override/0 = ExtResource("5_steel")
+
+[node name="Bar2" type="MeshInstance3D" parent="Duct"]
+position = Vector3(0, 3.31, -0.11)
+mesh = SubResource("Box_grille_bar")
+surface_material_override/0 = ExtResource("5_steel")
+
+[node name="Bar3" type="MeshInstance3D" parent="Duct"]
+position = Vector3(0, 3.31, 0.16)
+mesh = SubResource("Box_grille_bar")
+surface_material_override/0 = ExtResource("5_steel")
+
+[node name="Bar4" type="MeshInstance3D" parent="Duct"]
+position = Vector3(0, 3.31, 0.37)
+mesh = SubResource("Box_grille_bar")
+surface_material_override/0 = ExtResource("5_steel")
+
+[node name="Aperture" type="SpotLight3D" parent="Duct"]
+position = Vector3(0, 3.46, 0)
+rotation_degrees = Vector3(-90, 0, 0)
+light_color = Color(0.7268, 0.8093, 1, 1)
+light_energy = 22.0
+light_specular = 1.0
+light_indirect_energy = 1.0
+light_volumetric_fog_energy = 2.2
+shadow_enabled = true
+shadow_bias = 0.03
+shadow_normal_bias = 1.3
+shadow_blur = 1.1
+spot_range = 9.5
+spot_angle = 33.0
+spot_angle_attenuation = 0.7
+spot_attenuation = 0.9
+light_projector = ExtResource("8_gobo_grate")
+
+; ============================== 1. the maintenance job (left wall) ============
+; A coolant stack with its access panel off. This is what the work light is
+; pointed at, and it is why the work light exists.
+
+[node name="CoolantStack" type="Node3D" parent="."]
+position = Vector3(-5.15, 0, -3.05)
+
+[node name="Body" type="MeshInstance3D" parent="CoolantStack"]
+position = Vector3(0, 1.05, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(1.55, 2.1, 2.4)
+surface_material_override/0 = ExtResource("5_steel")
+
+; The open access panel, swung out into the room on its hinge. An OPEN panel is
+; the whole story: a closed one is a wall, an open one is an interruption.
+[node name="Panel" type="MeshInstance3D" parent="CoolantStack"]
+position = Vector3(0.92, 1.15, 1.42)
+rotation_degrees = Vector3(0, -58, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(1.5, 1.5, 0.05)
+surface_material_override/0 = ExtResource("5_steel")
+
+[node name="PanelEdge" type="MeshInstance3D" parent="CoolantStack"]
+position = Vector3(0.92, 0.41, 1.42)
+rotation_degrees = Vector3(0, -58, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(1.5, 0.16, 0.09)
+surface_material_override/0 = ExtResource("7_hazard")
+
+; Behind the open panel: gold multi-layer insulation. This is the one surface in
+; the room that turns a single warm lamp into a hundred small highlights, which
+; is exactly what it is here to do.
+[node name="Lagging" type="MeshInstance3D" parent="CoolantStack"]
+position = Vector3(0.79, 1.15, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(0.06, 1.7, 2.0)
+surface_material_override/0 = ExtResource("6_mli")
+
+[node name="LaggedPipe" type="MeshInstance3D" parent="CoolantStack"]
+position = Vector3(0.7, 2.5, 0)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("Cyl_pipe")
+surface_material_override/0 = ExtResource("6_mli")
+
+[node name="Drum" type="MeshInstance3D" parent="CoolantStack"]
+position = Vector3(0.6, 0.68, -1.75)
+mesh = SubResource("Cyl_drum")
+surface_material_override/0 = ExtResource("5_steel")
+
+[node name="DrumBand" type="MeshInstance3D" parent="CoolantStack"]
+position = Vector3(0.6, 0.68, -1.75)
+mesh = SubResource("Cyl_drum")
+scale = Vector3(1.02, 0.34, 1.02)
+surface_material_override/0 = ExtResource("7_hazard")
+
+[node name="Indicator" type="MeshInstance3D" parent="CoolantStack"]
+position = Vector3(0.79, 1.92, 0.86)
+mesh = SubResource("Box_unit")
+scale = Vector3(0.04, 0.05, 0.05)
+surface_material_override/0 = SubResource("Mat_indicator")
+
+; The lamp. Rotated so its cone crosses the room's short axis and rakes the
+; coolant stack and the wall behind it — a work light aimed ALONG a wall finds
+; every edge on it; one aimed AT a wall finds none.
+[node name="WorkLight" parent="." instance=ExtResource("2_worklight")]
+position = Vector3(-1.6, 0, -0.2)
+rotation_degrees = Vector3(0, 78, 0)
+gobo = 1
+colour_temperature_k = 3050.0
+energy = 22.0
+spot_angle_deg = 32.0
+spot_range_m = 12.0
+head_pitch_deg = -14.0
+head_yaw_deg = 7.0
+volumetric_boost = 2.6
+toolbox = true
+power_block_offset = Vector3(1.3, 0, 1.15)
+power_block_yaw_deg = -38.0
+cable_slack = 0.6
+
+; ================================= 5. the comms console (right wall) ==========
+
+[node name="Console" type="Node3D" parent="."]
+position = Vector3(3.5, 0, -4.1)
+
+[node name="Desk" type="MeshInstance3D" parent="Console"]
+position = Vector3(0, 0.76, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(4.3, 0.07, 0.95)
+surface_material_override/0 = ExtResource("5_steel")
+
+[node name="DeskBody" type="MeshInstance3D" parent="Console"]
+position = Vector3(0, 0.37, -0.09)
+mesh = SubResource("Box_unit")
+scale = Vector3(4.1, 0.72, 0.78)
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="DeskLip" type="MeshInstance3D" parent="Console"]
+position = Vector3(0, 0.715, 0.5)
+mesh = SubResource("Box_unit")
+scale = Vector3(4.3, 0.06, 0.07)
+surface_material_override/0 = ExtResource("7_hazard")
+
+[node name="Keyboard" type="MeshInstance3D" parent="Console"]
+position = Vector3(-0.15, 0.815, 0.28)
+rotation_degrees = Vector3(-4, 2, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(0.72, 0.035, 0.24)
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Cards" type="MeshInstance3D" parent="Console"]
+position = Vector3(1.42, 0.812, 0.2)
+rotation_degrees = Vector3(0, -17, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(0.24, 0.03, 0.17)
+surface_material_override/0 = ExtResource("7_hazard")
+
+[node name="TermLeft" parent="Console" instance=ExtResource("4_term")]
+position = Vector3(-1.42, 0.795, -0.19)
+rotation_degrees = Vector3(0, 21, 0)
+use_area_light = false
+screen_emission = 0.95
+
+[node name="TermHero" parent="Console" instance=ExtResource("4_term")]
+position = Vector3(-0.12, 0.795, -0.25)
+rotation_degrees = Vector3(0, 4, 0)
+use_area_light = true
+cast_shadows = true
+cast_energy = 7.5
+cast_range_m = 5.6
+screen_emission = 1.0
+
+[node name="TermRight" parent="Console" instance=ExtResource("4_term")]
+position = Vector3(1.18, 0.795, -0.16)
+rotation_degrees = Vector3(0, -16, 0)
+use_area_light = false
+screen_emission = 0.9
+
+; 4. THE UNDER-COUNTER STRIP — a real AreaLight3D washing the floor in front of
+; the console. Angled down and out, which is what a task light under a desk lip
+; actually does, and which is why the floor in the reference frames is never
+; black right under a bank of instruments.
+[node name="UnderCounter" parent="Console" instance=ExtResource("3_panel")]
+position = Vector3(-0.2, 0.52, 0.5)
+rotation_degrees = Vector3(52, 0, 0)
+use_area_light = true
+area_shadows = false
+colour_temperature_k = 4300.0
+energy = 0.85
+area_range_m = 5.5
+slat_count = 15
+seed = 41209
+
+; 3. THE DEAD PANEL — emissive-only fallback, mounted on the wall above the
+; console. Its ballast is gone: it glows and it lights nothing. Deliberately in
+; the same frame as the working one so the degrade can be judged rather than
+; taken on trust.
+[node name="WallPanel" parent="Console" instance=ExtResource("3_panel")]
+position = Vector3(0.1, 2.16, -0.86)
+use_area_light = false
+fallback_fill = false
+colour_temperature_k = 4800.0
+energy = 0.9
+slat_count = 11
+seed = 90218
+
+[node name="RackDrum" type="MeshInstance3D" parent="."]
+position = Vector3(5.35, 0.7, -2.15)
+rotation_degrees = Vector3(0, 0, 4)
+mesh = SubResource("Cyl_drum")
+surface_material_override/0 = ExtResource("5_steel")
+
+; Gold lagging on the machinery beside the console. It is here for one reason:
+; a metal that curves is the only surface that shows you the SHAPE of an area
+; light, and the shape is the whole argument for the CRT retrofit.
+[node name="RackLagging" type="MeshInstance3D" parent="."]
+position = Vector3(5.35, 1.85, -2.15)
+rotation_degrees = Vector3(0, 0, 4)
+mesh = SubResource("Cyl_drum")
+scale = Vector3(1.06, 0.72, 1.06)
+surface_material_override/0 = ExtResource("6_mli")
+
+[node name="RackPipe" type="MeshInstance3D" parent="."]
+position = Vector3(5.7, 2.62, -1.2)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("Cyl_pipe")
+scale = Vector3(0.55, 0.62, 0.55)
+surface_material_override/0 = ExtResource("6_mli")
+
+; Crates. The intricacy law's midground again, and something for the work
+; light's cone to break over on its way across the floor.
+[node name="Crate1" type="MeshInstance3D" parent="."]
+position = Vector3(-0.45, 0.34, 1.3)
+rotation_degrees = Vector3(0, 23, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(0.9, 0.68, 0.72)
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Crate1Band" type="MeshInstance3D" parent="."]
+position = Vector3(-0.45, 0.62, 1.3)
+rotation_degrees = Vector3(0, 23, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(0.92, 0.14, 0.74)
+surface_material_override/0 = ExtResource("7_hazard")
+
+[node name="Crate2" type="MeshInstance3D" parent="."]
+position = Vector3(-0.22, 0.94, 1.17)
+rotation_degrees = Vector3(0, -9, 0)
+mesh = SubResource("Box_unit")
+scale = Vector3(0.62, 0.52, 0.55)
+surface_material_override/0 = ExtResource("5_steel")
+
+[node name="Bollard" type="MeshInstance3D" parent="."]
+position = Vector3(1.75, 0.55, -1.05)
+mesh = SubResource("Box_unit")
+scale = Vector3(0.22, 1.1, 0.22)
+surface_material_override/0 = ExtResource("7_hazard")
+
+; ================================================================ cameras ====
+
+; HERO 1 — "work light through slats in haze". Low and across the room, so the
+; lamp's cone is seen almost side-on: the volumetric carries the shaft, the
+; slats land on the coolant stack and the wall behind it, and the tripod itself
+; is in frame as the visible cause.
+[node name="CamSlats" type="Camera3D" parent="."]
+position = Vector3(-1.4, 1.25, 2.6)
+rotation_degrees = Vector3(-6.0, 22, 0)
+fov = 74.0
+current = true
+
+; HERO 2 — "screens casting green light". Standing at the end of the console,
+; the phosphor doing the lighting, the under-counter strip washing the floor and
+; the gold lagging carrying the specular.
+[node name="CamScreens" type="Camera3D" parent="."]
+position = Vector3(1.05, 1.46, -1.35)
+rotation_degrees = Vector3(-7.0, -34.0, 0)
+fov = 60.0
+
+; PROP CARD — the work light itself, shot from the lit side so the lens, the
+; guard, the cable run, the battery block and the open toolbox are all legible
+; in one frame. Looking back INTO the beam on purpose: a practical photographed
+; from behind is a silhouette, and a silhouette proves nothing about a prop.
+[node name="CamProp" type="Camera3D" parent="."]
+position = Vector3(-4.3, 1.15, 1.35)
+rotation_degrees = Vector3(-2.9, -59.5, 0)
+fov = 55.0

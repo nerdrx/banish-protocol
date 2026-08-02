@@ -1,0 +1,320 @@
+[gd_scene load_steps=22 format=3]
+
+; TRIPOD WORK LIGHT — see src/fidelity/work_light.gd for the design argument.
+;
+; This file owns the HARDWARE: the tripod, the column, the head, the guard, the
+; lens and the tuned cone. The script owns everything that is derived from an
+; export — the cable route, the battery block, the toolbox, the floor scuff.
+;
+; Numbers worth not changing casually:
+;   legs at 0 / 137 / 244 degrees. Not 120 apart. A tripod set down by a person
+;   is never symmetric, and symmetry is the single fastest way to make a hero
+;   prop read as an asset. The struts lean 25.09 degrees, which is exactly
+;   atan(0.44 / 0.94) — the geometry of a 0.44 m foot radius under a 0.94 m hub.
+;
+;   the head sits at 1.53 m. Eye height for the standing crew avatar is ~1.65,
+;   so the lamp is just below the player's eyeline: you look slightly DOWN at
+;   the source. A practical above eye height glares into the camera and the
+;   player stops being able to see the room it is lighting.
+;
+;   the guard is in front of the lens, so the guard's own bars cross the cone
+;   and land in the beam as real shadows on top of whatever gobo is loaded. That
+;   doubling is free and it is most of why the pool of light reads as coming out
+;   of a physical object.
+
+[ext_resource type="Script" path="res://src/fidelity/work_light.gd" id="1_script"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_brushed_steel.tres" id="2_steel"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_hazard_band.tres" id="3_hazard"]
+[ext_resource type="Texture2D" path="res://assets/gobos/gobo_vent_slat.png" id="4_gobo"]
+
+[sub_resource type="CylinderMesh" id="Mesh_strut"]
+top_radius = 0.014
+bottom_radius = 0.019
+height = 1.0379
+radial_segments = 10
+rings = 1
+
+[sub_resource type="BoxMesh" id="Mesh_foot"]
+size = Vector3(0.085, 0.026, 0.062)
+
+[sub_resource type="CylinderMesh" id="Mesh_col_lower"]
+top_radius = 0.030
+bottom_radius = 0.034
+height = 1.02
+radial_segments = 14
+rings = 1
+
+[sub_resource type="CylinderMesh" id="Mesh_hub"]
+top_radius = 0.052
+bottom_radius = 0.058
+height = 0.10
+radial_segments = 14
+rings = 1
+
+[sub_resource type="CylinderMesh" id="Mesh_collar"]
+top_radius = 0.040
+bottom_radius = 0.044
+height = 0.062
+radial_segments = 12
+rings = 1
+
+[sub_resource type="CylinderMesh" id="Mesh_col_upper"]
+top_radius = 0.020
+bottom_radius = 0.022
+height = 0.52
+radial_segments = 12
+rings = 1
+
+[sub_resource type="BoxMesh" id="Mesh_yoke"]
+size = Vector3(0.016, 0.13, 0.09)
+
+[sub_resource type="CylinderMesh" id="Mesh_housing"]
+top_radius = 0.113
+bottom_radius = 0.118
+height = 0.235
+radial_segments = 20
+rings = 1
+
+[sub_resource type="BoxMesh" id="Mesh_fin"]
+size = Vector3(0.19, 0.012, 0.055)
+
+[sub_resource type="TorusMesh" id="Mesh_bezel"]
+inner_radius = 0.111
+outer_radius = 0.128
+rings = 20
+ring_segments = 8
+
+[sub_resource type="CylinderMesh" id="Mesh_lens"]
+top_radius = 0.104
+bottom_radius = 0.104
+height = 0.012
+radial_segments = 20
+rings = 1
+
+[sub_resource type="TorusMesh" id="Mesh_guard_ring"]
+inner_radius = 0.104
+outer_radius = 0.112
+rings = 18
+ring_segments = 6
+
+[sub_resource type="BoxMesh" id="Mesh_guard_bar"]
+size = Vector3(0.222, 0.009, 0.009)
+
+[sub_resource type="CylinderMesh" id="Mesh_gland"]
+top_radius = 0.017
+bottom_radius = 0.022
+height = 0.055
+radial_segments = 10
+rings = 1
+
+[sub_resource type="StandardMaterial3D" id="Mat_lens"]
+; Local to scene: two work lights at different colour temperatures in one room
+; would otherwise share one lens material and both take the last one written.
+resource_local_to_scene = true
+; The visible source. Albedo is a dark smoked glass, not white: an unlit work
+; lamp with a white lens looks like a headlight sticker, and this lens spends
+; plenty of frames unlit (the prop is placed in rooms whose power is out).
+; Emission is overwritten per-frame by the script to match the colour
+; temperature — a practical whose glass disagrees with its own beam is the
+; giveaway that the fixture is decoration in front of a spotlight.
+albedo_color = Color(0.085, 0.081, 0.072, 1)
+metallic = 0.0
+roughness = 0.14
+emission_enabled = true
+emission = Color(1, 0.78, 0.52, 1)
+emission_energy_multiplier = 2.1
+
+[sub_resource type="StandardMaterial3D" id="Mat_dark"]
+; Cast/painted housing back and heat fins. Deliberately a different, duller
+; material to the brushed body: a fixture assembled from one material is a
+; fixture nobody assembled.
+albedo_color = Color(0.075, 0.077, 0.081, 1)
+metallic = 0.15
+roughness = 0.68
+
+[node name="WorkLight" type="Node3D"]
+script = ExtResource("1_script")
+
+; --------------------------------------------------------------------- legs --
+
+[node name="Legs" type="Node3D" parent="."]
+
+[node name="Leg1" type="Node3D" parent="Legs"]
+
+[node name="Strut" type="MeshInstance3D" parent="Legs/Leg1"]
+position = Vector3(0.22, 0.47, 0)
+rotation_degrees = Vector3(0, 0, 25.09)
+mesh = SubResource("Mesh_strut")
+surface_material_override/0 = ExtResource("2_steel")
+
+[node name="Foot" type="MeshInstance3D" parent="Legs/Leg1"]
+position = Vector3(0.442, 0.013, 0)
+mesh = SubResource("Mesh_foot")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Leg2" type="Node3D" parent="Legs"]
+rotation_degrees = Vector3(0, 137, 0)
+
+[node name="Strut" type="MeshInstance3D" parent="Legs/Leg2"]
+position = Vector3(0.22, 0.47, 0)
+rotation_degrees = Vector3(0, 0, 25.09)
+mesh = SubResource("Mesh_strut")
+surface_material_override/0 = ExtResource("2_steel")
+
+[node name="Foot" type="MeshInstance3D" parent="Legs/Leg2"]
+position = Vector3(0.442, 0.013, 0)
+mesh = SubResource("Mesh_foot")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Leg3" type="Node3D" parent="Legs"]
+rotation_degrees = Vector3(0, 244, 0)
+
+[node name="Strut" type="MeshInstance3D" parent="Legs/Leg3"]
+position = Vector3(0.22, 0.47, 0)
+rotation_degrees = Vector3(0, 0, 25.09)
+mesh = SubResource("Mesh_strut")
+surface_material_override/0 = ExtResource("2_steel")
+
+[node name="Foot" type="MeshInstance3D" parent="Legs/Leg3"]
+position = Vector3(0.442, 0.013, 0)
+mesh = SubResource("Mesh_foot")
+surface_material_override/0 = SubResource("Mat_dark")
+
+; ------------------------------------------------------------------- column --
+
+[node name="Column" type="Node3D" parent="."]
+
+[node name="Lower" type="MeshInstance3D" parent="Column"]
+position = Vector3(0, 0.51, 0)
+mesh = SubResource("Mesh_col_lower")
+surface_material_override/0 = ExtResource("2_steel")
+
+[node name="Hub" type="MeshInstance3D" parent="Column"]
+position = Vector3(0, 0.94, 0)
+mesh = SubResource("Mesh_hub")
+surface_material_override/0 = SubResource("Mat_dark")
+
+; The clamp collar sits 6 cm proud of where it "should" and is rotated off-axis.
+; The upper column is not fully extended — this lamp was set to the height the
+; job needed, not to the height the model was built at.
+[node name="Collar" type="MeshInstance3D" parent="Column"]
+position = Vector3(0, 1.035, 0)
+rotation_degrees = Vector3(0, 31, 0)
+mesh = SubResource("Mesh_collar")
+surface_material_override/0 = ExtResource("3_hazard")
+
+[node name="Upper" type="MeshInstance3D" parent="Column"]
+position = Vector3(0, 1.28, 0)
+mesh = SubResource("Mesh_col_upper")
+surface_material_override/0 = ExtResource("2_steel")
+
+; --------------------------------------------------------------------- head --
+; rotation_degrees is overwritten by the script from head_pitch_deg/head_yaw_deg.
+; The values here are the defaults, so the scene still reads correctly if it is
+; ever opened without running.
+
+[node name="Head" type="Node3D" parent="Column"]
+position = Vector3(0, 1.53, 0)
+rotation_degrees = Vector3(-27, 9, 0)
+
+[node name="YokeL" type="MeshInstance3D" parent="Column/Head"]
+position = Vector3(-0.122, 0, 0.02)
+mesh = SubResource("Mesh_yoke")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="YokeR" type="MeshInstance3D" parent="Column/Head"]
+position = Vector3(0.122, 0, 0.02)
+mesh = SubResource("Mesh_yoke")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Housing" type="MeshInstance3D" parent="Column/Head"]
+position = Vector3(0, 0, 0.072)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("Mesh_housing")
+surface_material_override/0 = ExtResource("2_steel")
+
+[node name="Fin1" type="MeshInstance3D" parent="Column/Head"]
+position = Vector3(0, 0.052, 0.135)
+mesh = SubResource("Mesh_fin")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Fin2" type="MeshInstance3D" parent="Column/Head"]
+position = Vector3(0, 0.006, 0.152)
+mesh = SubResource("Mesh_fin")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Fin3" type="MeshInstance3D" parent="Column/Head"]
+position = Vector3(0, -0.04, 0.135)
+mesh = SubResource("Mesh_fin")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Bezel" type="MeshInstance3D" parent="Column/Head"]
+position = Vector3(0, 0, -0.043)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("Mesh_bezel")
+surface_material_override/0 = ExtResource("3_hazard")
+
+[node name="Lens" type="MeshInstance3D" parent="Column/Head"]
+position = Vector3(0, 0, -0.045)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("Mesh_lens")
+surface_material_override/0 = SubResource("Mat_lens")
+
+; The guard. Its bars cross the cone and land as real shadows on top of the
+; gobo — the doubling is free and it is what makes the pool of light read as
+; coming out of an object rather than out of a Light3D.
+[node name="Guard" type="Node3D" parent="Column/Head"]
+position = Vector3(0, 0, -0.085)
+
+[node name="Ring1" type="MeshInstance3D" parent="Column/Head/Guard"]
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("Mesh_guard_ring")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Ring2" type="MeshInstance3D" parent="Column/Head/Guard"]
+position = Vector3(0, 0, 0.035)
+rotation_degrees = Vector3(90, 0, 0)
+mesh = SubResource("Mesh_guard_ring")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Bar1" type="MeshInstance3D" parent="Column/Head/Guard"]
+rotation_degrees = Vector3(0, 0, 14)
+mesh = SubResource("Mesh_guard_bar")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Bar2" type="MeshInstance3D" parent="Column/Head/Guard"]
+rotation_degrees = Vector3(0, 0, 76)
+mesh = SubResource("Mesh_guard_bar")
+surface_material_override/0 = SubResource("Mat_dark")
+
+[node name="Bar3" type="MeshInstance3D" parent="Column/Head/Guard"]
+rotation_degrees = Vector3(0, 0, 131)
+mesh = SubResource("Mesh_guard_bar")
+surface_material_override/0 = SubResource("Mat_dark")
+
+; Where the flex leaves the head. work_light.gd's cable route starts at the
+; matching world position — move this and move the first waypoint too.
+[node name="Gland" type="MeshInstance3D" parent="Column/Head"]
+position = Vector3(0.055, -0.088, 0.075)
+rotation_degrees = Vector3(28, 0, 0)
+mesh = SubResource("Mesh_gland")
+surface_material_override/0 = SubResource("Mat_dark")
+
+; The practical itself. Sits just behind the lens plane so the guard is inside
+; its own cone. Everything below is overwritten by the script's exports; the
+; values are the defaults so the scene reads standalone.
+[node name="Spot" type="SpotLight3D" parent="Column/Head"]
+position = Vector3(0, 0, -0.04)
+light_color = Color(1, 0.7776, 0.5504, 1)
+light_energy = 9.0
+light_specular = 1.0
+light_volumetric_fog_energy = 1.6
+shadow_enabled = true
+shadow_bias = 0.028
+shadow_normal_bias = 1.2
+shadow_blur = 1.3
+spot_range = 16.0
+spot_angle = 34.0
+spot_angle_attenuation = 0.85
+spot_attenuation = 0.85
+light_projector = ExtResource("4_gobo")

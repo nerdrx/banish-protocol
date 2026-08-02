@@ -1,0 +1,189 @@
+[gd_scene load_steps=13 format=3]
+
+; GOBO DEMO — the five fidelity projector masks, one bay each.
+;
+; Read left to right: vent slat, fine grille, fan blades, cable tray, drip
+; grate. Each bay has ONE cold-white SpotLight3D shooting through one mask at a
+; shallow angle, so the pattern breaks over the floor and climbs the wall — the
+; only honest way to judge a gobo, because a mask that looks fine flat on a wall
+; can still fall apart the moment it has to bend over a corner.
+;
+; The room is deliberately bare. There is nothing else in it to admire, no
+; dressing to carry the frame, and the fixtures themselves are not visible.
+; If a bay reads as a stencil, that is the gobo's fault and nowhere to hide.
+;
+; Shoot it with:
+;   tools/fidelity_bench/shoot.sh res://tools/fidelity_bench/gobo_demo.tscn \
+;       <out>.png 1920x1080 200 Cam
+
+[ext_resource type="Environment" path="res://src/world/layer_environment.tres" id="1_env"]
+[ext_resource type="Texture2D" path="res://assets/gobos/gobo_vent_slat.png" id="2_slat"]
+[ext_resource type="Texture2D" path="res://assets/gobos/gobo_fine_grille.png" id="3_grille"]
+[ext_resource type="Texture2D" path="res://assets/gobos/gobo_fan_blades.png" id="4_fan"]
+[ext_resource type="Texture2D" path="res://assets/gobos/gobo_cable_tray.png" id="5_tray"]
+[ext_resource type="Texture2D" path="res://assets/gobos/gobo_drip_grate.png" id="6_grate"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_wall"]
+; A plain, honest surface: mid-dark, rough enough that the gobo is read as a
+; light pattern rather than as a reflection, but not so rough it eats the edges.
+albedo_color = Color(0.315, 0.328, 0.352, 1)
+roughness = 0.62
+metallic = 0.0
+
+[sub_resource type="StandardMaterial3D" id="Mat_floor"]
+; Slightly glossier than the wall so the shafts pick up a wet-floor return —
+; the same trick the layer environment's SSR is tuned around.
+albedo_color = Color(0.225, 0.235, 0.255, 1)
+roughness = 0.38
+metallic = 0.0
+
+[sub_resource type="BoxMesh" id="Box_wall"]
+size = Vector3(24, 6, 0.4)
+
+[sub_resource type="BoxMesh" id="Box_floor"]
+size = Vector3(24, 0.4, 20)
+
+[sub_resource type="BoxMesh" id="Box_rib"]
+size = Vector3(0.26, 6, 0.34)
+
+[sub_resource type="CameraAttributesPractical" id="CamAttr"]
+exposure_multiplier = 1.0
+
+[node name="GoboDemo" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = ExtResource("1_env")
+camera_attributes = SubResource("CamAttr")
+
+[node name="Room" type="Node3D" parent="."]
+
+[node name="Wall" type="MeshInstance3D" parent="Room"]
+position = Vector3(0, 3, -4.2)
+mesh = SubResource("Box_wall")
+surface_material_override/0 = SubResource("Mat_wall")
+
+[node name="Floor" type="MeshInstance3D" parent="Room"]
+position = Vector3(0, -0.2, 4)
+mesh = SubResource("Box_floor")
+surface_material_override/0 = SubResource("Mat_floor")
+
+; Four structural ribs. Not decoration — they are there so every gobo has to
+; bend over a vertical edge somewhere in its own bay.
+[node name="Rib1" type="MeshInstance3D" parent="Room"]
+position = Vector3(-9, 3, -3.9)
+mesh = SubResource("Box_rib")
+surface_material_override/0 = SubResource("Mat_wall")
+
+[node name="Rib2" type="MeshInstance3D" parent="Room"]
+position = Vector3(-5.85, 3, -3.9)
+mesh = SubResource("Box_rib")
+surface_material_override/0 = SubResource("Mat_wall")
+
+[node name="Rib3" type="MeshInstance3D" parent="Room"]
+position = Vector3(1.85, 3, -3.9)
+mesh = SubResource("Box_rib")
+surface_material_override/0 = SubResource("Mat_wall")
+
+[node name="Rib4" type="MeshInstance3D" parent="Room"]
+position = Vector3(8.55, 3, -3.9)
+mesh = SubResource("Box_rib")
+surface_material_override/0 = SubResource("Mat_wall")
+
+; --- the five bays ------------------------------------------------------------
+; Every spot is identical apart from its projector, so any difference in the
+; frame is a difference between the MASKS. rotation_degrees(-52, 0, 0) aims the
+; -Z beam down and forward: it lands on the floor about 2 m out and runs up the
+; wall behind, which is the geometry that shows whether a mask survives a
+; corner. spot_angle_attenuation is low (0.55) so the cone edge stays crisp
+; enough not to smear the pattern into the dark.
+
+[node name="Bay0_VentSlat" type="SpotLight3D" parent="."]
+position = Vector3(-7.8, 4.6, 0.8)
+rotation_degrees = Vector3(-46, 0, 0)
+light_color = Color(0.74, 0.82, 1, 1)
+light_energy = 17.0
+light_specular = 1.0
+light_volumetric_fog_energy = 1.5
+shadow_enabled = true
+shadow_bias = 0.035
+shadow_normal_bias = 1.4
+shadow_blur = 1.1
+spot_range = 20.0
+spot_angle = 25.0
+spot_angle_attenuation = 0.55
+spot_attenuation = 0.85
+light_projector = ExtResource("2_slat")
+
+[node name="Bay1_FineGrille" type="SpotLight3D" parent="."]
+position = Vector3(-3.9, 4.6, 0.8)
+rotation_degrees = Vector3(-46, 0, 0)
+light_color = Color(0.74, 0.82, 1, 1)
+light_energy = 17.0
+light_specular = 1.0
+light_volumetric_fog_energy = 1.5
+shadow_enabled = true
+shadow_bias = 0.035
+shadow_normal_bias = 1.4
+shadow_blur = 1.1
+spot_range = 20.0
+spot_angle = 25.0
+spot_angle_attenuation = 0.55
+spot_attenuation = 0.85
+light_projector = ExtResource("3_grille")
+
+[node name="Bay2_FanBlades" type="SpotLight3D" parent="."]
+position = Vector3(0, 4.6, 0.8)
+rotation_degrees = Vector3(-46, 0, 0)
+light_color = Color(0.74, 0.82, 1, 1)
+light_energy = 17.0
+light_specular = 1.0
+light_volumetric_fog_energy = 1.5
+shadow_enabled = true
+shadow_bias = 0.035
+shadow_normal_bias = 1.4
+shadow_blur = 1.1
+spot_range = 20.0
+spot_angle = 25.0
+spot_angle_attenuation = 0.55
+spot_attenuation = 0.85
+light_projector = ExtResource("4_fan")
+
+[node name="Bay3_CableTray" type="SpotLight3D" parent="."]
+position = Vector3(3.9, 4.6, 0.8)
+rotation_degrees = Vector3(-46, 0, 0)
+light_color = Color(0.74, 0.82, 1, 1)
+light_energy = 17.0
+light_specular = 1.0
+light_volumetric_fog_energy = 1.5
+shadow_enabled = true
+shadow_bias = 0.035
+shadow_normal_bias = 1.4
+shadow_blur = 1.1
+spot_range = 20.0
+spot_angle = 25.0
+spot_angle_attenuation = 0.55
+spot_attenuation = 0.85
+light_projector = ExtResource("5_tray")
+
+[node name="Bay4_DripGrate" type="SpotLight3D" parent="."]
+position = Vector3(7.8, 4.6, 0.8)
+rotation_degrees = Vector3(-46, 0, 0)
+light_color = Color(0.74, 0.82, 1, 1)
+light_energy = 17.0
+light_specular = 1.0
+light_volumetric_fog_energy = 1.5
+shadow_enabled = true
+shadow_bias = 0.035
+shadow_normal_bias = 1.4
+shadow_blur = 1.1
+spot_range = 20.0
+spot_angle = 25.0
+spot_angle_attenuation = 0.55
+spot_attenuation = 0.85
+light_projector = ExtResource("6_grate")
+
+[node name="Cam" type="Camera3D" parent="."]
+position = Vector3(0, 2.35, 7.1)
+rotation_degrees = Vector3(-7.0, 0, 0)
+fov = 70.0
+current = true

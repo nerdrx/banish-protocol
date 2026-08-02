@@ -1,0 +1,188 @@
+[gd_scene load_steps=14 format=3]
+
+; CRT LIGHT-CAST RETROFIT — A/B, one frame.
+;
+; LEFT  : emissive-only. What the game ships today (M4.8 command terminals).
+; RIGHT : the same terminal plus a textured AreaLight3D sized to its own glass.
+;
+; The two halves are separated by a full-height divider so neither side can
+; borrow a single photon from the other, and everything else in the two bays is
+; IDENTICAL — same desk, same keyboard, same card stack, same MLI-lagged pipe on
+; the wall, same distances. There are no other lights in the scene at all. Every
+; difference you can see between the halves is the retrofit.
+;
+; Watch three things specifically, because they are the three things emissive
+; can never do:
+;   1. the DESK in front of the tube, and the keyboard on it;
+;   2. the specular on the gold lagging — an emissive quad does not appear in a
+;      reflection the way a light does, so the right-hand pipe has a green
+;      rectangle on it and the left-hand one has almost nothing;
+;   3. the wall ABOVE each hood. The hood shades the cast, so the right side has
+;      a hard-edged pool with the hood's own shadow line in it, which is the
+;      detail that reads as "a monitor is on in here" from the corridor outside.
+;
+; Shoot it with:
+;   tools/fidelity_bench/shoot.sh \
+;       res://assets/props/fidelity/crt_lightcast_ab.tscn <out>.png 1920x1080 200 Cam
+
+[ext_resource type="Environment" path="res://src/world/layer_environment.tres" id="1_env"]
+[ext_resource type="PackedScene" path="res://assets/props/fidelity/crt_terminal.tscn" id="2_term"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_brushed_steel.tres" id="3_steel"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_mli_gold.tres" id="4_mli"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_hazard_band.tres" id="5_hazard"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_room"]
+albedo_color = Color(0.365, 0.375, 0.395, 1)
+metallic = 0.0
+roughness = 0.66
+
+[sub_resource type="StandardMaterial3D" id="Mat_floor"]
+albedo_color = Color(0.275, 0.285, 0.305, 1)
+metallic = 0.0
+roughness = 0.35
+
+[sub_resource type="BoxMesh" id="Box_floor"]
+size = Vector3(9, 0.3, 7)
+
+[sub_resource type="BoxMesh" id="Box_backwall"]
+size = Vector3(9, 3.4, 0.3)
+
+[sub_resource type="BoxMesh" id="Box_divider"]
+size = Vector3(0.26, 3.05, 3.1)
+
+[sub_resource type="BoxMesh" id="Box_desktop"]
+size = Vector3(1.9, 0.06, 0.86)
+
+[sub_resource type="BoxMesh" id="Box_deskbody"]
+size = Vector3(1.78, 0.72, 0.7)
+
+[sub_resource type="CameraAttributesPractical" id="CamAttr"]
+exposure_multiplier = 1.0
+
+[node name="CrtLightCastAB" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = ExtResource("1_env")
+camera_attributes = SubResource("CamAttr")
+
+; ---------------------------------------------------------------------- room --
+
+[node name="Floor" type="MeshInstance3D" parent="."]
+position = Vector3(0, -0.15, -0.6)
+mesh = SubResource("Box_floor")
+surface_material_override/0 = SubResource("Mat_floor")
+
+[node name="BackWall" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.7, -3)
+mesh = SubResource("Box_backwall")
+surface_material_override/0 = SubResource("Mat_room")
+
+[node name="Divider" type="MeshInstance3D" parent="."]
+position = Vector3(0, 1.525, -1.5)
+mesh = SubResource("Box_divider")
+surface_material_override/0 = SubResource("Mat_room")
+
+; ------------------------------------------------------------------- bay A ---
+; EMISSIVE ONLY.
+
+[node name="DeskA" type="MeshInstance3D" parent="."]
+position = Vector3(-1.62, 0.75, -1.85)
+mesh = SubResource("Box_desktop")
+surface_material_override/0 = ExtResource("3_steel")
+
+[node name="DeskBodyA" type="MeshInstance3D" parent="."]
+position = Vector3(-1.62, 0.36, -1.94)
+mesh = SubResource("Box_deskbody")
+surface_material_override/0 = SubResource("Mat_room")
+
+[node name="KeyboardA" type="MeshInstance3D" parent="."]
+position = Vector3(-1.60, 0.797, -1.45)
+rotation_degrees = Vector3(-4, 3, 0)
+mesh = SubResource("Box_desktop")
+scale = Vector3(0.36, 0.42, 0.24)
+surface_material_override/0 = SubResource("Mat_room")
+
+[node name="CardsA" type="MeshInstance3D" parent="."]
+position = Vector3(-0.88, 0.808, -1.72)
+rotation_degrees = Vector3(0, -21, 0)
+mesh = SubResource("Box_desktop")
+scale = Vector3(0.12, 0.6, 0.19)
+surface_material_override/0 = ExtResource("5_hazard")
+
+; Lagged pipe on the wall behind. Gold MLI is the most specular thing in the
+; kit, so it is the cleanest read of "is there actually a light here".
+[node name="PipeA" type="MeshInstance3D" parent="."]
+position = Vector3(-1.62, 2.05, -2.78)
+mesh = SubResource("Box_desktop")
+scale = Vector3(1.0, 3.6, 0.26)
+surface_material_override/0 = ExtResource("4_mli")
+
+[node name="TermA" parent="." instance=ExtResource("2_term")]
+position = Vector3(-1.62, 0.78, -2.12)
+rotation_degrees = Vector3(0, -6, 0)
+use_area_light = false
+screen_emission = 1.35
+
+[node name="LabelA" type="Label3D" parent="."]
+position = Vector3(-1.62, 2.62, -2.75)
+pixel_size = 0.0024
+font_size = 64
+modulate = Color(0.34, 0.37, 0.42, 1)
+outline_size = 0
+text = "EMISSIVE ONLY"
+
+; ------------------------------------------------------------------- bay B ---
+; EMISSIVE + TEXTURED AREALIGHT3D. Everything else identical.
+
+[node name="DeskB" type="MeshInstance3D" parent="."]
+position = Vector3(1.62, 0.75, -1.85)
+mesh = SubResource("Box_desktop")
+surface_material_override/0 = ExtResource("3_steel")
+
+[node name="DeskBodyB" type="MeshInstance3D" parent="."]
+position = Vector3(1.62, 0.36, -1.94)
+mesh = SubResource("Box_deskbody")
+surface_material_override/0 = SubResource("Mat_room")
+
+[node name="KeyboardB" type="MeshInstance3D" parent="."]
+position = Vector3(1.64, 0.797, -1.45)
+rotation_degrees = Vector3(-4, 3, 0)
+mesh = SubResource("Box_desktop")
+scale = Vector3(0.36, 0.42, 0.24)
+surface_material_override/0 = SubResource("Mat_room")
+
+[node name="CardsB" type="MeshInstance3D" parent="."]
+position = Vector3(2.42, 0.808, -1.72)
+rotation_degrees = Vector3(0, -21, 0)
+mesh = SubResource("Box_desktop")
+scale = Vector3(0.12, 0.6, 0.19)
+surface_material_override/0 = ExtResource("5_hazard")
+
+[node name="PipeB" type="MeshInstance3D" parent="."]
+position = Vector3(1.62, 2.05, -2.78)
+mesh = SubResource("Box_desktop")
+scale = Vector3(1.0, 3.6, 0.26)
+surface_material_override/0 = ExtResource("4_mli")
+
+[node name="TermB" parent="." instance=ExtResource("2_term")]
+position = Vector3(1.62, 0.78, -2.12)
+rotation_degrees = Vector3(0, 6, 0)
+use_area_light = true
+cast_shadows = true
+cast_energy = 7.0
+cast_range_m = 5.2
+screen_emission = 1.35
+
+[node name="LabelB" type="Label3D" parent="."]
+position = Vector3(1.62, 2.62, -2.75)
+pixel_size = 0.0024
+font_size = 64
+modulate = Color(0.34, 0.37, 0.42, 1)
+outline_size = 0
+text = "AREALIGHT3D CAST"
+
+[node name="Cam" type="Camera3D" parent="."]
+position = Vector3(0, 1.5, 1.25)
+rotation_degrees = Vector3(-5.0, 0, 0)
+fov = 70.0
+current = true

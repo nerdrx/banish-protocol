@@ -1,0 +1,67 @@
+[gd_resource type="StandardMaterial3D" load_steps=4 format=3]
+
+; MLI GOLD FOIL — aluminised-Kapton multi-layer insulation.
+; Maps from tools/build_fidelity_materials.py (build_mli_gold).
+;
+; This is the one material in the fidelity set that is almost entirely
+; SPECULAR. Metallic 1.0 means the albedo is not a colour the surface shows you,
+; it is the colour of the light the surface hands back — so every gram of
+; readability comes from the normal map bending that reflection into creases,
+; and from the roughness map deciding which creases are polished and which are
+; scuffed. If you turn the normal down, the material dies.
+;
+; Why it belongs in this game: the reference frames are a near-black room with
+; three or four small practicals. A rough dielectric in that room is invisible.
+; A crumpled metal is a hundred tiny curved mirrors, every one of which finds a
+; different practical — so one gold-wrapped machine lights up a corner that has
+; no light in it, at zero cost in lights. It is the cheapest brightness in the
+; whole scene, which is exactly the trade the darkness law wants.
+;
+; ANISOTROPY IS OFF, on purpose. Anisotropy stretches a highlight along the
+; mesh tangent, which is right for a brushed or spun finish and wrong for a
+; crumpled one: foil has no grain direction, and forcing a uniform one smears
+; every crease highlight the same way and cancels the crumple the normal map
+; just paid for. The brushed-steel family is where that feature earns its keep.
+;
+; UV1 SCALE 1.0 = one tile per metre. Machinery lagging is wrapped in panels
+; roughly a metre across, which is also the seam pitch baked into the maps, so
+; scaling this away from 1.0 breaks the quilt read. Scale the MESH, not the UV.
+
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/mli_gold_albedo.png" id="1_alb"]
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/mli_gold_normal.png" id="2_nrm"]
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/mli_gold_orm.png" id="3_orm"]
+
+[resource]
+resource_name = "MLI Gold Foil"
+albedo_color = Color(1, 1, 1, 1)
+albedo_texture = ExtResource("1_alb")
+
+; Packed ORM: R = ambient occlusion, G = roughness, B = metallic. Same channel
+; convention as assets/pbr/*_orm.png, so anything in the repo that already knows
+; how to read one of those knows how to read this.
+metallic = 1.0
+metallic_texture = ExtResource("3_orm")
+metallic_texture_channel = 2
+; 0.5 is the neutral dielectric F0 (4%). Metals ignore it, but the tape seams
+; and the torn scrim in this map are NOT metal, and they want the default.
+metallic_specular = 0.5
+
+roughness = 1.0
+roughness_texture = ExtResource("3_orm")
+roughness_texture_channel = 1
+
+normal_enabled = true
+normal_texture = ExtResource("2_nrm")
+; 1.35 rather than 1.0: the crease network is the material, and the baked map is
+; already conservative so the mip chain does not fizz at distance.
+normal_scale = 1.35
+
+ao_enabled = true
+ao_texture = ExtResource("3_orm")
+ao_texture_channel = 0
+; Cavity AO on a metal must not eat the specular — it is there to seat the
+; creases in shadow, not to dim the reflections that are the whole point.
+ao_light_affect = 0.15
+
+uv1_scale = Vector3(1, 1, 1)
+texture_filter = 5

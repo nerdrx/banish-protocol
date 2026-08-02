@@ -1,0 +1,72 @@
+[gd_resource type="StandardMaterial3D" load_steps=5 format=3]
+
+; BRUSHED ANISOTROPIC STEEL — kit surfaces, prop bodies, fixture housings.
+; Maps from tools/build_fidelity_materials.py (build_brushed_steel).
+;
+; The feature that matters here is ANISOTROPY, and it is worth being precise
+; about what it buys. An isotropic rough metal returns a round specular blob;
+; every fixture in a room gets the same round blob and the eye reads "shader".
+; An anisotropic one returns a highlight stretched ACROSS the grain, so a lamp
+; overhead becomes a horizontal bar on a horizontally-brushed panel and a
+; vertical bar on the post beside it. That difference between two neighbouring
+; metal parts is the single cheapest "these were manufactured separately" signal
+; available, and it costs one extra texture fetch.
+;
+; HOW GODOT WANTS THE FLOWMAP (this is the part that is easy to get wrong):
+; BaseMaterial3D samples `texture_flowmap` and takes `.rga`, then uses `.rg*2-1`
+; as the flow VECTOR and the third component of that swizzle — i.e. the texture's
+; ALPHA — as the anisotropy ratio. So the map is RGBA, R/G carry direction,
+; A carries strength, and B is unused. It must NOT be imported as a normal map:
+; RGTC would throw the alpha away and take the whole anisotropy ratio with it.
+; build_fidelity_materials.py's import rules pin that.
+;
+; ANISOTROPY REQUIRES TANGENTS. Every primitive mesh Godot generates has them,
+; and so does the kit .glb. If you ever apply this to a mesh built by hand in
+; code, call `SurfaceTool.generate_tangents()` or the highlight will point in a
+; direction nobody chose.
+;
+; The albedo is a blued/treated steel rather than bright stainless — a real
+; metal F0 for a darker alloy, not a crushed-albedo fake. The kit is "matte
+; black monoliths"; a chrome family fights it, and a lie about reflectance shows
+; up the instant a flare goes off next to it.
+
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/brushed_steel_albedo.png" id="1_alb"]
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/brushed_steel_normal.png" id="2_nrm"]
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/brushed_steel_orm.png" id="3_orm"]
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/brushed_steel_flow.png" id="4_flow"]
+
+[resource]
+resource_name = "Brushed Steel"
+albedo_color = Color(1, 1, 1, 1)
+albedo_texture = ExtResource("1_alb")
+
+metallic = 1.0
+metallic_texture = ExtResource("3_orm")
+metallic_texture_channel = 2
+metallic_specular = 0.5
+
+roughness = 1.0
+roughness_texture = ExtResource("3_orm")
+roughness_texture_channel = 1
+
+normal_enabled = true
+normal_texture = ExtResource("2_nrm")
+; Low on purpose. The grain lives in ROUGHNESS; a strong normal here turns
+; brushed metal into corrugated metal.
+normal_scale = 0.85
+
+anisotropy_enabled = true
+; 0.62, not 1.0. At full ratio the highlight becomes a razor line with no core,
+; which under AgX has nothing left to roll off and reads as a rendering bug.
+anisotropy = 0.62
+anisotropy_flowmap = ExtResource("4_flow")
+
+ao_enabled = true
+ao_texture = ExtResource("3_orm")
+ao_texture_channel = 0
+ao_light_affect = 0.2
+
+; 0.5 m per tile — the grain has to be finer than the panel it is on or the
+; brush marks read as planks.
+uv1_scale = Vector3(2, 2, 2)
+texture_filter = 5

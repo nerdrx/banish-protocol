@@ -1,0 +1,55 @@
+[gd_resource type="StandardMaterial3D" load_steps=4 format=3]
+
+; HAZARD / WEAR BAND — painted machine trim, chipped back to bare steel.
+; Maps from tools/build_fidelity_materials.py (build_hazard_band).
+;
+; The map is laid out as a BAND: hazard diagonals across the middle ~64% of V
+; with a ragged, hand-taped boundary top and bottom, plain machine enamel above
+; and below. Apply it to a trim strip with uv1_scale.x set to however many
+; metres long the strip is and uv1_scale.y left at 1.0, and you get one painted
+; band with correct edges however long the run is. Tiling it in Y is legal (the
+; maps wrap) but it stacks bands, which is almost never what you want.
+;
+; What this material is FOR, per the motivation law: hazard paint is not
+; decoration, it is a warning somebody applied to a specific edge because that
+; edge hurt somebody. Put it where a machine actually pinches, crushes, or is
+; hot — the lip of a press, the swing arc of a bulkhead, the base of a mast that
+; people walk into in the dark. Painting it on a wall because the wall looked
+; empty is the exact failure the law exists to prevent.
+;
+; The wear is the expensive part and it is doing real PBR work, not just
+; colour: where the paint has gone, metallic goes 0 -> 0.95 and roughness
+; 0.30 -> 0.64 in the same pixel. That discontinuity is what makes a chip read
+; as a chip under a moving light instead of as a stain.
+
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/hazard_band_albedo.png" id="1_alb"]
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/hazard_band_normal.png" id="2_nrm"]
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/hazard_band_orm.png" id="3_orm"]
+
+[resource]
+resource_name = "Hazard Wear Band"
+albedo_color = Color(1, 1, 1, 1)
+albedo_texture = ExtResource("1_alb")
+
+metallic = 1.0
+metallic_texture = ExtResource("3_orm")
+metallic_texture_channel = 2
+metallic_specular = 0.5
+
+roughness = 1.0
+roughness_texture = ExtResource("3_orm")
+roughness_texture_channel = 1
+
+normal_enabled = true
+normal_texture = ExtResource("2_nrm")
+; The only geometry in this map is one paint-film of thickness plus a few
+; knocks. 1.0 — pushing it further turns a chip lip into a crater.
+normal_scale = 1.0
+
+ao_enabled = true
+ao_texture = ExtResource("3_orm")
+ao_texture_channel = 0
+ao_light_affect = 0.25
+
+uv1_scale = Vector3(1, 1, 1)
+texture_filter = 5

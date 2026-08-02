@@ -1,0 +1,135 @@
+[gd_scene load_steps=11 format=3]
+
+; CRT TERMINAL (fidelity prototype) — see src/fidelity/crt_terminal.gd.
+;
+; ORIENTATION: the screen faces +Z. Origin is at the FOOT of the case, on the
+; surface it stands on, so a terminal can be dropped onto a desk at the desk's
+; own height without anybody having to work out half of the case depth.
+;
+; The tube is not a flat quad. The screen box is 12 mm thick and sits inside a
+; recessed bezel, and the bezel's inner lip overhangs the glass by 8 mm — so at
+; a grazing angle the bezel occludes part of its own screen, which is the read
+; that says "there is a tube behind this" rather than "there is a picture on
+; this". It is 8 mm of geometry and it does more than any shader could.
+;
+; The Cast AreaLight3D sits 3 cm in FRONT of the glass, not behind it. Behind
+; the glass it would be occluded by the screen mesh's own shadow-caster and by
+; the bezel; in front, the emitter rectangle is exactly the lit area the player
+; can see, which is what makes the retrofit read as the screen doing the work.
+; Turned 180 degrees about Y for the same reason the diffuser panel's is: a
+; Light3D emits along -Z.
+
+[ext_resource type="Script" path="res://src/fidelity/crt_terminal.gd" id="1_script"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_brushed_steel.tres" id="2_steel"]
+[ext_resource type="Texture2D" path="res://assets/materials/fidelity/tex/crt_phosphor_emis.png" id="3_phos"]
+
+[sub_resource type="BoxMesh" id="Mesh_case"]
+size = Vector3(0.44, 0.38, 0.46)
+
+[sub_resource type="BoxMesh" id="Mesh_hood"]
+size = Vector3(0.46, 0.055, 0.30)
+
+[sub_resource type="BoxMesh" id="Mesh_bezel_h"]
+size = Vector3(0.44, 0.055, 0.045)
+
+[sub_resource type="BoxMesh" id="Mesh_bezel_v"]
+size = Vector3(0.055, 0.38, 0.045)
+
+[sub_resource type="BoxMesh" id="Mesh_screen"]
+size = Vector3(0.33, 0.27, 0.012)
+
+[sub_resource type="StandardMaterial3D" id="Mat_case"]
+; Beige-grey cassette-futurism plastic, scuffed. Explicitly NOT the brushed
+; steel the rest of the fidelity kit uses: this is player-tech (a human-built
+; instrument, DESIGN.md's cassette-futurism direction), and the fastest way to
+; say so is to make it out of a material MOTHER's architecture never uses.
+albedo_color = Color(0.185, 0.178, 0.162, 1)
+metallic = 0.0
+roughness = 0.66
+
+[sub_resource type="StandardMaterial3D" id="Mat_screen"]
+; Local to scene: three terminals on one desk must be able to run different
+; screen brightnesses. Shared, the last one instantiated would set all three.
+resource_local_to_scene = true
+; Albedo is near-black smoked glass — a CRT with its power off is a very dark
+; mirror, and getting that right is what makes the powered state read as light
+; coming OUT rather than as a texture stuck on.
+albedo_color = Color(0.028, 0.030, 0.028, 1)
+metallic = 0.0
+roughness = 0.09
+emission_enabled = true
+emission = Color(0.34, 1, 0.42, 1)
+emission_energy_multiplier = 2.4
+emission_texture = ExtResource("3_phos")
+
+[node name="CrtTerminal" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="Case" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.19, -0.16)
+mesh = SubResource("Mesh_case")
+surface_material_override/0 = SubResource("Mat_case")
+
+; A glare hood. Somebody in a bright room bolted this on and nobody took it off
+; when the lights went out — and it now shades the screen's cast off the
+; ceiling, which is a lighting decision disguised as a prop decision.
+[node name="Hood" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.385, 0.03)
+rotation_degrees = Vector3(11, 0, 0)
+mesh = SubResource("Mesh_hood")
+surface_material_override/0 = SubResource("Mat_case")
+
+[node name="BezelTop" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.353, 0.088)
+mesh = SubResource("Mesh_bezel_h")
+surface_material_override/0 = SubResource("Mat_case")
+
+[node name="BezelBottom" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.027, 0.088)
+mesh = SubResource("Mesh_bezel_h")
+surface_material_override/0 = SubResource("Mat_case")
+
+[node name="BezelLeft" type="MeshInstance3D" parent="."]
+position = Vector3(-0.193, 0.19, 0.088)
+mesh = SubResource("Mesh_bezel_v")
+surface_material_override/0 = SubResource("Mat_case")
+
+[node name="BezelRight" type="MeshInstance3D" parent="."]
+position = Vector3(0.193, 0.19, 0.088)
+mesh = SubResource("Mesh_bezel_v")
+surface_material_override/0 = SubResource("Mat_case")
+
+[node name="Screen" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.19, 0.072)
+mesh = SubResource("Mesh_screen")
+surface_material_override/0 = SubResource("Mat_screen")
+; A screen must never occlude its own light. Godot would otherwise put this
+; 12 mm slab into the AreaLight's shadow map and the retrofit would light
+; nothing at all.
+cast_shadow = 0
+
+[node name="Rail" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.006, -0.16)
+mesh = SubResource("Mesh_hood")
+surface_material_override/0 = ExtResource("2_steel")
+
+; --- the retrofit -------------------------------------------------------------
+; area_size matches the visible glass, area_texture is the screen's own image
+; (set by the script so `textured_cast` can turn it off for comparison).
+
+[node name="Cast" type="AreaLight3D" parent="."]
+position = Vector3(0, 0.19, 0.094)
+rotation_degrees = Vector3(0, 180, 0)
+light_color = Color(0.34, 1, 0.42, 1)
+light_energy = 3.1
+light_specular = 0.9
+light_volumetric_fog_energy = 0.7
+shadow_enabled = false
+shadow_bias = 0.03
+shadow_normal_bias = 1.0
+shadow_blur = 1.5
+area_size = Vector2(0.33, 0.27)
+area_range = 4.6
+area_attenuation = 0.7
+area_normalize_energy = true
+area_texture = ExtResource("3_phos")

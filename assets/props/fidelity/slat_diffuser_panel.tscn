@@ -1,0 +1,122 @@
+[gd_scene load_steps=9 format=3]
+
+; BACKLIT SLAT-DIFFUSER WALL PANEL — see src/fidelity/slat_diffuser_panel.gd.
+;
+; ORIENTATION: the panel's face points along +Z. Mount it flush to a wall by
+; putting the panel's origin ON the wall surface with +Z into the room; the
+; housing extends backwards into the wall, which is what "recessed" means and
+; which is why the housing is offset to negative Z rather than being centred.
+;
+; The AreaLight3D is rotated 180 degrees about Y. Every Light3D in Godot emits
+; along its own -Z (same convention as a Camera3D looks along -Z), so a light
+; that should throw into a +Z-facing room has to be turned around. This is the
+; single most common way to wire an area light up backwards, and when you do,
+; it silently lights the inside of the wall and the panel just looks broken.
+;
+; The Fill omni sits slightly PROUD of the diffuser rather than level with it.
+; A point light exactly coplanar with the surface it is meant to be lighting
+; illuminates none of it, and the fallback then looks worse than nothing.
+
+[ext_resource type="Script" path="res://src/fidelity/slat_diffuser_panel.gd" id="1_script"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_brushed_steel.tres" id="2_steel"]
+[ext_resource type="Material" path="res://assets/materials/fidelity/mat_hazard_band.tres" id="3_hazard"]
+
+[sub_resource type="BoxMesh" id="Mesh_housing"]
+size = Vector3(1.52, 0.66, 0.15)
+
+[sub_resource type="BoxMesh" id="Mesh_diffuser"]
+size = Vector3(1.36, 0.5, 0.018)
+
+[sub_resource type="BoxMesh" id="Mesh_frame_h"]
+size = Vector3(1.52, 0.075, 0.075)
+
+[sub_resource type="BoxMesh" id="Mesh_frame_v"]
+size = Vector3(0.075, 0.66, 0.075)
+
+[sub_resource type="StandardMaterial3D" id="Mat_diffuser"]
+; LOCAL TO SCENE, and it has to be. A sub-resource is shared by every instance
+; of the scene that declares it, so without this flag two panels in one room
+; write their emission into the SAME material and whichever ran _apply() last
+; decides what both of them look like. Cost is one StandardMaterial3D per
+; instance, which is the correct price for a per-instance property.
+resource_local_to_scene = true
+; Sanded acrylic. Albedo is a dirty off-white, NOT white — a diffuser that has
+; been in a machine space for a decade is the colour of the dust on it, and a
+; pure-white sheet reads as a UI element the moment the light behind it is off.
+; Emission is overwritten by the script from the colour temperature.
+albedo_color = Color(0.42, 0.425, 0.415, 1)
+metallic = 0.0
+roughness = 0.55
+emission_enabled = true
+emission = Color(1, 0.9576, 0.9118, 1)
+emission_energy_multiplier = 0.95
+
+[node name="SlatDiffuserPanel" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="Housing" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0, -0.077)
+mesh = SubResource("Mesh_housing")
+surface_material_override/0 = ExtResource("2_steel")
+
+[node name="Diffuser" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0, 0.012)
+mesh = SubResource("Mesh_diffuser")
+surface_material_override/0 = SubResource("Mat_diffuser")
+
+; The frame is the part a maintenance crew touches, so it is the part that
+; carries the hazard paint and the wear that comes with it.
+[node name="FrameTop" type="MeshInstance3D" parent="."]
+position = Vector3(0, 0.293, 0.02)
+mesh = SubResource("Mesh_frame_h")
+surface_material_override/0 = ExtResource("3_hazard")
+
+[node name="FrameBottom" type="MeshInstance3D" parent="."]
+position = Vector3(0, -0.293, 0.02)
+mesh = SubResource("Mesh_frame_h")
+surface_material_override/0 = ExtResource("3_hazard")
+
+[node name="FrameLeft" type="MeshInstance3D" parent="."]
+position = Vector3(-0.722, 0, 0.02)
+mesh = SubResource("Mesh_frame_v")
+surface_material_override/0 = ExtResource("2_steel")
+
+[node name="FrameRight" type="MeshInstance3D" parent="."]
+position = Vector3(0.722, 0, 0.02)
+mesh = SubResource("Mesh_frame_v")
+surface_material_override/0 = ExtResource("2_steel")
+
+; --- the real light (Godot 4.7 AreaLight3D) -----------------------------------
+; area_size is set from `aperture` by the script so the emitter can never be
+; larger than the hole it is shining through.
+
+[node name="Area" type="AreaLight3D" parent="."]
+position = Vector3(0, 0, 0.028)
+rotation_degrees = Vector3(0, 180, 0)
+light_color = Color(1, 0.9576, 0.9118, 1)
+light_energy = 2.6
+light_specular = 1.0
+light_volumetric_fog_energy = 0.85
+shadow_enabled = true
+shadow_bias = 0.03
+shadow_normal_bias = 1.1
+shadow_blur = 1.4
+area_size = Vector2(1.36, 0.5)
+area_range = 7.5
+area_attenuation = 1.0
+area_normalize_energy = true
+
+; --- the graceful degrade -----------------------------------------------------
+; Hidden while the area light is on. Unshadowed, weaker, and slightly proud of
+; the diffuser so it actually reaches the wall around the panel.
+
+[node name="Fill" type="OmniLight3D" parent="."]
+visible = false
+position = Vector3(0, 0, 0.14)
+light_color = Color(1, 0.9576, 0.9118, 1)
+light_energy = 1.43
+light_specular = 0.6
+light_volumetric_fog_energy = 0.6
+shadow_enabled = false
+omni_range = 6.75
+omni_attenuation = 0.85

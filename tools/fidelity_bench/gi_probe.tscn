@@ -1,0 +1,113 @@
+[gd_scene load_steps=12 format=3]
+
+; GI CORRECTNESS PROBE — a Cornell box. See src comment in gi_probe.gd.
+;
+; The one spot in here fires UP at the ceiling. Nothing else is directly lit.
+; If the floor has any colour in it, that colour arrived by bounce.
+
+[ext_resource type="Environment" path="res://src/world/layer_environment.tres" id="1_env"]
+[ext_resource type="Script" path="res://tools/fidelity_bench/gi_probe.gd" id="2_script"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_white"]
+; 0.72 sRGB — a real white paint, not 1.0. A perfect diffuser would exaggerate
+; every bounce and flatter a GI solution that is only half working.
+albedo_color = Color(0.72, 0.715, 0.705, 1)
+roughness = 0.92
+metallic = 0.0
+
+[sub_resource type="StandardMaterial3D" id="Mat_red"]
+albedo_color = Color(0.62, 0.06, 0.05, 1)
+roughness = 0.92
+metallic = 0.0
+
+[sub_resource type="StandardMaterial3D" id="Mat_blue"]
+albedo_color = Color(0.06, 0.12, 0.66, 1)
+roughness = 0.92
+metallic = 0.0
+
+[sub_resource type="BoxMesh" id="Box_floor"]
+size = Vector3(6, 0.2, 6)
+
+[sub_resource type="BoxMesh" id="Box_wall_x"]
+size = Vector3(0.2, 4, 6)
+
+[sub_resource type="BoxMesh" id="Box_wall_z"]
+size = Vector3(6, 4, 0.2)
+
+[sub_resource type="BoxMesh" id="Box_block"]
+size = Vector3(1.1, 1.6, 1.1)
+
+[sub_resource type="CameraAttributesPractical" id="CamAttr"]
+exposure_multiplier = 1.0
+
+[node name="GiProbe" type="Node3D"]
+script = ExtResource("2_script")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = ExtResource("1_env")
+camera_attributes = SubResource("CamAttr")
+
+[node name="Floor" type="MeshInstance3D" parent="."]
+position = Vector3(0, -0.1, 0)
+mesh = SubResource("Box_floor")
+surface_material_override/0 = SubResource("Mat_white")
+
+[node name="Ceiling" type="MeshInstance3D" parent="."]
+position = Vector3(0, 4.1, 0)
+mesh = SubResource("Box_floor")
+surface_material_override/0 = SubResource("Mat_white")
+
+[node name="WallLeft" type="MeshInstance3D" parent="."]
+position = Vector3(-3.1, 2, 0)
+mesh = SubResource("Box_wall_x")
+surface_material_override/0 = SubResource("Mat_red")
+
+[node name="WallRight" type="MeshInstance3D" parent="."]
+position = Vector3(3.1, 2, 0)
+mesh = SubResource("Box_wall_x")
+surface_material_override/0 = SubResource("Mat_blue")
+
+[node name="WallBack" type="MeshInstance3D" parent="."]
+position = Vector3(0, 2, -3.1)
+mesh = SubResource("Box_wall_z")
+surface_material_override/0 = SubResource("Mat_white")
+
+[node name="Block" type="MeshInstance3D" parent="."]
+position = Vector3(-0.75, 0.8, -0.55)
+rotation_degrees = Vector3(0, 24, 0)
+mesh = SubResource("Box_block")
+surface_material_override/0 = SubResource("Mat_white")
+
+[node name="Block2" type="MeshInstance3D" parent="."]
+position = Vector3(1.05, 0.45, 0.85)
+rotation_degrees = Vector3(0, -17, 0)
+mesh = SubResource("Box_block")
+scale = Vector3(0.9, 0.56, 0.9)
+surface_material_override/0 = SubResource("Mat_white")
+
+; The only light. Aimed at the CEILING, so every lit pixel below it is bounce.
+[node name="Bounce" type="SpotLight3D" parent="."]
+position = Vector3(0, 1.6, 2.1)
+rotation_degrees = Vector3(72, 0, 0)
+light_color = Color(1, 0.97, 0.94, 1)
+light_energy = 22.0
+light_specular = 0.4
+light_indirect_energy = 1.0
+shadow_enabled = true
+shadow_bias = 0.03
+spot_range = 9.0
+spot_angle = 36.0
+spot_angle_attenuation = 0.9
+spot_attenuation = 0.7
+
+[node name="VoxelGI" type="VoxelGI" parent="."]
+visible = false
+position = Vector3(0, 2, 0)
+size = Vector3(6.4, 4.4, 6.4)
+subdiv = 1
+
+[node name="Cam" type="Camera3D" parent="."]
+position = Vector3(0, 1.85, 5.1)
+rotation_degrees = Vector3(-6, 0, 0)
+fov = 62.0
+current = true
