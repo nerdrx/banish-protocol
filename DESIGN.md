@@ -172,6 +172,12 @@ gun is useless," only as "shooting is one of several competing options."
   shafts), per-player SpotLight beams with shadows, flares as flickering
   OmniLights, emissive circuit traces on architecture (dim, pulsing — data
   flowing through conduits).
+- **God rays are a signature motif**: volumetric light shafts as compositional
+  anchors, not accidents — ceiling apertures dropping hero shafts into key
+  rooms (vault, drop shaft, arrival), grates striping corridors, dust motes
+  riding the beams. Every important room earns one readable light event; the
+  player's path should cross through light shafts, silhouetting crew and
+  creatures against them (the user's own key art is the reference).
 - **Environment language**: modern/futuristic digital brutalism — matte black
   monoliths, hairline neon circuit inlays, holographic glyph panels, data
   conduits with light pulses, floor grids that light briefly underfoot.
