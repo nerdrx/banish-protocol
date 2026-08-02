@@ -30,9 +30,7 @@ At the menu, pick **STEAM** (if you launched via Steam) or **DIRECT**:
   out of the box; over the internet use [Tailscale](https://tailscale.com) or a
   port-forward.
 - **STEAM:** host a friends-only lobby, others join from the friends list /
-  overlay invite. *Note: the Steam join path is wired but has only been tested
-  host-side — you're the first real two-account test. If it misbehaves, fall
-  back to DIRECT.*
+  overlay invite. Confirmed working in real two-account play.
 
 **Solo:** just click HOST and dive alone.
 
@@ -76,7 +74,6 @@ sliders, **Sound Captions** (directional threat text for deaf/HoH players), a
 
 ## Known pre-alpha rough edges
 
-- **Steam join** needs a real second-account test (see above; DIRECT is solid).
 - Balance is math-tuned, not human-tuned — tell us where it felt unfair or trivial.
 - No packaged tutorial yet; this guide is it.
 - Creature packs can bunch in doorways occasionally.
