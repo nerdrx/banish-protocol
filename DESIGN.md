@@ -371,10 +371,23 @@ nullvoid/
   pass (matte black + teal emissive slots), 0.01 import scale fix.
   **CyberSentinel.fbx** → used TWICE, palette-split for instant readability:
   - **Sentinel (enemy)**: near-black matte body, RED glowing accents/emissive
-    (eyes, seams, Emiss slots). No baked anims — by design it does NOT walk:
-    frictionless glide with glitch-stutter on direction change, procedural
-    head-track via eye/head bones so it watches players, jaw bone for the
-    scream, IK claw plants on lunge.
+    (eyes, seams, Emiss slots). **M6.5 "No More Sliding" retired the glide** (a
+    2.6 m mass should never appear to skate): it now walks a HEAVY authored gait —
+    flat-footed stomp, hard weight-shift onto the stance leg, an anticipation/slam/
+    settle weight curve, and deliberately too-even/mechanical timing so it stays
+    menacing rather than merely slow. Speed-matched off its own measured ground
+    speed like the crew avatar (playback rate = ground speed / authored stride;
+    verified 0.0 mm/frame foot-skate at both its move speeds), so the feet plant.
+    Sold by LAYERED SECONDARY MOTION so the rigid gait reads as controlled predator
+    (not cheap-rigid): authored overlapping-action + arm follow-through + spine
+    counter-rotation, plus a runtime living-hardware pass — the halo + scan pylons
+    lag turns and bounce on each plant, the gel torso wobbles on impact, and the
+    spring tail streams/lags/settles. The heavy-walk glb (`tools/build_sentinel_
+    walk.py`) keeps the rig BYTE-IDENTICAL to the M3.7 body (94 bones / 30752
+    verts, kit mounts and CoreHousing weak-point unmoved) and only adds idle+walk
+    clips. Procedural head-track via neck/head bones still owns the "it watches
+    you" — the clip leaves those bones free, so the body stomps while the head
+    stays locked on its prey; the glitch-stutter stays as a garnish on turns.
   - **Crew avatar (interim, but long-lived)**: same model, INVERTED —
     bright/pale shell with blue glowing accents (default swatch bright blue;
     accent tint follows the lobby shell-marker color so crewmates stay

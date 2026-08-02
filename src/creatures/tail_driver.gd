@@ -37,18 +37,33 @@ var _vel: PackedFloat32Array = PackedFloat32Array()
 var _yaw_vel: PackedFloat32Array = PackedFloat32Array()
 var _last_pos: Vector3 = Vector3.ZERO
 var _last_up_vel: float = 0.0
+var _last_yaw: float = 0.0
 var _t: float = 0.0
 var _ready_done: bool = false
 
-## Spring toward the target droop. Stiff enough to settle in ~1 s, damped so it
-## does not visibly oscillate.
-const STIFFNESS: float = 55.0
-const DAMPING: float = 9.5
-## How hard a turn/movement pushes the tail, per (rad/s) and per (m/s).
-const TURN_LAG: float = 0.9
-const STREAM_LIFT: float = 0.11
-## Landing bounce: extra droop kick per m/s of downward speed lost on impact.
-const BOUNCE: float = 0.22
+## Spring toward the target. UNDERDAMPED on purpose (M6.5): at the old
+## 55/9.5 the damping ratio was ~0.64, near-critical, so the tail SNAPPED to its
+## target and never swung — players reported it "barely moved". 34/5.0 is ζ~0.43,
+## which overshoots once and settles in ~1 s: it visibly swings its weight, lags a
+## turn out wide and rebounds, then hangs back into the resting sag.
+const STIFFNESS: float = 34.0
+const DAMPING: float = 5.0
+## Turn lag: a sharp yaw swings the tail out to the OUTSIDE of the turn, per rad/s
+## of heading change; plus a smaller push from strafing, per m/s sideways.
+const TURN_LAG: float = 0.30
+const STRAFE_LAG: float = 0.075
+## Streaming: running LIFTS the tail toward horizontal (it trails), per m/s
+## forward; jumping/falling drapes it down / lifts it, per m/s vertical.
+const STREAM_LIFT: float = 0.17
+const VERT_STREAM: float = 0.13
+## Landing bounce: a downward velocity kick to the tail per m/s of downward speed
+## killed on impact — it whips down, then the underdamped spring rebounds it up.
+const BOUNCE: float = 0.34
+## A little life at rest so a standing tail breathes rather than hanging dead.
+const IDLE_SWAY: float = 0.035
+## Clamp on how far a dynamic push may bend a segment off its droop, so a hard
+## turn or a sprint can never fold the tail through the body or over its own back.
+const MAX_PUSH: float = 0.9
 
 
 func _ready() -> void:
@@ -68,6 +83,7 @@ func _ready() -> void:
 		_vel[i] = 0.0
 		_yaw_vel[i] = 0.0
 	_last_pos = skeleton.global_position
+	_last_yaw = skeleton.global_transform.basis.get_euler().y
 	_ready_done = true
 	_apply()
 
@@ -77,37 +93,54 @@ func _process(delta: float) -> void:
 		return
 	_t += delta
 
-	# Frozen under automation: hold the pure droop so a capture is reproducible.
-	if Debug.automated:
+	# Frozen under automation so a still capture is reproducible — UNLESS a tail
+	# motion probe asked for live dynamics (Debug.tail_live), which is the whole
+	# point of a jump/turn/run-stop capture.
+	if Debug.automated and not Debug.tail_live:
 		for i: int in bones.size():
 			_angle[i] = droop[i]
 			_yaw[i] = 0.0
 		_apply()
 		return
 
-	# Motion of the body this frame, in its own frame, drives lag and lift.
+	# Motion of the body this frame, in its own frame, drives lag, lift and bounce.
 	var pos: Vector3 = skeleton.global_position
 	var world_vel: Vector3 = (pos - _last_pos) / maxf(delta, 0.0001)
 	_last_pos = pos
 	var basis: Basis = skeleton.global_transform.basis
-	var fwd_speed: float = basis.z.dot(world_vel)   # +Z is the tail's back
+	# +Z is the tail's back, so a body facing -Z moving forward reads as +fwd_speed.
+	var fwd_speed: float = -basis.z.dot(world_vel)
 	var side_speed: float = basis.x.dot(world_vel)
 	var up_vel: float = world_vel.y
 
-	# A landing is a sudden loss of downward speed — kick the tail down.
-	var landed: float = maxf(_last_up_vel - up_vel, 0.0) if up_vel > _last_up_vel - 0.5 else 0.0
+	# Heading change this frame -> the turn the tail lags behind.
+	var yaw: float = basis.get_euler().y
+	var yaw_rate: float = wrapf(yaw - _last_yaw, -PI, PI) / maxf(delta, 0.0001)
+	_last_yaw = yaw
+
+	# A landing is a sudden loss of downward speed (up_vel jumps toward zero): the
+	# per-frame upward change, delivered to the tail as a downward velocity impulse.
+	var landed: float = maxf(up_vel - _last_up_vel, 0.0)
 	_last_up_vel = up_vel
 
-	for i: int in bones.size():
-		var falloff: float = float(i + 1) / float(bones.size())   # tip reacts most
-		# The tail streams UP/back when moving forward and lags the turn sideways.
-		var target: float = droop[i] - fwd_speed * STREAM_LIFT * falloff * liveliness \
-				+ landed * BOUNCE * falloff * liveliness
-		var yaw_target: float = -side_speed * TURN_LAG * 0.04 * falloff * liveliness \
-				+ sin(_t * 1.3 + float(i) * 0.7) * 0.02 * liveliness
-		# Critically-damped-ish spring toward the targets.
+	var n: int = bones.size()
+	for i: int in n:
+		var falloff: float = float(i + 1) / float(n) * liveliness   # tip reacts most
+		# Bend target: running lifts the tail toward horizontal (it trails back), a
+		# rising body drapes it lower and a fall lifts it — clamped so a sprint can
+		# never fold it over its own back.
+		var push: float = clampf(
+				-fwd_speed * STREAM_LIFT + up_vel * VERT_STREAM, -MAX_PUSH, MAX_PUSH)
+		var target: float = droop[i] + push * falloff
 		_vel[i] += ((target - _angle[i]) * STIFFNESS - _vel[i] * DAMPING) * delta
+		# Landing impulse: a downward velocity kick the underdamped spring rebounds.
+		_vel[i] += landed * BOUNCE * falloff
 		_angle[i] += _vel[i] * delta
+		# Sideways: a sharp turn (yaw_rate) and strafing swing the tail out wide,
+		# over a shallow idle sway so a standing tail is never quite dead.
+		var yaw_target: float = clampf(
+				-yaw_rate * TURN_LAG - side_speed * STRAFE_LAG, -MAX_PUSH, MAX_PUSH) \
+				* falloff + sin(_t * 1.1 + float(i) * 0.6) * IDLE_SWAY * liveliness
 		_yaw_vel[i] += ((yaw_target - _yaw[i]) * STIFFNESS - _yaw_vel[i] * DAMPING) * delta
 		_yaw[i] += _yaw_vel[i] * delta
 	_apply()

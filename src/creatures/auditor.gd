@@ -29,6 +29,14 @@ const BODY_HEIGHT: float = 2.1
 const AUDIT_COLOUR: Color = Color(1.0, 0.15, 0.13)
 const SHELL_COLOUR: Color = Color(0.05, 0.05, 0.06)
 
+## Metres the patrol_walk clip carries the body per second at scale 1 — i.e. the
+## backward speed of the planted foot during its stance, which is the ground speed
+## that keeps it planted (measured off the clip by `--walkprobe auditor`, not the
+## loop-average, which understates it whenever a gait has any float phase). Divide
+## real ground speed by this for the no-skate playback rate.
+const PATROL_STRIDE: float = 1.6
+const PATROL_RATE_RANGE: Vector2 = Vector2(0.6, 1.6)
+
 var state: State = State.WALK
 
 var _trim_material: StandardMaterial3D = null
@@ -357,7 +365,8 @@ func _drive_animation() -> void:
 		_:
 			if _measured_speed > 0.3:
 				CreatureKit.travel(_tree, "walk")
-				CreatureKit.set_speed(_tree, clampf(_measured_speed / 1.6, 0.6, 1.6))
+				CreatureKit.set_speed(_tree, clampf(_measured_speed / PATROL_STRIDE,
+						PATROL_RATE_RANGE.x, PATROL_RATE_RANGE.y))
 			else:
 				CreatureKit.travel(_tree, "inspect")
 				CreatureKit.set_speed(_tree, 1.0)

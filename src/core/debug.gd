@@ -321,6 +321,14 @@ var _last_probe_t: float = 0.0
 ## `--hunterprobe <hound|moth|auditor>`: stage one hunter on a lit turntable
 ## facing the camera for a clean bestiary portrait. AI frozen so it holds its idle.
 var _hunter_which: String = "hound"
+## `--walkprobe <sentinel|crew|crew_run|scrubber|hound|auditor|moth> [speed]`: the
+## foot-skate acceptance test made into a permanent instrument. See `_run_walk_probe`.
+var _walk_which: String = "sentinel"
+var _walk_speed: float = -1.0
+## `--tailmotion <crew|sentinel>`: drive a scripted turn/run/jump/land and capture
+## the tail's live swing. Set true so TailDriver does NOT freeze under automation.
+var _tail_motion_which: String = "crew"
+var tail_live: bool = false
 ## `--steamjoin` target.
 var _lobby_id: int = 0
 
@@ -415,6 +423,12 @@ func _ready() -> void:
 		return
 	if _mode == "hunterprobe":
 		_run_hunter_probe.call_deferred()
+		return
+	if _mode == "walkprobe":
+		_run_walk_probe.call_deferred()
+		return
+	if _mode == "tailmotion":
+		_run_tail_motion.call_deferred()
 		return
 	if _mode.is_empty() and screenshot_path.is_empty() and auto_quit_after <= 0.0 \
 			and not steam_selftest:
@@ -732,6 +746,25 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
 					i += 1
 					_hunter_which = args[i].strip_edges().to_lower()
+			"--walkprobe":
+				# M6.5 no-skate acceptance test: stage one ground creature side-on,
+				# drive its speed-matched gait, measure foot-skate in mm/frame and save
+				# a stacked side-on filmstrip. Pair with `--screenshot PATH`.
+				_mode = "walkprobe"
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_walk_which = args[i].strip_edges().to_lower()
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_walk_speed = args[i].to_float()
+			"--tailmotion":
+				# M6.5 tail liveliness: drive a scripted turn/run/jump/land and stack a
+				# filmstrip of the tail swinging. Pair with `--screenshot PATH`.
+				_mode = "tailmotion"
+				tail_live = true
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_tail_motion_which = args[i].strip_edges().to_lower()
 			"--dumplayer":
 				_mode = "dump"
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
@@ -1370,6 +1403,520 @@ func _run_hunter_probe() -> void:
 			else "user://hunterprobe.png"
 	img.save_png(path)
 	print("[Debug] hunterprobe saved %s" % path)
+	get_tree().quit(0)
+
+
+# ----------------------------------------------------------------- walkprobe --
+
+## The contact (foot) bones whose stance the skate measure watches, per creature,
+## and the gait state each is driven in. This is the ground truth the mission "No
+## More Sliding" is checked against: a planted foot has zero world velocity while
+## the body passes over it.
+const _WALK_RIGS: Dictionary = {
+	"crew":      {"state": "walk", "contacts": ["Left toe", "Right toe"]},
+	"crew_run":  {"state": "run",  "contacts": ["Left toe", "Right toe"]},
+	"sentinel":  {"state": "walk", "contacts": ["Left toe", "Right toe"]},
+	"scrubber":  {"state": "skitter", "contacts":
+			["leg_fL_lo", "leg_fR_lo", "leg_mL_lo", "leg_mR_lo", "leg_rL_lo", "leg_rR_lo"]},
+	"hound":     {"state": "chase", "contacts":
+			["leg_rL_ft", "leg_rR_ft", "leg_fL_ft", "leg_fR_ft"]},
+	"auditor":   {"state": "walk", "contacts": ["legL_ft", "legR_ft"]},
+	"moth":      {"state": "drift", "contacts": []},
+}
+
+
+## `--walkprobe WHICH [speed]`. Stages ONE ground creature side-on and answers the
+## only question the no-skate mission cares about: do its feet stay planted on the
+## world while it moves at its real speed?
+##
+## Two instruments, both from the SAME manual `AnimationTree.advance()` the game's
+## speed-match drives, so what this measures is what ships:
+##
+##   * NUMERIC. With the body held still and the clip played at scale 1, a planted
+##     foot slides backward through the world at exactly the clip's authored stance
+##     speed — that speed IS the no-skate stride constant, measured off the clip
+##     rather than guessed. From it and the coded stride this prints the residual
+##     skate in mm/frame at the creature's real move speed (mean + worst), and the
+##     stride that would zero the net drift. v-independent by construction.
+##
+##   * VISUAL. The body then translates forward at its real speed under a FIXED
+##     side camera with world-fixed floor reference stripes, and six frames across
+##     one step are stacked into a filmstrip: a planted foot sits glued to one
+##     stripe row after row while the body slides over it; a skating foot walks
+##     along the stripes. Saved to `--screenshot PATH`.
+##
+## Permanent instrument; boots through the normal path so autoloads are live.
+func _run_walk_probe() -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var current: Node = get_tree().current_scene
+	if current != null:
+		current.queue_free()
+	# Hush any persistent HUD/caption layers (autoloads, nested) so the diagnostic
+	# frame is just the creature, the floor and the reference stripes.
+	_hush_overlays(get_tree().root)
+	await get_tree().process_frame
+
+	if not _WALK_RIGS.has(_walk_which):
+		printerr("[walkprobe] unknown creature '%s'; try %s" % [
+			_walk_which, str(_WALK_RIGS.keys())])
+		get_tree().quit(1)
+		return
+	var rig: Dictionary = _WALK_RIGS[_walk_which]
+
+	var root: Window = get_tree().root
+	var env: WorldEnvironment = WorldEnvironment.new()
+	var e: Environment = Environment.new()
+	e.background_mode = Environment.BG_COLOR
+	e.background_color = Color(0.02, 0.025, 0.035)
+	# Brighter than a real layer on purpose: the near-black enemy palette has to be
+	# legible in a diagnostic, and this stage is not the darkness law's jurisdiction.
+	e.ambient_light_color = Color(0.34, 0.40, 0.50)
+	e.ambient_light_energy = 0.85
+	env.environment = e
+	root.add_child(env)
+	var key: DirectionalLight3D = DirectionalLight3D.new()
+	# From behind-and-above the camera so the near leg is lit and the feet cast a
+	# short contact shadow — the shadow is half the read on a plant.
+	key.rotation_degrees = Vector3(-42.0, 24.0, 0.0)
+	key.light_energy = 2.6
+	key.shadow_enabled = true
+	root.add_child(key)
+	# A cool fill from the camera's +X side so a dark shell is not a silhouette.
+	var fill: OmniLight3D = OmniLight3D.new()
+	fill.position = Vector3(4.0, 2.0, 1.5)
+	fill.light_energy = 4.0
+	fill.omni_range = 14.0
+	fill.light_color = Color(0.7, 0.82, 1.0)
+	root.add_child(fill)
+
+	# Floor + world-fixed reference stripes every 0.5 m along the walk axis (-Z).
+	var floor_body: StaticBody3D = StaticBody3D.new()
+	root.add_child(floor_body)
+	var floor_mesh: MeshInstance3D = MeshInstance3D.new()
+	var plane: PlaneMesh = PlaneMesh.new()
+	plane.size = Vector2(6.0, 20.0)
+	floor_mesh.mesh = plane
+	var fm: StandardMaterial3D = StandardMaterial3D.new()
+	fm.albedo_color = Color(0.06, 0.07, 0.09)
+	floor_mesh.material_override = fm
+	floor_body.add_child(floor_mesh)
+	for z: int in range(-8, 9):
+		var stripe: MeshInstance3D = MeshInstance3D.new()
+		var sp: PlaneMesh = PlaneMesh.new()
+		sp.size = Vector2(6.0, 0.02)
+		stripe.mesh = sp
+		stripe.position = Vector3(0.0, 0.002, float(z) * 0.5)
+		var accent: bool = z % 2 == 0
+		var sm: StandardMaterial3D = StandardMaterial3D.new()
+		sm.albedo_color = Color(0.5, 0.62, 0.8) if accent else Color(0.2, 0.26, 0.36)
+		sm.emission_enabled = true
+		sm.emission = sm.albedo_color
+		sm.emission_energy_multiplier = 0.6
+		stripe.material_override = sm
+		floor_body.add_child(stripe)
+
+	# Build the creature and reach into its own AnimationTree — the very node the
+	# game speed-matches — so nothing here is a stand-in for the shipping path.
+	var creature: Node3D = null
+	if _walk_which == "crew" or _walk_which == "crew_run":
+		creature = CrewAvatar.create(GameState.local_color)
+		root.add_child(creature)
+	else:
+		var graph: LayerGraph = LayerGraph.generate(12345, 12)
+		var av: Antivirus = _make_probe_creature(_walk_which)
+		if av == null:
+			printerr("[walkprobe] no creature for '%s'" % _walk_which)
+			get_tree().quit(1)
+			return
+		root.add_child(av)
+		av.setup(0, Vector3.ZERO, 0, 12, graph)
+		av.set_physics_process(false)
+		av.set_process(false)  # stop its own _drive_animation fighting our scale
+		creature = av
+	creature.position = Vector3.ZERO
+	creature.rotation = Vector3.ZERO  # faces -Z; forward travel is -Z
+
+	await get_tree().process_frame
+	var tree: AnimationTree = creature.find_child("AnimTree", true, false) as AnimationTree
+	var skel: Skeleton3D = CreatureKit.find_skeleton(creature)
+	if tree == null or skel == null:
+		printerr("[walkprobe] '%s' has no AnimationTree/Skeleton (no clips yet?)" % _walk_which)
+		get_tree().quit(1)
+		return
+
+	var contacts: Array = rig["contacts"]
+	var v_real: float = _walk_speed if _walk_speed > 0.0 else _walk_real_speed(_walk_which)
+	var coded: float = _walk_coded_stride(_walk_which)
+	print("[walkprobe] '%s' state=%s v=%.2f m/s coded_stride=%.3f contacts=%s" % [
+		_walk_which, String(rig["state"]), v_real, coded, str(contacts)])
+	if contacts.is_empty():
+		print("[walkprobe] %s does not walk (flight-only) — EXEMPT from foot-skate."
+				% _walk_which)
+
+	# Hand the tree to us: manual advance, our scale, its own state machine.
+	tree.active = false
+	CreatureKit.travel(tree, String(rig["state"]))
+	CreatureKit.set_speed(tree, 1.0)
+	tree.advance(0.0)
+	for _s in 4:
+		tree.advance(1.0 / 60.0)
+
+	# The tracked contact point per foot: a point pinned to the foot bone at the
+	# floor directly under the bone's rest head. These foot bones are LEAVES whose
+	# head is the ankle/knee well above the ground, so their head arcs through the
+	# leg cycle and is useless; a point rigidly carried by the bone at ground level
+	# shares the foot's velocity and dips to a clean minimum in stance.
+	var offsets: Dictionary = {}  # bone -> Vector3 in bone-local space
+	for cb: String in contacts:
+		var bi0: int = skel.find_bone(cb)
+		if bi0 < 0:
+			push_warning("[walkprobe] no bone '%s'" % cb)
+			continue
+		var grest: Transform3D = skel.get_bone_global_rest(bi0)
+		var floor_pt: Vector3 = Vector3(grest.origin.x, 0.0, grest.origin.z)
+		offsets[cb] = grest.affine_inverse() * floor_pt
+
+	# --- NUMERIC: stance-foot backward speed at scale 1 = the ideal stride -------
+	var dt: float = 1.0 / 60.0
+	var n: int = 400  # enough for the slow auditor clip (2.4 s) to give a stable median
+	var samples: Dictionary = {}  # bone -> Array[[z, y]]
+	for cb: String in contacts:
+		samples[cb] = []
+	for _i in n:
+		tree.advance(dt)
+		for cb: String in contacts:
+			if not offsets.has(cb):
+				continue
+			var bi: int = skel.find_bone(cb)
+			var w: Vector3 = skel.global_transform \
+					* (skel.get_bone_global_pose(bi) * (offsets[cb] as Vector3))
+			(samples[cb] as Array).append([w.z, w.y])
+
+	if not contacts.is_empty():
+		_report_walk_skate(samples, contacts, v_real, coded)
+
+	# --- VISUAL: treadmill filmstrip (world slides, creature centred) ------------
+	if not screenshot_path.is_empty():
+		await _walk_filmstrip(root, creature, tree, floor_body,
+				v_real, coded, _walk_probe_height(_walk_which))
+	get_tree().quit(0)
+
+
+## Recursively hides CanvasLayers and top-level Controls, and stops their process
+## so an autoload HUD/caption cannot re-show itself the next frame — leaving the
+## walkprobe stage clean.
+func _hush_overlays(node: Node) -> void:
+	# The Captions autoload re-emits every frame (a spawned creature's presence
+	# drone reads as "<name> nearby"), so hiding its layer once is not enough —
+	# stop it processing outright.
+	if node == get_tree().root:
+		var caps: Node = get_node_or_null("/root/Captions")
+		if caps != null:
+			caps.process_mode = Node.PROCESS_MODE_DISABLED
+	for child: Node in node.get_children():
+		if child is CanvasLayer:
+			(child as CanvasLayer).visible = false
+			child.process_mode = Node.PROCESS_MODE_DISABLED
+			continue
+		if child is Control:
+			(child as Control).visible = false
+			child.process_mode = Node.PROCESS_MODE_DISABLED
+			continue
+		_hush_overlays(child)
+
+
+func _make_probe_creature(which: String) -> Antivirus:
+	match which:
+		"sentinel":
+			return Sentinel.new()
+		"scrubber":
+			return Scrubber.new()
+		"hound":
+			return Hound.new()
+		"auditor":
+			return Auditor.new()
+		"moth":
+			return Moth.new()
+		_:
+			return null
+
+
+## The real move speed each gait is judged at (the state the probe drives).
+func _walk_real_speed(which: String) -> float:
+	match which:
+		"crew":      return 3.0   # the walk clip's own band (starved / partial move)
+		"crew_run":  return Player.SPRINT_SPEED
+		"sentinel":  return Balance.SENTINEL_PURGE_SPEED
+		"scrubber":  return Balance.SCRUBBER_STALK_SPEED
+		"hound":     return Balance.HOUND_CHASE_SPEED
+		"auditor":   return Balance.AUDITOR_WALK_SPEED
+		_:           return 2.0
+
+
+## Rough standing height per creature, for framing the treadmill camera.
+func _walk_probe_height(which: String) -> float:
+	match which:
+		"crew", "crew_run": return 1.86
+		"sentinel":         return Sentinel.BODY_HEIGHT
+		"scrubber":         return 0.55
+		"hound":            return Hound.BODY_HEIGHT
+		"auditor":          return Auditor.BODY_HEIGHT
+		_:                  return 1.5
+
+
+## The stride constant the shipping code divides ground speed by, per gait.
+func _walk_coded_stride(which: String) -> float:
+	match which:
+		"crew":      return CrewAvatar.WALK_SPEED_AUTHORED
+		"crew_run":  return CrewAvatar.RUN_SPEED_AUTHORED
+		"sentinel":  return Sentinel.WALK_STRIDE
+		"scrubber":  return Scrubber.SKITTER_STRIDE
+		"hound":     return Hound.CHASE_STRIDE
+		"auditor":   return Auditor.PATROL_STRIDE
+		_:           return 1.5
+
+
+## Turns the per-bone stance samples into the numbers the mission is graded on.
+##
+## A rolling foot (heel-strike -> flat -> toe-off) means the tracked toe bone is
+## only the true ground contact during the flat/toe-pivot part of stance; the
+## heel-strike arc briefly whips it about the planted tip. So the honest read of
+## the VISIBLE plant speed is the MEDIAN of the settled low-phase (feet lowest,
+## episode ends trimmed), not the mean, which the arc frames skew — and the median
+## of a clean plant lands on the constant the foot is truly pinned at.
+func _report_walk_skate(samples: Dictionary, contacts: Array,
+		v_real: float, coded: float) -> void:
+	var dt: float = 1.0 / 60.0
+	var settled: PackedFloat32Array = PackedFloat32Array()  # backward m/s @ scale 1
+	var lows: int = 0
+	for cb: String in contacts:
+		var arr: Array = samples[cb]
+		if arr.size() < 12:
+			continue
+		var ymin: float = INF
+		var ymax: float = -INF
+		for row: Array in arr:
+			ymin = minf(ymin, row[1])
+			ymax = maxf(ymax, row[1])
+		var thresh: float = ymin + 0.20 * maxf(ymax - ymin, 0.0001)
+		# Split the low frames into contiguous episodes; trim each episode's ends
+		# (the heel-strike-in and toe-off-out arcs) and keep the settled middle.
+		var ep: Array = []
+		var j: int = 0
+		while j < arr.size():
+			if arr[j][1] <= thresh:
+				var k: int = j
+				while k < arr.size() and arr[k][1] <= thresh:
+					k += 1
+				ep.append([j, k])  # [start, end)
+				j = k
+			else:
+				j += 1
+		for span: Array in ep:
+			var a: int = span[0]
+			var b: int = span[1]
+			lows += b - a
+			var trim: int = int(floor((b - a) * 0.22))
+			for m: int in range(a + maxi(trim, 1), b - maxi(trim, 0)):
+				settled.append((arr[m][0] - arr[m - 1][0]) / dt)  # +Z = backward
+	if settled.is_empty():
+		print("[walkprobe]   no stance frames detected")
+		return
+	settled.sort()
+	var med: float = settled[settled.size() / 2]
+	var p25: float = settled[settled.size() / 4]
+	var p75: float = settled[(settled.size() * 3) / 4]
+
+	# Residual skate the SHIPPING mapping produces at v_real, judged against the
+	# median plant speed: rate = v/coded, foot real backward speed = med*rate, body
+	# forward = v, so net skate = v - med*rate = v*(1 - med/coded). The p25..p75
+	# spread is the irreducible intra-stance wobble a scalar stride cannot remove.
+	var mm: float = 1000.0 / 60.0  # m/s -> mm/frame at 60 fps
+	var net_skate: float = absf(v_real * (1.0 - med / maxf(coded, 0.001)))
+	var wobble: float = (p75 - p25) * (v_real / maxf(coded, 0.001))
+	print("[walkprobe]   plant speed (settled median) = %.3f m/s  [p25 %.3f p75 %.3f, %d low frames]" % [
+		med, p25, p75, lows])
+	print("[walkprobe]   ideal stride = %.3f  [coded %.3f]" % [med, coded])
+	print("[walkprobe]   @%.2f m/s : NET skate %.2f mm/frame  +/- wobble %.2f mm/frame" % [
+		v_real, net_skate * mm, wobble * mm])
+
+
+## A TREADMILL filmstrip: the creature is held centred and large under a fixed,
+## close side camera while the WORLD (floor + reference stripes) slides backward at
+## the real ground speed, exactly as the ground would flow past a creature walking
+## over it. The speed-matched clip runs on top. A planted foot then rides ONE
+## stripe backward for the whole of its stance (foot and stripe locked together
+## panel to panel); a skating foot drifts across the stripes. Five frames across
+## one step are stacked top-to-bottom into a single PNG.
+func _walk_filmstrip(root: Window, creature: Node3D, tree: AnimationTree,
+		floor_ref: Node3D, v_real: float, coded: float, height: float) -> void:
+	var panel: Vector2i = Vector2i(960, 440)
+	root.size = panel
+	var cam: Camera3D = Camera3D.new()
+	root.add_child(cam)
+	cam.fov = 40.0
+	# Close and side-on, aimed at the lower body so the feet and the stripes under
+	# them fill the frame. Distance and aim scale with the creature's height.
+	var dist: float = maxf(2.6 * height, 1.3)
+	cam.position = Vector3(dist, height * 0.55, 0.0)
+	cam.look_at(Vector3(0.0, height * 0.34, 0.0))
+	cam.current = true
+	creature.position = Vector3.ZERO  # fixed: the world moves, not the creature
+
+	var frames: int = 5
+	var rate: float = clampf(v_real / maxf(coded, 0.001), 0.25, 3.0)
+	var step_time: float = maxf(coded, 0.6) / maxf(v_real, 0.1)
+	var frame_dt: float = step_time / float(frames)
+	var strip: Image = null
+	for fidx: int in frames:
+		var sub: int = 6
+		for _k in sub:
+			tree.advance(frame_dt / float(sub) * rate)
+			# World slides +Z (backward, since the creature faces -Z) at v.
+			floor_ref.position.z += v_real * (frame_dt / float(sub))
+		await get_tree().process_frame
+		RenderingServer.force_draw()
+		var img: Image = root.get_texture().get_image()
+		img.convert(Image.FORMAT_RGB8)
+		if strip == null:
+			strip = Image.create(panel.x, panel.y * frames, false, Image.FORMAT_RGB8)
+		strip.blit_rect(img, Rect2i(0, 0, panel.x, panel.y), Vector2i(0, panel.y * fidx))
+	if strip != null:
+		strip.save_png(screenshot_path)
+		print("[walkprobe] treadmill filmstrip (%d frames, top=first) saved %s" % [
+			frames, screenshot_path])
+
+
+# ---------------------------------------------------------------- tailmotion --
+
+## `--tailmotion <crew|sentinel>`. The tail-liveliness acceptance test: a scripted
+## STAND -> sharp TURN -> RUN -> JUMP -> LAND+STOP, driven in real time with the
+## TailDriver's dynamics LIVE (Debug.tail_live bypasses the capture freeze), under
+## a chase camera. Six frames at the moments the tail should be doing something —
+## lagging the turn out wide, streaming back in the run, whipping down on the
+## landing and swinging through on the stop — stacked into one PNG. Pair with
+## `--screenshot PATH`. The point players raised: the tail must READ in motion.
+func _run_tail_motion() -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var current: Node = get_tree().current_scene
+	if current != null:
+		current.queue_free()
+	_hush_overlays(get_tree().root)
+	await get_tree().process_frame
+
+	var root: Window = get_tree().root
+	var panel: Vector2i = Vector2i(1100, 420)
+	root.size = panel
+	var env: WorldEnvironment = WorldEnvironment.new()
+	var e: Environment = Environment.new()
+	e.background_mode = Environment.BG_COLOR
+	e.background_color = Color(0.02, 0.025, 0.035)
+	e.ambient_light_color = Color(0.34, 0.40, 0.50)
+	e.ambient_light_energy = 0.85
+	env.environment = e
+	root.add_child(env)
+	var key: DirectionalLight3D = DirectionalLight3D.new()
+	key.rotation_degrees = Vector3(-46.0, 32.0, 0.0)
+	key.light_energy = 2.6
+	key.shadow_enabled = true
+	root.add_child(key)
+	var fill: OmniLight3D = OmniLight3D.new()
+	fill.position = Vector3(3.0, 2.4, 3.0)
+	fill.light_energy = 4.0
+	fill.omni_range = 16.0
+	fill.light_color = Color(0.7, 0.82, 1.0)
+	root.add_child(fill)
+	var floor_mesh: MeshInstance3D = MeshInstance3D.new()
+	var plane: PlaneMesh = PlaneMesh.new()
+	plane.size = Vector2(40.0, 40.0)
+	floor_mesh.mesh = plane
+	var fm: StandardMaterial3D = StandardMaterial3D.new()
+	fm.albedo_color = Color(0.07, 0.08, 0.10)
+	floor_mesh.material_override = fm
+	root.add_child(floor_mesh)
+
+	var height: float = _walk_probe_height(_tail_motion_which)
+	var creature: Node3D = null
+	if _tail_motion_which == "crew":
+		creature = CrewAvatar.create(GameState.local_color)
+		root.add_child(creature)
+	else:
+		var av: Antivirus = _make_probe_creature(_tail_motion_which)
+		if av == null:
+			printerr("[tailmotion] no creature for '%s'" % _tail_motion_which)
+			get_tree().quit(1)
+			return
+		var graph: LayerGraph = LayerGraph.generate(12345, 12)
+		root.add_child(av)
+		av.setup(0, Vector3.ZERO, 0, 12, graph)
+		av.set_physics_process(false)   # we drive the transform; its own _process stays
+		creature = av
+	creature.position = Vector3.ZERO
+
+	var cam: Camera3D = Camera3D.new()
+	cam.fov = 44.0
+	root.add_child(cam)
+	print("[tailmotion] staged '%s' (tail_live=%s)" % [_tail_motion_which, tail_live])
+
+	# Scripted motion, integrated in real time. The body faces the run direction
+	# throughout (so the side camera stays consistent); the "turn" is a sharp yaw
+	# WIGGLE that swings the heavy kit and tail out and lets them lag back.
+	var caps: Array = [0.35, 0.66, 1.12, 1.4, 1.84, 2.08]  # rest,wiggle,run,run,jump,land
+	var cap_i: int = 0
+	var elapsed: float = 0.0
+	var pos: Vector3 = Vector3.ZERO
+	var run_yaw: float = deg_to_rad(115.0)
+	var yaw: float = run_yaw
+	var strip: Image = null
+	var guard: int = 0
+	while cap_i < caps.size() and guard < 6000:
+		guard += 1
+		await get_tree().process_frame
+		var dt: float = minf(get_process_delta_time(), 1.0 / 30.0)
+		elapsed += dt
+		var vel: Vector3 = Vector3.ZERO
+		var y: float = 0.0
+		var face0: Vector3 = Vector3(-sin(run_yaw), 0.0, -cos(run_yaw))
+		if elapsed < 0.4:
+			yaw = run_yaw                                        # STAND — resting sag
+		elif elapsed < 0.9:
+			yaw = run_yaw + sin(smoothstep(0.4, 0.9, elapsed) * TAU) * deg_to_rad(48.0)
+		elif elapsed < 1.7:
+			yaw = run_yaw
+			vel = face0 * 6.4                                    # RUN (walk plays)
+		elif elapsed < 1.95:
+			yaw = run_yaw
+			vel = face0 * 3.0                                    # JUMP (still moving)
+			y = sin(smoothstep(1.7, 1.95, elapsed) * PI) * 0.85
+		else:
+			yaw = run_yaw                                        # LAND + hard STOP
+		pos += vel * dt
+		creature.position = Vector3(pos.x, y, pos.z)
+		creature.rotation.y = yaw
+		# Side-follow cam: perpendicular to the run direction and a touch behind, so
+		# the profile secondaries — arm follow-through, torso react, kit sway, the
+		# weight bob — read clearly while it stays framed and large.
+		var face: Vector3 = Vector3(-sin(run_yaw), 0.0, -cos(run_yaw))
+		var right: Vector3 = Vector3(-face.z, 0.0, face.x)
+		var dist: float = maxf(2.2 * height, 2.6)
+		cam.global_position = creature.global_position + right * dist \
+				- face * 0.5 + Vector3(0.0, height * 0.6, 0.0)
+		cam.look_at(creature.global_position + Vector3(0.0, height * 0.42, 0.0))
+		if cap_i < caps.size() and elapsed >= caps[cap_i]:
+			RenderingServer.force_draw()
+			var img: Image = root.get_texture().get_image()
+			img.convert(Image.FORMAT_RGB8)
+			if strip == null:
+				strip = Image.create(panel.x, panel.y * caps.size(), false, Image.FORMAT_RGB8)
+			strip.blit_rect(img, Rect2i(0, 0, panel.x, panel.y), Vector2i(0, panel.y * cap_i))
+			print("[tailmotion] frame %d @ t=%.2fs" % [cap_i, elapsed])
+			cap_i += 1
+	if strip != null and not screenshot_path.is_empty():
+		strip.save_png(screenshot_path)
+		print("[tailmotion] filmstrip (rest/turn/run/jump/land/settle) saved %s"
+				% screenshot_path)
 	get_tree().quit(0)
 
 

@@ -53,6 +53,19 @@ const ALARM_COLOUR: Color = Color(1.0, 0.18, 0.15)
 ## Standing height of the authored model. Was 3.4 for the box monolith.
 const BODY_HEIGHT: float = 2.6
 
+## Metres the authored heavy-walk clip carries the body per second at scale 1 — the
+## backward speed of the planted foot during stance, i.e. the ground speed that
+## keeps the feet planted. MEASURED off the built clip by `--walkprobe sentinel`
+## (settled median 1.627 m/s, wobble +/-0.24 mm/frame — a flat drag with no
+## heel-toe roll, so it plants almost perfectly), not guessed. Real ground speed /
+## this = the no-skate playback rate (the M3.7 crew pattern).
+const WALK_STRIDE: float = 1.627
+## The rate clamp. Top end reaches 2.9 so the PURGE advance (SENTINEL_PURGE_SPEED
+## 4.6 -> rate 2.83) still lands under it and its feet stay planted while it
+## charges; a purging Sentinel then reads as a fast, heavy stomp rather than a
+## glide. At the DORMANT return speed (1.6) the rate is ~0.98 — a slow, dead plod.
+const WALK_RATE_RANGE: Vector2 = Vector2(0.4, 2.9)
+
 ## The dressing kit was authored against the 1.9746 m source rig and, under the
 ## older art convention, facing +Z. Both are fixed by one wrapper node rather
 ## than by re-exporting: yaw it half a turn and scale it by the same factor the
@@ -92,6 +105,40 @@ var _halo: Node3D = null
 var _skeleton: Skeleton3D = null
 var _neck_bone: int = -1
 var _head_bone: int = -1
+## The heavy walk (M6.5). The Sentinel no longer glides: it stomps, feet planted,
+## speed-matched off its own measured ground speed exactly as the crew avatar does.
+## Driven per-peer in `_process` from the replicated pose, so a client's puppet
+## walks at the pace of the stream with nothing extra on the wire.
+var _anim: AnimationPlayer = null
+var _tree: AnimationTree = null
+var _last_position: Vector3 = Vector3.ZERO
+var _measured_speed: float = 0.0
+
+## M6.5 SECONDARY MOTION. A rigid gait reads CHEAP unless living secondaries ride
+## on top of it (the Alien-Isolation / necromorph principle: controlled predator,
+## not stiff robot). The clip itself carries the overlap / weight / follow-through;
+## these drive the parts the clip cannot — the heavy hanging DRESSING KIT (halo +
+## scan pylons swing on turns and bounce on each plant) and a soft GEL-TORSO
+## react (a chest wobble kicked by the step impact). Cosmetic and LOCAL per peer,
+## read off the already-replicated pose/heading, so determinism is untouched.
+var _pylons: Array[Node3D] = []
+var _hips_bone: int = -1
+var _chest_bone: int = -1
+var _sec_last_yaw: float = 0.0
+var _sec_last_hipsy: float = 0.0
+var _sec_hips_ready: bool = false
+## Spring state: kit tilt (pitch from lunge, roll from turn), and the torso wobble.
+var _kit_pitch: float = 0.0
+var _kit_pitch_vel: float = 0.0
+var _kit_roll: float = 0.0
+var _kit_roll_vel: float = 0.0
+var _torso: float = 0.0
+var _torso_vel: float = 0.0
+## The clip's chest rotation, cached once per physics tick so composing the torso
+## wobble over it does not read back its own override on high-refresh displays
+## (the crew avatar's _clip_rotation trick — see build_tree's PHYSICS callback).
+var _chest_clip: Quaternion = Quaternion.IDENTITY
+var _chest_clip_frame: int = -1
 ## Smoothed look angles, so the head eases onto a target instead of snapping.
 var _look: Vector2 = Vector2.ZERO
 ## Glitch-stutter state.
@@ -225,11 +272,29 @@ func _build_body() -> void:
 	if _skeleton != null:
 		_neck_bone = _skeleton.find_bone("Neck")
 		_head_bone = _skeleton.find_bone("Head")
+		_hips_bone = _skeleton.find_bone("Hips")
+		_chest_bone = _skeleton.find_bone("ChestUp")
 		# M4.9: the tail hangs like dead weight. A quarantine process is not an
 		# animal — very low stiffness, heavy drag and strong gravity so the tail
 		# sags into a heavy downward curve and sways slow and menacing, never
 		# standing out along the bind pose.
 		CreatureKit.build_spring_tail(_skeleton, 34.0, 0.5)
+
+	# M6.5: the heavy walk. `build_sentinel_walk.py` re-exported the (byte-identical)
+	# rig with `idle` + `walk` clips; wire the same speed-matched AnimationTree the
+	# rest of the cast uses. The neck/head clip tracks were deliberately left out so
+	# `_track_head` still owns them — the body stomps, the head stays locked on you.
+	_anim = CreatureKit.find_player(model)
+	if _anim != null:
+		CreatureKit.set_looping(_anim, PackedStringArray(["idle", "walk"]))
+		_tree = CreatureKit.build_tree(model, _anim, {
+			"idle": "idle",
+			"walk": "walk",
+		}, "idle", 0.28)
+	# LOCAL position here, not global: `_assemble` runs before the node is in the
+	# tree (as it does for the Scrubber/Hound), where global_transform is undefined.
+	# `_drive_walk` re-reads global_position once the node is live.
+	_last_position = position
 
 
 ## The quarantine dressing, socketed at the attach points the kit was authored
@@ -287,6 +352,8 @@ func _build_kit() -> void:
 		CreatureKit.paint(mesh, palette)
 		if piece == "QuarantineHalo":
 			_halo = socket
+		elif piece.begins_with("ScanPylon"):
+			_pylons.append(socket)
 	kit.queue_free()
 
 
@@ -722,6 +789,8 @@ func _process(delta: float) -> void:
 		_die_visual(delta)
 		return
 
+	_drive_walk(delta)
+	_drive_secondaries(delta)
 	_alarm_flash = maxf(_alarm_flash - delta * 1.6, 0.0)
 	_hurt_flash = maxf(_hurt_flash - delta * 3.0, 0.0)
 	_update_purge_arc(delta)
@@ -822,12 +891,91 @@ func _spin_halo(delta: float) -> void:
 	_halo.rotation.y = wrapf(_halo.rotation.y + rate * delta, -PI, PI * 3.0)
 
 
+## The heavy walk, driven on every peer from however fast this copy is actually
+## moving — the host from its own motion, a client from the smoothed streamed pose
+## — so the feet plant at the real ground speed with nothing extra on the wire.
+## The crew avatar's M3.7 pattern: playback rate = ground speed / authored stride.
+## Below a crawl it stands (idle); the glitch-stutter still garnishes turns on top.
+func _drive_walk(delta: float) -> void:
+	if _tree == null:
+		return
+	var moved: float = Vector2(global_position.x - _last_position.x,
+			global_position.z - _last_position.z).length() / maxf(delta, 0.0001)
+	_last_position = global_position
+	_measured_speed = lerpf(_measured_speed, clampf(moved, 0.0, 8.0),
+			1.0 - exp(-9.0 * delta))
+	if _measured_speed > 0.28:
+		CreatureKit.travel(_tree, "walk")
+		CreatureKit.set_speed(_tree, clampf(_measured_speed / WALK_STRIDE,
+				WALK_RATE_RANGE.x, WALK_RATE_RANGE.y))
+	else:
+		CreatureKit.travel(_tree, "idle")
+		CreatureKit.set_speed(_tree, 1.0)
+
+
+## M6.5 living-hardware secondaries — what keeps the mechanical gait from reading
+## CHEAP. The heavy dressing kit (halo + scan pylons) lags a turn and bounces on
+## each heavy plant; the soft gel torso wobbles from the step impact. Driven off
+## the body's own heading change and the Hips bone's vertical bob (the walk's
+## authored weight curve), sprung so it lags and overshoots like mass on a mount.
+## Cosmetic and LOCAL — it reads the replicated pose only, so determinism holds.
+func _drive_secondaries(delta: float) -> void:
+	# Heading change -> the hanging kit rolls to the outside of the turn (lag).
+	var yaw_rate: float = wrapf(rotation.y - _sec_last_yaw, -PI, PI) / maxf(delta, 0.0001)
+	_sec_last_yaw = rotation.y
+
+	# Step impact from the Hips bone's vertical bob (the authored weight curve): a
+	# sharp downward move is a plant. Read after the AnimationTree wrote the pose.
+	var bob_vel: float = 0.0
+	if _skeleton != null and is_instance_valid(_skeleton) and _hips_bone >= 0:
+		var hy: float = _skeleton.get_bone_pose_position(_hips_bone).y
+		if _sec_hips_ready:
+			bob_vel = clampf((hy - _sec_last_hipsy) / maxf(delta, 0.0001), -6.0, 6.0)
+		_sec_last_hipsy = hy
+		_sec_hips_ready = true
+
+	# The forward lunge tips the heavy kit back, the plant bounces it, the turn
+	# rolls it. Springs (stiff, lightly damped) give the lag + overshoot of mass.
+	var pitch_target: float = clampf(-_measured_speed * 0.020 - bob_vel * 0.45, -0.18, 0.18)
+	var roll_target: float = clampf(-yaw_rate * 0.075, -0.30, 0.30)
+	_kit_pitch_vel += ((pitch_target - _kit_pitch) * 40.0 - _kit_pitch_vel * 7.5) * delta
+	_kit_pitch += _kit_pitch_vel * delta
+	# Softer/lighter-damped on the roll so a turn swings the heavy hardware out and
+	# it lags back with a visible overshoot rather than tracking the body rigidly.
+	_kit_roll_vel += ((roll_target - _kit_roll) * 26.0 - _kit_roll_vel * 4.8) * delta
+	_kit_roll += _kit_roll_vel * delta
+	for pylon: Node3D in _pylons:
+		if is_instance_valid(pylon):
+			pylon.rotation.x = _kit_pitch
+			pylon.rotation.z = _kit_roll
+	if _halo != null and is_instance_valid(_halo):
+		# The halo already spins on Y (see _spin_halo); tilt it on X/Z on top.
+		_halo.rotation.x = _kit_pitch * 0.7
+		_halo.rotation.z = _kit_roll * 0.7
+
+	# Gel-torso react: the soft Slime torso wobbles from the plant impact — a spring
+	# on the chest bone kicked by the downward bob, composed over the CLIP's chest
+	# pose (cached per physics tick so it never reads back its own write).
+	if _skeleton != null and is_instance_valid(_skeleton) and _chest_bone >= 0:
+		var frame: int = Engine.get_physics_frames()
+		if frame != _chest_clip_frame:
+			_chest_clip_frame = frame
+			_chest_clip = _skeleton.get_bone_pose_rotation(_chest_bone)
+		_torso_vel += minf(bob_vel, 0.0) * 2.4          # only the downward slam kicks it
+		_torso_vel += (-_torso * 85.0 - _torso_vel * 8.5) * delta
+		_torso += _torso_vel * delta
+		_torso = clampf(_torso, -0.09, 0.09)
+		_skeleton.set_bone_pose_rotation(_chest_bone,
+				_chest_clip * Quaternion(Vector3(1.0, 0.0, 0.0), _torso))
+
+
 ## Procedural head-look, on every peer.
 ##
-## The Sentinel has no animation of any kind, so this is the only thing that
-## makes it read as *aware* rather than as a prop. It is deliberately slow and
-## deliberately limited: a head that snapped onto you would be a turret, and a
-## head with no limit would spin like an owl and stop being frightening.
+## The head-track OWNS the neck and head bones — the walk clips deliberately leave
+## them alone (see build_sentinel_walk.py) — so the body stomps while the head
+## stays locked on its prey. It is deliberately slow and deliberately limited: a
+## head that snapped onto you would be a turret, and a head with no limit would
+## spin like an owl and stop being frightening.
 ##
 ## Rotations are built about the world up and the creature's own right axis,
 ## pulled back into each bone's parent-pose space — bone rests in an imported rig
