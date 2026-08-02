@@ -835,6 +835,36 @@ func _muzzle_point(from: Vector3, basis: Basis) -> Vector3:
 	return from + basis * MUZZLE_OFFSET
 
 
+## Where the emitter is in the world right now, for an observer that has no shot
+## in flight to hang the question on. `--gunlog` (Debug) projects this into
+## screen space every rendered frame to measure how well the hold tracks the
+## lens; nothing in gameplay reads it.
+func muzzle_world_point() -> Vector3:
+	return _muzzle_point(camera.global_position, camera.global_transform.basis)
+
+
+## Where the weapon is HELD, as opposed to where it points. The emitter alone is
+## a poor witness for the hold: it sits half a metre down the barrel, so a couple
+## of degrees of aim rotation moves it as far as a real slip of the grip would.
+## `--gunlog` records both and the grip is the one that answers "is the weapon
+## attached to my view".
+## The weapon's orientation, for `--gunlog`'s roll audit. See `hold_world_point`.
+func hold_world_basis() -> Basis:
+	if _avatar != null and is_instance_valid(_avatar) and _avatar.is_loaded():
+		return _avatar.hold_basis()
+	if _view_model != null and is_instance_valid(_view_model):
+		return _view_model.global_transform.basis.orthonormalized()
+	return camera.global_transform.basis
+
+
+func hold_world_point() -> Vector3:
+	if _avatar != null and is_instance_valid(_avatar) and _avatar.is_loaded():
+		return _avatar.hold_point()
+	if _view_model != null and is_instance_valid(_view_model):
+		return _view_model.global_position
+	return camera.global_position + camera.global_transform.basis * MUZZLE_OFFSET
+
+
 ## Lights the muzzle the instant the trigger is pulled — the socketed Surge when
 ## embodied, the fallback viewmodel otherwise. Called immediately from
 ## `_update_breaker` rather than waiting for the host's `show_breaker_shot`
@@ -1432,6 +1462,15 @@ func _process(delta: float) -> void:
 	if _avatar != null and is_instance_valid(_avatar):
 		var speed: float = sync_speed if not _is_local \
 				else Vector3(velocity.x, 0.0, velocity.z).length()
+		# PT1: the lens, handed over BEFORE the pose is written and read from the
+		# live angles rather than the replicated ones. `_pitch` and `rotation.y`
+		# are both updated inside `_unhandled_input`, so on the frame a mouse moves
+		# they are already the new values here — which is what makes the hold move
+		# with the view instead of a physics tick behind it. `head.position` is the
+		# lens the hold pivots about; it drops as a player collapses, and the hold
+		# has to pivot about wherever the eye actually is.
+		if _is_local:
+			_avatar.set_lens(Vector2(rotation.y, _pitch), head.position)
 		_avatar.drive(delta, speed, Vector3(velocity.x, 0.0, velocity.z), _collapse)
 
 

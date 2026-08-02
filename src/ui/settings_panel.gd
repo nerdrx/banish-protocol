@@ -83,12 +83,25 @@ func _build() -> void:
 			func(v: float) -> void: Audio.set_volume(&"voice", v))
 
 	_rule(column)
-	_section(column, "COMFORT")
-	# Captions — the deaf/HoH threat telegraph. Lives in A11y (accessibility
-	# store), surfaced here because this is where players look for audio.
+	_section(column, "ACCESSIBILITY")
+	# The two TEXT tracks, adjacent and one line apart.
+	#
+	# PT1: they used to be neither. `SOUND CAPTIONS` was here alone under COMFORT
+	# and the subtitle track — MOTHER's speech, the text a player actually sees
+	# most — had no control anywhere in the game and defaulted on. A player
+	# hunting for the switch found this one, flipped it, and nothing happened,
+	# because it governs a different track. Two text features need two visible
+	# switches, side by side, or the one you can see gets blamed for the one you
+	# cannot. See A11y.subtitles for why the default moved as well.
 	_toggle(column, "SOUND CAPTIONS", A11y.sound_captions,
-			"Directional captions for threats and world sounds.",
+			"Directional captions for threats and world sounds. The deaf/HoH threat telegraph.",
 			func(on: bool) -> void: A11y.set_sound_captions(on))
+	_toggle(column, "SUBTITLES", A11y.subtitles,
+			"MOTHER's speech, as text under the reticle.",
+			func(on: bool) -> void: A11y.set_caption_option(&"subtitles", on))
+
+	_rule(column)
+	_section(column, "COMFORT")
 	_toggle(column, "CRT WHINE (15.7 kHz)", Audio.crt_whine,
 			"The tube's flyback whine. Off notches it out — kill it if it hurts.",
 			func(on: bool) -> void: Audio.set_crt_whine(on))

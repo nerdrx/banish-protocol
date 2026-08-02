@@ -226,6 +226,8 @@ var _warmup: float = 0.0
 
 # --- crosshair --------------------------------------------------------------
 var _reticle: Crosshair = null
+## PT1. Enemy integrity readouts, drawn under the reticle. See IntegrityReadout.
+var _readouts: IntegrityReadout = null
 ## Phosphor decay weights for the two big readouts, and the values they were
 ## last showing.
 var _ghost_cycles: float = 0.0
@@ -269,6 +271,7 @@ func _ready() -> void:
 	Net.local_player_spawned.connect(_on_local_player)
 	Run.notice.connect(_show_notice)
 	Run.siphon_taken.connect(_on_siphon_taken)
+	Run.shaft_siphoned.connect(_on_shaft_siphoned)
 	Run.layer_changed.connect(_on_layer_changed)
 	# A client learns which layer it is on from the config packet, which lands
 	# after the HUD is built. Without this the readout is stuck on 01 for anyone
@@ -556,6 +559,14 @@ func _build_crosshair() -> void:
 	_reticle.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_reticle.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_fixed.add_child(_reticle)
+	# PT1: the enemy integrity readouts, on the same fixed layer as the reticle
+	# and BELOW it in draw order — the reticle is the one element on the interface
+	# that is never allowed to be occluded. Inside the tube, so the bars pick up
+	# the scanlines and the curvature like every other readout.
+	_readouts = IntegrityReadout.new()
+	_readouts.name = "IntegrityReadouts"
+	_fixed.add_child(_readouts)
+	_fixed.move_child(_readouts, _reticle.get_index())
 	# Through `_add_boot`, never a bare append: `_boot_nodes` and `_boot_starts`
 	# are parallel and `_apply_boot` indexes both with the same counter, so an
 	# element added to one and not the other reads past the end of the other and
@@ -572,6 +583,12 @@ func _on_local_shot(did_hit: bool, killed: bool) -> void:
 		_kill_burst = 1.0
 	if did_hit or killed:
 		_hit_tick = 1.0
+		# PT1: the audible half of the hit marker. A tick you can hear is what
+		# makes a hit register in a dark room where the thing you shot is a
+		# silhouette — and it is 2D and dry, so it never gets confused with the
+		# spatialised hurt cry the creature itself makes. A kill keeps the burst
+		# and the creature's own death sound; it does not stack a second confirm.
+		Audio.play_2d(&"hit_confirm")
 
 
 func _update_crosshair(delta: float) -> void:
@@ -799,6 +816,21 @@ func _on_siphon_taken(_index: int, _pool: float) -> void:
 	_surge_clock = 0.0
 	# A refill is a relevant change: let the pool caption say its piece and fade.
 	_srf_cycles_caption.surface()
+
+
+## PT1. The drop shaft's cut, arriving on the same beat as the layer title.
+##
+## Deliberately the SAME gesture a siphon tap makes — one surge of the ring, the
+## pool caption surfacing once and fading — because they are the same event to a
+## player: something just fed the pool. A second, louder treatment for the second
+## refill would be two vocabularies for one idea, which is precisely the clutter
+## the quiet-instrument rule exists to refuse. No banner: `LAYER NN` is already
+## coming up and this must not compete with it.
+func _on_shaft_siphoned(_gained: float) -> void:
+	_pulse = 1.0
+	_surge_clock = 0.0
+	_srf_cycles_caption.surface()
+	Audio.play_2d(&"shaft_siphon")
 
 
 ## The descent title. It announces the layer for ~2 s on arrival and then yields

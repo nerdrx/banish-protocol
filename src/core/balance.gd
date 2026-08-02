@@ -55,10 +55,27 @@ extends RefCounted
 ## number (see `Modules.crew_pool_max`).
 const CYCLES_PER_CREW: float = 100.0
 
-## Per living player, per second, just for existing. 100 / 0.6 = ~166 s of
-## solo runtime on a full share — comfortably longer than a careful sweep of a
-## layer, comfortably shorter than a thorough one.
-const PASSIVE_DRAIN: float = 0.6
+## Per living player, per second, just for existing.
+##
+## PT1: HALVED, 0.6 -> 0.3, on the first friend playtest's "our oxygen should run
+## out at least half as fast". 100 / 0.3 = ~333 s of solo runtime on a full share
+## instead of ~166. The old number was tuned against a layer you could sweep in
+## two minutes; six milestones of intricacy, functional clutter, terminals and
+## hunters later, a *careful* sweep no longer fits inside it, and a clock that
+## expires during normal play stops being the argument the crew has over voice
+## chat (pillar 1) and becomes a reason to skip the content.
+##
+## Nothing else in the economy is scaled with it, deliberately. Sprint is a
+## MULTIPLIER on this (below), so its share of the budget is unchanged and
+## sprinting still costs the same fraction of your runtime it always did. The
+## spikes — damage, flares — are absolute, so halving the drain makes them
+## RELATIVELY twice as expensive against the clock: taking hits and burning
+## flares now costs a visibly larger slice of the run than merely existing does,
+## which is the direction DESIGN.md wants ("passive drain while you exist;
+## sprinting, taking damage, and burning flares SPIKE it"). The siphon yield is
+## likewise untouched, so a tap is now worth twice as much wall-clock time —
+## correct, because a tap is loud and should buy something worth being heard for.
+const PASSIVE_DRAIN: float = 0.3
 
 ## Sprinting multiplies that player's drain. Sprinting the whole layer costs you
 ## roughly two thirds of your runtime, which is the trade the pillar wants.
@@ -84,6 +101,30 @@ const SIPHON_YIELD: float = 70.0
 const SIPHON_CHANNEL_TIME: float = 2.5
 
 # --- drop shaft -------------------------------------------------------------
+
+## PT1 — **the drop shaft IS a data trunk, and riding it down siphons it.**
+##
+## Completing a descent refills the shared pool by this fraction of its MAXIMUM,
+## clamped to max. Fiction first: the shaft is not an elevator, it is a live
+## trunk running deeper into MOTHER, and a crew of intrusion programs riding one
+## down are inside a pipe carrying the thing they run on. Taking a cut of it on
+## the way past is what a program would do.
+##
+## Mechanically it is the descent's answer to the siphon tap's refill, and it
+## pulls in the same direction as the halved PASSIVE_DRAIN: greed is supposed to
+## be the thing that kills you (pillar 3), not arithmetic. Before this, "one more
+## ring?" was asked of a pool that only ever went down between taps, so the honest
+## answer was usually no and the game's central question answered itself. Half a
+## pool back at the bottom of the shaft makes the question live again — you can
+## always afford ONE more ring, which is exactly how a greed trap should feel.
+##
+## Half rather than full on purpose: a full refill would make the clock stop
+## mattering, and the pool is the clock.
+##
+## **Only real descents.** Not the initial injection, not a backdoor start — see
+## `RunState.finish_descent`, which is called by the Layer only when a completed
+## drop-shaft ride has finished rebuilding the world below.
+const DESCENT_REFILL_FRACTION: float = 0.5
 
 const SHAFT_CHANNEL_TIME: float = 3.0
 ## How far from the shaft's centre a player still counts as "in the shaft".

@@ -110,6 +110,11 @@ extends Node
 ##         decompile hold the menu's dive transition open at its midpoint — the
 ##                   0.8 s glitch dissolve that takes the screen apart on the way
 ##                   into a layer.
+##         readout   (PT1) hold every enemy integrity readout open at a fixed
+##                   fraction. The bars surface on damage or on the crosshair
+##                   resolving a target, neither of which a shutter can be aimed
+##                   at, so this is the only way to photograph one. Pair it with
+##                   `--goto nest`.
 ##         refused   (M4) pin the Compiler panel's refusal glitch on. Half a
 ##                   second of corrupted price and a shaking row is not a state a
 ##                   shutter lands in by luck, and it is the frame that proves the
@@ -211,6 +216,33 @@ extends Node
 ##                       Steam) before anything else runs.
 ##   --grant ID          unlock achievement ID at boot; repeatable. `--grant ALL`
 ##                       unlocks the lot. Toasts exactly like the real thing.
+##
+## PT1 (Playtest I) flags. The first friend playtest returned six complaints that
+## every scripted capture in the repo had said were fine, because a scripted
+## capture never moves a mouse. These three exist so a *live* session is
+## reproducible and measurable rather than merely watched:
+##   --playtest [seconds]
+##       Host and drop into the layer like `--autohost`, but do NOT mark the run
+##       automated: the mouse is captured, every local input is live, and the
+##       session behaves exactly as it does for a player. `seconds` (default 300)
+##       caps the process lifetime so a driven session can never wedge a machine.
+##       This is the ONLY flag that opens a real interactive instance; everything
+##       else in this file deliberately refuses the pointer.
+##   --gunlog PATH
+##       Per RENDERED frame, append `frame,dt_ms,yaw,pitch,gx,gy,gz,mx,my,mz`:
+##       the breaker's GRIP and its EMITTER, in the lens's own frame, in metres.
+##       A hold bolted to the lens keeps those six numbers constant however hard
+##       the mouse is thrown; every centimetre they move is a centimetre the
+##       weapon slid away from the eye. That difference is the whole of the "the
+##       gun doesn't move with the camera" complaint, and this turns it into a
+##       column of numbers instead of an argument. (Camera space, not screen
+##       pixels, on purpose — see `_sample_gun`.)
+##   --burst DIR [N]
+##       Press F9 to dump the next N (default 24) CONSECUTIVE rendered frames as
+##       `DIR/burst_XXX.png`. Frames are read back into RAM during the burst and
+##       written to disk afterwards, so the capture itself does not stall the
+##       frames it is measuring. The filmstrip a human looks at, next to the
+##       numbers `--gunlog` prints.
 
 const BOOT_DELAY_FRAMES: int = 2
 
@@ -223,6 +255,15 @@ var automated: bool = false
 var screenshot_path: String = ""
 var screenshot_frames: int = 120
 var auto_quit_after: float = 0.0
+
+## `--playtest`. Overrides `automated` back to false: this is the one mode that
+## wants the pointer, because the six PT1 complaints are all things a human
+## noticed with a mouse in their hand and no scripted probe ever will.
+var live_input: bool = false
+## `--gunlog PATH` / `--burst DIR [N]`. See the header.
+var gun_log_path: String = ""
+var burst_dir: String = ""
+var burst_frames: int = 24
 
 ## Set while a screenshot run is armed. Player honours it and ignores ALL local
 ## input. A windowed capture on a live desktop still receives the real user's
@@ -280,11 +321,10 @@ var log_ai: bool = false
 ## trigger and per caption, so a scripted solo run can prove every source fires
 ## with no missing streams — the M5 audio soak's verification, without ears.
 var log_audio: bool = false
-## `--captions`. Turn on directional sound captions for this session (default
-## OFF). Drives the real `A11y.set_sound_captions`, which persists to
-## user://a11y.cfg — so this both stages the caption capture and exercises the
-## settings write path end to end.
+## `--captions` / `--subtitles`. Turn the two text tracks on FOR THIS SESSION
+## ONLY (both default OFF). Never written to user://a11y.cfg — see `_ready`.
 var force_captions: bool = false
+var force_subtitles: bool = false
 
 # --- M3.5 Steam / achievements (read by SteamHub and Achievements) ----------
 ## Hard off switch for the Steam API: the game runs its ENet paths untouched.
@@ -392,6 +432,19 @@ var _shot_armed: bool = false
 var _frames_left: int = 0
 var _shot_taken: bool = false
 
+# --- PT1 instruments ---------------------------------------------------------
+## `--gunlog`. Open for the whole session, flushed on quit.
+var _gun_log: FileAccess = null
+var _gun_frame: int = 0
+var _gun_last: Vector2 = Vector2.ZERO
+var _gun_has_last: bool = false
+## `--burst`. Frames are held as Images until the burst ends: writing a 1280x720
+## PNG takes longer than the frame it is a picture of, so writing during the
+## burst would measure the encoder rather than the game.
+var _burst_left: int = 0
+var _burst_taken: Array[Image] = []
+var _burst_index: int = 0
+
 
 func _ready() -> void:
 	_parse_args(OS.get_cmdline_user_args())
@@ -399,17 +452,33 @@ func _ready() -> void:
 	# instant it hosts or joins, and a forced build that arrives after that
 	# announcement is a build the host never hears about.
 	_apply_program_overrides()
-	# `--captions`: flip the accessibility toggle on through its real setter, which
-	# persists it. A11y is the first autoload, so it is standing by the time we run.
-	if force_captions:
-		A11y.set_sound_captions(true)
+	# `--captions` / `--subtitles`: SESSION ONLY.
+	#
+	# These used to go through `A11y.set_sound_captions`, which persists — so any
+	# capture run that staged the caption system left it switched on in the
+	# developer's real profile, permanently, and the next person to launch the
+	# game got captions nobody asked for. Same doctrine as `--modules` and
+	# `--archive` (see `_apply_program_overrides`): a dev flag is a measuring
+	# instrument, never a setting that sticks. The fields are written directly and
+	# `changed` is emitted so live views update; nothing reaches user://a11y.cfg.
+	if force_captions or force_subtitles:
+		if force_captions:
+			A11y.sound_captions = true
+		if force_subtitles:
+			A11y.subtitles = true
+		A11y.changed.emit()
 	# Before any interface exists: the phosphor is a palette-wide token and
 	# something built earlier than this would bake the default into itself.
 	if _has_forced_color:
 		GameState.local_color = _forced_color
 		UiFx.set_phosphor(_forced_color)
-	automated = not _mode.is_empty() or not screenshot_path.is_empty() \
-			or auto_quit_after > 0.0 or steam_selftest
+	# `--playtest` is the one exception, and it is deliberately the last word: it
+	# hosts through the same path `--autohost` does and then hands the session
+	# back to a human (or to xdotool pretending to be one). Everything the
+	# automation guard exists to prevent — stolen focus, a captured pointer — is
+	# exactly what a live playtest needs.
+	automated = (not _mode.is_empty() or not screenshot_path.is_empty() \
+			or auto_quit_after > 0.0 or steam_selftest) and not live_input
 	if automated:
 		_stay_out_of_the_way()
 	if _mode == "dump":
@@ -431,9 +500,11 @@ func _ready() -> void:
 		_run_tail_motion.call_deferred()
 		return
 	if _mode.is_empty() and screenshot_path.is_empty() and auto_quit_after <= 0.0 \
-			and not steam_selftest:
+			and not steam_selftest and gun_log_path.is_empty() and burst_dir.is_empty():
 		set_process(false)
 		return
+	if not gun_log_path.is_empty():
+		_open_gun_log()
 	# Stays processing for the whole run, not just while a screenshot is armed:
 	# `_enforce_mouse` has to be live from boot to quit, including across the
 	# menu -> layer scene change and every descent after it.
@@ -543,6 +614,15 @@ func _parse_args(args: PackedStringArray) -> void:
 				_mode = "server"
 			"--autohost":
 				_mode = "host"
+			"--playtest":
+				# Same host path as --autohost; the difference is `live_input`,
+				# which vetoes `automated` and therefore the whole mouse guard.
+				_mode = "host"
+				live_input = true
+				auto_quit_after = 300.0
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					auto_quit_after = maxf(args[i].to_float(), 1.0)
 			"--autojoin":
 				_mode = "join"
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
@@ -621,6 +701,8 @@ func _parse_args(args: PackedStringArray) -> void:
 				log_audio = true
 			"--captions":
 				force_captions = true
+			"--subtitles":
+				force_subtitles = true
 			"--log-fps":
 				_fps_window = 5.0
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
@@ -814,6 +896,17 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size():
 					i += 1
 					auto_quit_after = args[i].to_float()
+			"--gunlog":
+				if i + 1 < args.size():
+					i += 1
+					gun_log_path = args[i]
+			"--burst":
+				if i + 1 < args.size():
+					i += 1
+					burst_dir = args[i]
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					burst_frames = maxi(args[i].to_int(), 1)
 			_:
 				pass
 		i += 1
@@ -1129,6 +1222,58 @@ func _balance_selftest() -> void:
 	else:
 		failures += 1
 		printerr("[SelfTest] FAIL  dampened protocol did not soften the presentation")
+
+	# PT1 SAFETY LAW: the enemy hit flash cannot exceed 3 Hz.
+	#
+	# The impact feedback the playtest asked for brightens a creature that fills
+	# the frame, and the breaker fires faster than the WCAG 2.3.1 ceiling allows a
+	# thing to flash. The governor in `Antivirus.trigger_hurt_flash` is what makes
+	# that safe, and this is the number that proves it — checked against the
+	# WEAPON's own maximum rate, so a future cooldown change that outruns the cap
+	# fails here rather than in a player's living room.
+	var shots_hz: float = 1.0 / maxf(Balance.BREAKER_COOLDOWN, 0.0001)
+	var flash_hz: float = minf(shots_hz, 1.0 / Antivirus.HURT_FLASH_MIN_INTERVAL)
+	if flash_hz <= 3.0:
+		print("[SelfTest] PASS  flash-rate HIT   : peak %.2f Hz <= 3.0 Hz (trigger %.2f Hz, capped)" % [
+			flash_hz, shots_hz])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  flash-rate HIT: %.2f Hz exceeds the WCAG ceiling" % flash_hz)
+
+	# PT1: a FRESH profile boots silent on both text tracks.
+	#
+	# The playtest complaint ("the hearing aid text should be off by default")
+	# turned out to be true of a track nobody had a switch for, and a default that
+	# is only written down in a comment is a default that drifts. This reads the
+	# real load path with an empty config — i.e. exactly what a machine that has
+	# never run the game gets — so the answer cannot be a claim about a screenshot.
+	var fresh: Dictionary = A11y.fresh_defaults()
+	if not bool(fresh["sound_captions"]) and not bool(fresh["subtitles"]):
+		print("[SelfTest] PASS  fresh profile silent: captions=off subtitles=off")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  fresh profile shows text: captions=%s subtitles=%s" % [
+			str(fresh["sound_captions"]), str(fresh["subtitles"])])
+
+	# PT1: the drop-shaft refill is a real refill and it cannot overfill the pool.
+	# The arithmetic `RunState._siphon_shaft` does, checked at both ends: a pool at
+	# a tenth gains the full half-pool, and a pool at nine tenths gains only the
+	# tenth that fits. A refill that could exceed the maximum would silently break
+	# every readout that divides by it.
+	var pool_max: float = Balance.pool_max(4)
+	var want: float = pool_max * Balance.DESCENT_REFILL_FRACTION
+	var low_gain: float = minf(want, pool_max - pool_max * 0.1)
+	var high_gain: float = minf(want, pool_max - pool_max * 0.9)
+	if Balance.DESCENT_REFILL_FRACTION > 0.0 and Balance.DESCENT_REFILL_FRACTION < 1.0 \
+			and is_equal_approx(low_gain, want) \
+			and is_equal_approx(high_gain, pool_max * 0.1) \
+			and pool_max * 0.1 + high_gain <= pool_max + 0.001:
+		print("[SelfTest] PASS  descent refill: +%.0f from a tenth, +%.0f from nine tenths (clamped)" % [
+			low_gain, high_gain])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  descent refill: low=%.2f high=%.2f max=%.2f" % [
+			low_gain, high_gain, pool_max])
 
 	print("[SelfTest] %d check(s) failed" % failures)
 	get_tree().quit(1 if failures > 0 else 0)
@@ -2945,12 +3090,120 @@ func _on_connect_failed(reason: String) -> void:
 func _process(delta: float) -> void:
 	_enforce_mouse()
 	_sample_fps(delta)
+	_sample_gun(delta)
+	_advance_burst()
 	if not _shot_armed or _shot_taken:
 		return
 	_frames_left -= 1
 	if _frames_left <= 0:
 		_shot_taken = true
 		_capture.call_deferred()
+
+
+# ----------------------------------------------------------- PT1 instruments --
+
+## `--burst`: F9 arms the next `burst_frames` rendered frames.
+func _unhandled_input(event: InputEvent) -> void:
+	if burst_dir.is_empty():
+		return
+	var key: InputEventKey = event as InputEventKey
+	if key == null or not key.pressed or key.echo or key.keycode != KEY_F9:
+		return
+	if _burst_left > 0:
+		return
+	_burst_left = burst_frames
+	_burst_taken.clear()
+	print("[Debug] --burst: capturing %d frames" % burst_frames)
+
+
+func _advance_burst() -> void:
+	if _burst_left <= 0:
+		return
+	_burst_left -= 1
+	# Read back now, encode later. `get_image()` costs a GPU sync; `save_png()`
+	# costs several milliseconds of CPU, which at 60 Hz would drop every other
+	# frame of the very thing the burst is meant to photograph.
+	var image: Image = get_viewport().get_texture().get_image()
+	if image != null:
+		_burst_taken.append(image)
+	if _burst_left <= 0:
+		_write_burst.call_deferred()
+
+
+func _write_burst() -> void:
+	DirAccess.make_dir_recursive_absolute(burst_dir)
+	for image: Image in _burst_taken:
+		var path: String = "%s/burst_%03d.png" % [burst_dir, _burst_index]
+		_burst_index += 1
+		image.save_png(path)
+	print("[Debug] --burst: wrote %d frames to %s" % [_burst_taken.size(), burst_dir])
+	_burst_taken.clear()
+
+
+func _exit_tree() -> void:
+	if _gun_log != null:
+		_gun_log.flush()
+		_gun_log.close()
+		_gun_log = null
+
+
+func _open_gun_log() -> void:
+	_gun_log = FileAccess.open(gun_log_path, FileAccess.WRITE)
+	if _gun_log == null:
+		push_error("[Debug] --gunlog: cannot write %s" % gun_log_path)
+		gun_log_path = ""
+		return
+	_gun_log.store_line("frame,dt_ms,yaw,pitch,gx,gy,gz,mx,my,mz,roll_deg,bore_deg")
+
+
+## One row per rendered frame: where the grip and the emitter are IN THE LENS'S
+## OWN FRAME, in metres.
+##
+## This is the whole instrument for the PT1 gun-tracking complaint, and the
+## coordinate system is the point. Screen pixels were the obvious choice and the
+## wrong one: at a steep look-down the emitter passes within a few centimetres of
+## the near plane, where `unproject_position` amplifies a 2 cm error into four
+## digits and reports a hold that is tracking perfectly as one that has left the
+## solar system. Camera-space metres cannot lie that way.
+##
+## The reading is trivial to interpret: **a hold bolted to the lens has constant
+## (gx,gy,gz)**, whatever the player does with the mouse. Every centimetre of
+## variation is a centimetre the weapon moved relative to the eye, and the
+## complaint is exactly that number being large.
+func _sample_gun(delta: float) -> void:
+	if _gun_log == null:
+		return
+	var player: Node = Net.get_player(Net.local_id())
+	if player == null or not is_instance_valid(player):
+		return
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	if camera == null:
+		return
+	var lens: Transform3D = camera.global_transform.affine_inverse()
+	var grip: Vector3 = lens * player.call("hold_world_point")
+	var muzzle: Vector3 = lens * player.call("muzzle_world_point")
+	_gun_frame += 1
+	# Angles are read off the LIVE camera basis rather than off the replicated
+	# pose: `sync_yaw`/`sync_pitch` are written once per physics tick, and a
+	# probe for a one-tick lag must not itself be sampled a tick late.
+	var forward: Vector3 = -camera.global_transform.basis.z
+	# The ROLL audit. The weapon's own basis, pulled into the lens's frame: a hold
+	# with no cant has its up vector in the lens's own vertical plane, so the
+	# lateral component of that vector IS the roll and it should be zero. Measured
+	# rather than eyeballed, because a wide-FOV lens shears an object at the frame
+	# edge and a sheared render of a level weapon looks exactly like a rolled one.
+	var weapon: Basis = lens.basis * player.call("hold_world_basis")
+	var roll: float = rad_to_deg(atan2(weapon.y.x, weapon.y.y))
+	# And the BORE, not the silhouette: the angle between the grip->emitter line
+	# and the sight line. The Surge's top edge is raked by design, so the only
+	# honest measure of "is it pointing where I am looking" is the bore.
+	var bore: Vector3 = (muzzle - grip).normalized()
+	_gun_log.store_line("%d,%.3f,%.5f,%.5f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f" % [
+		_gun_frame, delta * 1000.0,
+		atan2(-forward.x, -forward.z),
+		asin(clampf(forward.y, -1.0, 1.0)),
+		grip.x, grip.y, grip.z, muzzle.x, muzzle.y, muzzle.z,
+		roll, rad_to_deg(acos(clampf(bore.dot(Vector3.FORWARD), -1.0, 1.0)))])
 
 
 func _capture() -> void:

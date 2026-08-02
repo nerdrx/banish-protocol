@@ -68,7 +68,6 @@ var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 ## Local animation, driven on every peer from the pose it can see.
 var _last_position: Vector3 = Vector3.ZERO
 var _measured_speed: float = 0.0
-var _hurt_flash: float = 0.0
 var _death: float = 0.0
 
 ## M5 audio, driven per-peer off the replicated `sync_state` (never the host-only
@@ -86,7 +85,7 @@ var _ember: OmniLight3D = null
 
 
 func _assemble() -> void:
-	health = Balance.SCRUBBER_HEALTH
+	set_health(Balance.SCRUBBER_HEALTH)
 	speed_scale = float(LayerParams.of(layer_number)["scrubber_speed"])
 
 	# Unchanged from M3. The authored mesh is 0.72 m wide and 0.49 m tall, which
@@ -393,7 +392,7 @@ func _on_hurt() -> void:
 ## through the call.
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _hit() -> void:
-	_hurt_flash = 1.0
+	trigger_hurt_flash()
 	# Runs on every peer (host directly, clients via `_tell_crew`), so the cut is
 	# heard wherever the creature is on each screen.
 	Audio.play_3d(&"scrubber_hurt", global_position)
@@ -492,7 +491,7 @@ func _process(delta: float) -> void:
 			1.0 - exp(-8.0 * delta))
 	_drive_animation()
 
-	_hurt_flash = maxf(_hurt_flash - delta * 4.0, 0.0)
+	decay_hurt_flash(delta, 4.0)
 	_apply_state_visual()
 	_update_audio(delta)
 
@@ -581,10 +580,11 @@ func _apply_state_visual() -> void:
 			energy = 2.2 * stutter
 			light = 0.5 * stutter
 
-	if _hurt_flash > 0.0:
-		colour = colour.lerp(Color(1.0, 0.95, 0.9), _hurt_flash)
-		energy += _hurt_flash * 7.0
-		light += _hurt_flash * 2.5
+	var flash: float = hurt_flash()
+	if flash > 0.0:
+		colour = colour.lerp(Color(1.0, 0.95, 0.9), flash)
+		energy += flash * 7.0
+		light += flash * 2.5
 
 	_sensor_material.emission = colour
 	_sensor_material.emission_energy_multiplier = energy

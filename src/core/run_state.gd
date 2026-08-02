@@ -28,6 +28,9 @@ signal layer_changed(number: int)  ## The layer below has been written.
 signal cycles_changed(value: float)
 signal integrity_changed
 signal siphon_taken(index: int, pool: float)
+## PT1. A completed descent took its cut of the drop-shaft trunk; `gained` is how
+## many Cycles the pool actually absorbed. Fires on every peer, from one packet.
+signal shaft_siphoned(gained: float)
 signal descent_started(next_layer: int)
 signal descent_finished
 signal muster_changed(inside: int, total: int)
@@ -500,6 +503,20 @@ func _process(delta: float) -> void:
 		return
 	if not multiplayer.has_multiplayer_peer():
 		return
+
+	# `--log-cycles` runs on EVERY peer, above the host guard.
+	#
+	# PT1 moved it here. The host's own copy of the pool was never in question;
+	# what a two-instance check needs to see is a CLIENT's copy landing on the
+	# same number on the same beat — which is the whole verification for the
+	# drop-shaft refill (`_siphon_shaft`) and was unmeasurable while the only
+	# instrument printed on the authority.
+	if Debug.log_cycles:
+		_log_clock -= delta
+		if _log_clock <= 0.0:
+			_log_clock = 1.0
+			_log_telemetry()
+
 	if not multiplayer.is_server():
 		return
 
@@ -510,12 +527,6 @@ func _process(delta: float) -> void:
 	if exfil_calling and exfil_remaining <= 0.0:
 		_fire_exfil()
 		return
-
-	if Debug.log_cycles:
-		_log_clock -= delta
-		if _log_clock <= 0.0:
-			_log_clock = 1.0
-			_log_telemetry()
 
 	_muster_clock -= delta
 	if _muster_clock <= 0.0:
@@ -634,7 +645,8 @@ func _log_telemetry() -> void:
 		var speed: float = 0.0 if player == null else float(player.get("sync_speed"))
 		speeds.append("%d:%.1fm/s%s" % [int(id), speed,
 			"*" if speed >= Balance.SPRINT_BILLING_SPEED else ""])
-	print("[Run] layer=%d pool=%.1f/%.0f crew=[%s] integrity=%s corrupted=%s buffered=%s" % [
+	print("[Run] %s layer=%d pool=%.1f/%.0f crew=[%s] integrity=%s corrupted=%s buffered=%s" % [
+		"HOST " if multiplayer.is_server() else "CLIENT",
 		layer_number, cycles, cycles_max, ", ".join(speeds), str(integrity),
 		str(corrupted.keys()), str(buffered_value)])
 
@@ -1556,6 +1568,45 @@ func finish_descent(next_layer: int) -> void:
 	backdoor_rooted_changed.emit()
 	exfil_changed.emit()
 	notice.emit("LAYER %02d" % next_layer)
+	# The shaft's cut. Host only, and only from HERE: this function is reached
+	# exactly once per completed drop-shaft ride, and never on the injection that
+	# starts a run (`begin`) or on a backdoor start (`adopt`) — which is the whole
+	# of Balance.DESCENT_REFILL_FRACTION's "only real descents" rule, enforced by
+	# where the call site is rather than by a flag somebody has to remember.
+	if multiplayer.has_multiplayer_peer() and multiplayer.is_server():
+		_siphon_shaft()
+
+
+## PT1. Riding the trunk down takes a cut of it: the shared pool gains
+## `Balance.DESCENT_REFILL_FRACTION` of its maximum, clamped.
+##
+## Host-authoritative and pushed as one packet rather than left to the 5 Hz pool
+## stream, because every peer's readout has to jump on the SAME beat — a refill
+## that arrives on four screens at four different moments reads as four separate
+## bugs. The client copies do not compute it; they are told, which is the same
+## rule every other number in this file follows.
+func _siphon_shaft() -> void:
+	var before: float = cycles
+	var gained: float = minf(cycles_max * Balance.DESCENT_REFILL_FRACTION,
+			cycles_max - cycles)
+	if gained <= 0.01:
+		return  # already full: the trunk has nothing to give a crew that is topped up.
+	cycles = before + gained
+	_shaft_siphoned.rpc(cycles, gained)
+
+
+## Every peer: adopt the host's pool and let the HUD blip.
+##
+## Quiet Instrument (DESIGN.md M4.9): this is a fill, not a fanfare. The pool
+## readout surges — the same overshoot the siphon tap already uses, so the crew
+## learns one visual verb for "something just fed the pool" — plus one soft synth
+## confirm. No banner, no layer-wide flash, nothing that competes with the layer
+## title already coming up on the same beat.
+@rpc("authority", "call_local", "reliable")
+func _shaft_siphoned(pool: float, gained: float) -> void:
+	cycles = pool
+	cycles_changed.emit(cycles)
+	shaft_siphoned.emit(gained)
 
 
 @rpc("authority", "call_local", "reliable")

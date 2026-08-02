@@ -1043,3 +1043,10 @@ func _register_events() -> void:
 	_def(&"ui_refusal", ["ui/ui_refusal_glitch_buzz.ogg"], U, {"twod": true})
 	_def(&"ui_selftest", ["ui/ui_selftest_beep.ogg"], U, {"twod": true})
 	_def(&"ui_toast", ["ui/ui_toast_reveal.ogg"], U, {"twod": true})
+	# PT1. The hit marker's audible half. 2D and quiet: it is feedback about your
+	# own trigger, so it sits close and never spatialises. -7 dB because it fires
+	# on every landed shot at up to ~3.85 Hz, and a confirm as loud as the weapon
+	# would become the weapon.
+	_def(&"hit_confirm", ["ui/ui_hit_confirm.ogg"], U, {"twod": true, "vol": -7.0})
+	# PT1. The drop shaft's cut of the trunk, on every peer, once per descent.
+	_def(&"shaft_siphon", ["ui/ui_shaft_siphon.ogg"], U, {"twod": true, "vol": -3.0})

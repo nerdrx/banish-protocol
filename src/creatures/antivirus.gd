@@ -69,10 +69,18 @@ var sync_state: int = 0
 ## visibility rule as everything else. The host keeps the corpse alive for the
 ## length of the shatter, which is far longer than the stream needs.
 var sync_dead: bool = false
+## PT1. 0..1 remaining integrity, host-authoritative and replicated ON CHANGE, so
+## the integrity readout on a CLIENT's screen shows the right number for a
+## creature damaged by anyone. Health itself stays host-only — a client has no
+## business knowing absolute hit points, and a fraction is all a readout draws.
+var sync_integrity: float = 1.0
 
 # --- host sim ---------------------------------------------------------------
 
 var health: float = 100.0
+## What `health` started at, so a fraction can be reported without every subclass
+## remembering to publish its own maximum. Written by `set_health`.
+var health_max: float = 100.0
 var speed_scale: float = 1.0
 
 var _is_host: bool = false
@@ -85,6 +93,31 @@ var _dodge_time: float = 0.0
 var _dying: bool = false
 
 var _synchronizer: MultiplayerSynchronizer = null
+
+# --- PT1: the hit flash, and its rate governor -------------------------------
+
+## SAFETY-CRITICAL (limbo-a11y 01-photosensitivity, DESIGN.md pillar 7).
+##
+## Every process in the game brightens when it is cut — the "yes, that landed"
+## half of the impact feedback the first playtest asked for. The breaker fires as
+## fast as `Balance.BREAKER_COOLDOWN` allows (~3.85 Hz at 0.26 s), so a held
+## trigger on a Sentinel used to drive a 9x emissive spike at 3.85 Hz: OVER the
+## WCAG 2.3.1 three-general-flashes-a-second ceiling, on a creature that fills
+## the frame, in the DEFAULT build. The safety law is non-negotiable and it is
+## not satisfied by a setting.
+##
+## The governor is the same shape as the muzzle flash's (see
+## `ViewModel.MUZZLE_FLASH_MIN_INTERVAL`) and for the same reason: at most one
+## full-amplitude flash per interval, >1/3 s, so <=3 Hz UNCONDITIONALLY with
+## Reduced Flashing OFF. A shot that lands inside the interval still registers —
+## the reticle ticks, the confirm sounds, the integrity readout moves — it simply
+## does not re-strike the creature's emission. Independently, `hurt_flash()`
+## scales by `A11y.flash_scale`, so Reduced Flashing takes it to nothing.
+const HURT_FLASH_MIN_INTERVAL: float = 0.36
+## 0..1, decaying. Subclasses read it through `hurt_flash()` and NEVER directly:
+## the accessor is where the cap is applied, and a direct read is a hole in it.
+var _hurt_flash: float = 0.0
+var _since_hurt_flash: float = 10.0
 
 
 # ------------------------------------------------------------------ assembly --
@@ -129,10 +162,11 @@ func _build_sync() -> void:
 		config.property_set_spawn(NodePath(property), true)
 		config.property_set_replication_mode(NodePath(property),
 				SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
-	config.add_property(NodePath(".:sync_state"))
-	config.property_set_spawn(NodePath(".:sync_state"), true)
-	config.property_set_replication_mode(NodePath(".:sync_state"),
-			SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
+	for occasional: String in [".:sync_state", ".:sync_integrity"]:
+		config.add_property(NodePath(occasional))
+		config.property_set_spawn(NodePath(occasional), true)
+		config.property_set_replication_mode(NodePath(occasional),
+				SceneReplicationConfig.REPLICATION_MODE_ON_CHANGE)
 
 	_synchronizer = MultiplayerSynchronizer.new()
 	_synchronizer.name = "Sync"
@@ -468,9 +502,43 @@ func take_damage(amount: float, _from: Vector3) -> void:
 	if not _is_host or _dying or amount <= 0.0:
 		return
 	health -= amount
+	# PT1: publish the wound before the subclass reacts to it, so a hunter that
+	# changes state on being hit cannot land its packet ahead of the number the
+	# integrity readout is about to draw.
+	sync_integrity = clampf(health / maxf(health_max, 0.001), 0.0, 1.0)
 	_on_hurt()
 	if health <= 0.0:
 		kill()
+
+
+## Sets the starting health and remembers it as the maximum. Every subclass rolls
+## its own health off `Balance` at spawn; routing it through here is what lets the
+## integrity readout report a FRACTION without each of them publishing a ceiling.
+func set_health(value: float) -> void:
+	health = value
+	health_max = maxf(value, 0.001)
+	sync_integrity = 1.0
+
+
+## 0..1 hit flash, ALREADY capped. The only legal way to read it.
+func hurt_flash() -> float:
+	return _hurt_flash * A11y.flash_scale
+
+
+## One landed cut. Runs on every peer (the host directly, clients through each
+## subclass's `_hit` relay), so the rate cap is enforced on every screen against
+## that screen's own clock rather than trusting a packet order.
+func trigger_hurt_flash() -> void:
+	if _since_hurt_flash < HURT_FLASH_MIN_INTERVAL:
+		return
+	_since_hurt_flash = 0.0
+	_hurt_flash = 1.0
+
+
+## Called from each subclass's visual tick with its own decay rate.
+func decay_hurt_flash(delta: float, rate: float) -> void:
+	_since_hurt_flash += delta
+	_hurt_flash = maxf(_hurt_flash - delta * rate, 0.0)
 
 
 ## Host-side death. Flips the streamed flag and plays the shatter locally; every

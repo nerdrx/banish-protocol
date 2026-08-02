@@ -59,7 +59,6 @@ var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 ## Local animation, driven per-peer off the pose it can see.
 var _last_position: Vector3 = Vector3.ZERO
 var _measured_speed: float = 0.0
-var _hurt_flash: float = 0.0
 var _death: float = 0.0
 var _ember: OmniLight3D = null
 
@@ -94,7 +93,7 @@ func aim_point() -> Vector3:
 
 
 func _assemble() -> void:
-	health = Balance.hunter_health(Balance.HOUND_HEALTH, layer_number)
+	set_health(Balance.hunter_health(Balance.HOUND_HEALTH, layer_number))
 
 	var shape: CollisionShape3D = CollisionShape3D.new()
 	var capsule: CapsuleShape3D = CapsuleShape3D.new()
@@ -377,7 +376,7 @@ func _on_hurt() -> void:
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _hit() -> void:
-	_hurt_flash = 1.0
+	trigger_hurt_flash()
 	Audio.play_3d(&"scrubber_hurt", global_position)
 
 
@@ -447,7 +446,7 @@ func _process(delta: float) -> void:
 			1.0 - exp(-8.0 * delta))
 	_drive_animation()
 
-	_hurt_flash = maxf(_hurt_flash - delta * 4.0, 0.0)
+	decay_hurt_flash(delta, 4.0)
 	_apply_state_visual()
 	_update_audio(delta)
 
@@ -500,10 +499,11 @@ func _apply_state_visual() -> void:
 			energy = 2.2 * stutter
 			light = 0.5 * stutter
 
-	if _hurt_flash > 0.0:
-		colour = colour.lerp(Color(1.0, 0.95, 0.9), _hurt_flash)
-		energy += _hurt_flash * 7.0
-		light += _hurt_flash * 2.5
+	var flash: float = hurt_flash()
+	if flash > 0.0:
+		colour = colour.lerp(Color(1.0, 0.95, 0.9), flash)
+		energy += flash * 7.0
+		light += flash * 2.5
 
 	_sensor_material.emission = colour
 	_sensor_material.emission_energy_multiplier = energy

@@ -95,12 +95,17 @@ func _draw() -> void:
 	# bracket geometry rather than drawing a new shape is deliberate — a hit
 	# should read as the reticle *reacting*, not as a second icon appearing.
 	if hit > 0.004:
-		var reach: float = UiFx.CROSS_BRACKET_GAP + UiFx.HIT_TICK_TRAVEL * hit
+		# The travel eases OUT rather than tracking the decay linearly: the marks
+		# snap away from the centre on the first frame and drift back, which is
+		# what makes a tick read as an impact instead of as a fade.
+		var punch: float = 1.0 - (1.0 - hit) * (1.0 - hit)
+		var reach: float = UiFx.CROSS_BRACKET_GAP + UiFx.HIT_TICK_TRAVEL * punch
 		var tick: Color = UiFx.SYSTEM_HOT
-		tick.a = hit
+		tick.a = hit * A11y.flash_scale
 		for axis: Vector2 in [Vector2.RIGHT, Vector2.LEFT, Vector2.UP, Vector2.DOWN]:
-			draw_line(centre + axis * reach, centre + axis * (reach + 3.0),
-					tick, 1.4, true)
+			draw_line(centre + axis * reach,
+					centre + axis * (reach + UiFx.HIT_TICK_LEN * punch),
+					tick, UiFx.HIT_TICK_WIDTH, true)
 
 	# Kill: fragments thrown off the centre on the diagonals, in the one red the
 	# interface is allowed. Diagonal on purpose, so it never occupies the same

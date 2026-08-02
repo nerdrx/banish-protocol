@@ -48,7 +48,6 @@ var _patrol_time: float = 0.0
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 ## Local.
-var _hurt_flash: float = 0.0
 var _death: float = 0.0
 ## The dilating iris: eased 0..1 by how much light it currently has.
 var _iris: float = 0.0
@@ -81,7 +80,7 @@ func aim_point() -> Vector3:
 
 
 func _assemble() -> void:
-	health = Balance.hunter_health(Balance.MOTH_HEALTH, layer_number)
+	set_health(Balance.hunter_health(Balance.MOTH_HEALTH, layer_number))
 	# Starts at hover height rather than on the anchor's floor.
 	position = home + Vector3.UP * HOVER_HEIGHT
 	sync_position = position
@@ -322,13 +321,13 @@ func _on_hurt() -> void:
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _hit() -> void:
-	_hurt_flash = 1.0
+	trigger_hurt_flash()
 	Audio.play_3d(&"scrubber_hurt", global_position)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _strike_fx() -> void:
-	_hurt_flash = maxf(_hurt_flash, 0.4)
+	trigger_hurt_flash()
 	Audio.play_3d(&"scrubber_lunge", global_position)
 
 
@@ -374,7 +373,7 @@ func _process(delta: float) -> void:
 		_die_visual(delta)
 		return
 	_drive_animation()
-	_hurt_flash = maxf(_hurt_flash - delta * 4.0, 0.0)
+	decay_hurt_flash(delta, 4.0)
 	_apply_state_visual(delta)
 	_update_audio()
 
@@ -410,11 +409,12 @@ func _apply_state_visual(delta: float) -> void:
 
 	var t: float = float(Time.get_ticks_msec()) / 1000.0
 	var energy: float = 1.4 + _iris * 6.0 + sin(t * 3.0) * 0.3 * _iris
-	if _hurt_flash > 0.0:
-		energy += _hurt_flash * 7.0
+	var flash: float = hurt_flash()
+	if flash > 0.0:
+		energy += flash * 7.0
 	_eye_material.emission_energy_multiplier = energy
 	# The iris also scales the eye so it literally dilates.
-	_eye_material.emission = EYE_COLOUR.lerp(Color(1.0, 0.5, 0.4), _hurt_flash)
+	_eye_material.emission = EYE_COLOUR.lerp(Color(1.0, 0.5, 0.4), flash)
 	_trim_material.emission_energy_multiplier = 0.4 + _iris * 1.2
 	_light.light_energy = 0.5 + _iris * 1.6
 	_light.omni_range = 2.0 + _iris * 1.6

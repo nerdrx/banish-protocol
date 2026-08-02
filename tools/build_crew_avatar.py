@@ -194,7 +194,27 @@ AIM_GRIP = Vector((0.115, 0.300, 1.185))
 # build, so the hands re-solve onto the grips by themselves — 30/30 phalanges,
 # buried=none, and the socket transform below comes out unchanged to 0.05 mm
 # because the wrist rotates WITH the weapon.
-AIM_PITCH, AIM_YAW, AIM_ROLL = -8.0, 7.0, 30.0
+# PT1 zeroes AIM_ROLL, 30 -> 0.
+#
+# The 30 degrees were added in M4.7 to turn the weapon's lit face back toward the
+# eye, because in first person it read as a black silhouette. That argument was
+# made against a first-person view where the weapon was DRAWN on a stale socket
+# (see CrewAvatar._follow_hand) and pointed 26 degrees above the reticle (see
+# CrewAvatar.CONVERGE_PITCH) — i.e. against a picture of the hold that was wrong
+# in two other ways at the same time.
+#
+# With both of those fixed the roll is the only thing left, and it is exactly what
+# the second playtest report calls it: "the gun reads as crooked/canted". Thirty
+# degrees is not a subtle cant, and no amount of viewmodel-FOV correction can
+# explain away a real roll — measured with `--gunlog`'s roll audit, the weapon sat
+# at 31.5 degrees relative to the lens.
+#
+# Rolling is safe to change here and nowhere else: it is a rotation ABOUT THE
+# BARREL, so the muzzle line the third-person read and the convergence are tuned
+# against does not move (the tool's own measurement: within 10 mm), and the finger
+# solver re-runs against the unrolled weapon on every build, so the hands re-solve
+# onto the grips by themselves rather than being left holding a rotated object.
+AIM_PITCH, AIM_YAW, AIM_ROLL = -8.0, 7.0, 0.0
 # Attach points are on the SURFACE the palm touches, not on the weapon's
 # centre line -- putting them on the axis buries half of each hand inside the
 # receiver.  The hands sit 0.145 m apart, a compact hold that suits a cutting
@@ -250,12 +270,26 @@ FINGER_NAMES = ("Index", "Middle", "Ring", "Pinky", "Thumb")
 ## Radius of a phalanx. Contact means the centreline stops this far off the
 ## surface; anything closer is the mesh going through the finger.
 FINGER_RADIUS = 0.0075
-## Degrees per solver step, and the ceiling per phalanx. Fine enough to land
-## within a couple of degrees of contact, coarse enough to stay quick.
+## Degrees per solver step. Fine enough to land within a couple of degrees of
+## contact, coarse enough to stay quick.
 FIT_STEP = 3.0
-FIT_MAX = 96.0
-## The thumb closes less far and from the other side.
-THUMB_MAX = 54.0
+## Flexion still available at each phalanx, in degrees, ON TOP of the 32-41 deg
+## `rest_relax` has already curled in. Proximal / middle / distal.
+##
+## These are joint STOPS, not tuning: a finger reaches them and stops, whether or
+## not it has found anything to hold, so a phalanx that finds only air ends in a
+## natural grip curl instead of coiled through itself. Totals land at roughly
+## 85 / 100 / 80 degrees, which is a closed hand and not a spiral.
+FIT_FLEXION = (34.0, 58.0, 44.0)
+## The thumb has a shallower range and starts from a shallower rest.
+THUMB_FLEXION = (40.0, 34.0, 30.0)
+## How far a phalanx may be OPENED to escape geometry it starts inside. Small on
+## purpose: fingers do not hyperextend, and a hand that gets out of a receiver by
+## bending backwards is the defect, not the fix.
+FIT_EXTENSION = 18.0
+## How many times a finger may unwind its own parent joint to get a buried child
+## back out of the weapon. See the back-off loop in `fit_fingers`.
+FIT_BACKOFF_STEPS = 5
 ## Extra stand-off the fit solver had to add per hand, in metres, along the palm
 ## normal. Filled by `build_aim_idle` at frame 0 and then applied to every frame,
 ## so the whole clip holds the weapon exactly the way the fit was verified.
@@ -1186,87 +1220,123 @@ def _phalanx_state(pb, tree):
     # Past the tail on purpose: this creature's fingers end in claws that reach
     # beyond the last bone, and a solver that stops measuring at the joint lets
     # them pass straight through the far side of a grip.
-    for u in (0.25, 0.55, 0.8, 1.0, 1.22):
+    #
+    # PT1: the over-reach counts for PENETRATION but not for CLEARANCE, and that
+    # asymmetry is why the fingers now close. A claw is a thin spike sticking out
+    # in front of the fingertip; a finger wrapping a grip brushes the far side
+    # with it almost immediately, and treating that graze as "contact" stopped
+    # every finger within a few degrees of straight. The hands ended up draped
+    # over the weapon as splayed spikes rather than closed around it — which is
+    # what a player saw and called cursed. The claw still may not go THROUGH
+    # anything; it just no longer gets a vote on when the hand is closed.
+    for u in (0.25, 0.55, 0.8, 1.0):
         d, ins = _surface(tree, head.lerp(tail, u))
         worst = min(worst, d)
         inside = inside or ins
-    return worst, inside
+    _d, ins = _surface(tree, head.lerp(tail, 1.22))
+    return worst, inside or ins
 
 
 def fit_fingers(arm, tree, side, _palm_normal=None):
     """Close one hand onto whatever `tree` is, phalanx by phalanx.
 
-       The rule is **contact, not penetration**. For each phalanx:
+       The rule is **contact, not penetration, INSIDE the joint's range**:
 
-         1. if it starts inside the mesh, open it until it is out — the palm
-            offset alone cannot guarantee this, and a phalanx that begins buried
-            is the defect this whole pass exists to fix;
-         2. work out which way "closed" is by trying a step each way and keeping
-            whichever one approaches the surface, so a finger can never curl
-            enthusiastically into thin air because a sign was wrong somewhere;
-         3. step that way until the closest sample is one finger-radius off the
-            surface, and stop the step BEFORE anything goes inside.
+         1. if the phalanx starts inside the mesh, open it until it is out —
+            never past the extension stop, because a finger that escapes a
+            receiver by bending backwards has not been fixed;
+         2. close along the finger's own flexion axis, in the ONE direction a
+            finger closes, until the nearest sample is a finger-radius off the
+            surface;
+         3. stop at the joint's flexion stop whatever the surface is doing. A
+            phalanx that finds nothing ends in a natural grip curl, not coiled
+            into thin air.
 
-       Returns a per-phalanx report, because the only honest way to claim a hand
-       does not clip is to print the gap at every joint and let it be read."""
+       ## PT1: why the range limits exist
+
+       The first friend playtest reported "the hands looked cursed on the gun,
+       very bent", and the report this function prints said exactly why:
+
+           RingFinger2_R    curl  -99.0 deg    (bent BACKWARDS through the joint)
+           MiddleFinger2_L  curl  -72.0 deg
+           PinkyFinger3_L   curl  -51.0 deg
+           PinkyFinger1_R   curl  +96.0 deg  gap 0.0184 m  (ceiling, in open air)
+           IndexFinger1_L   curl  +96.0 deg  gap 0.0154 m
+
+       Both failures came from step 2 as it was originally written, which
+       *measured* which way "closed" was by stepping each way and keeping
+       whichever approached the surface. That is unnecessary — the axis
+       `finger_axis` returns is derived from the curl `rest_relax` has already
+       put in the finger, so closing is ALWAYS the positive direction about it
+       (the cross product of two phalanx directions separated by a positive
+       rotation is the positive axis; the algebra is in that function's docstring)
+       — and it is actively harmful, because when the nearest surface happens to
+       lie behind the hand the measurement cheerfully votes for hyperextension.
+       Nothing downstream then objects: joints in this rig have no limits.
+
+       So the direction is anatomy now, not a measurement, and every joint has a
+       stop. `buried=none` was true the whole time and told nobody anything: the
+       fingers were not inside the weapon, they were bent backwards beside it."""
     report = []
     for fname in FINGER_NAMES:
         thumb = fname == "Thumb"
-        limit = THUMB_MAX if thumb else FIT_MAX
         axis = finger_axis(arm, fname, side)
         if axis is None:
             continue
-        for j in (1, 2, 3):
-            bone = "%sFinger%d_%s" % (fname, j, side)
-            if bone not in arm.pose.bones:
-                continue
-            pb = arm.pose.bones[bone]
-            turned = 0.0
+        stops = THUMB_FLEXION if thumb else FIT_FLEXION
+        chain = [(j, arm.pose.bones["%sFinger%d_%s" % (fname, j, side)])
+                 for j in (1, 2, 3)
+                 if "%sFinger%d_%s" % (fname, j, side) in arm.pose.bones]
+        turned = {j: 0.0 for j, _pb in chain}
 
-            # 1. get out of the mesh, whichever way that is. Both directions get
-            #    a try, because a phalanx buried by its parent can be on either
-            #    side of the surface it is stuck in.
-            for sign in (-1.0, 1.0):
-                _d, inside = _phalanx_state(pb, tree)
-                if not inside:
+        def close(j, pb):
+            """One phalanx, from wherever it currently is: out of the mesh if it
+               is in it, then closed until contact or until the stop."""
+            limit = stops[j - 1]
+            escaped = 0.0
+            while escaped < FIT_EXTENSION:
+                _d, ins = _phalanx_state(pb, tree)
+                if not ins:
                     break
-                escaped = 0.0
-                while escaped < 120.0:
-                    _d, inside = _phalanx_state(pb, tree)
-                    if not inside:
-                        break
-                    _curl_bone(pb, axis, FIT_STEP * sign)
-                    escaped += FIT_STEP
-                    turned += FIT_STEP * sign
-                if not inside:
-                    break
-                # Put it back and try the other way.
-                _curl_bone(pb, axis, -escaped * sign)
-                turned -= escaped * sign
-
-            # 2. which way is "closed"? Measured, not assumed.
-            base_d, _ = _phalanx_state(pb, tree)
-            _curl_bone(pb, axis, FIT_STEP)
-            plus_d, plus_in = _phalanx_state(pb, tree)
-            _curl_bone(pb, axis, -FIT_STEP)
-            direction = 1.0 if (plus_d < base_d and not plus_in) else -1.0
-
-            # 3. close until contact.
-            steps = 0
-            while steps * FIT_STEP < limit:
-                d, inside = _phalanx_state(pb, tree)
-                if inside:
-                    _curl_bone(pb, axis, -FIT_STEP * direction)
-                    turned -= FIT_STEP * direction
+                _curl_bone(pb, axis, -FIT_STEP)
+                escaped += FIT_STEP
+                turned[j] -= FIT_STEP
+            while turned[j] + FIT_STEP <= limit:
+                d, ins = _phalanx_state(pb, tree)
+                if ins:
+                    _curl_bone(pb, axis, -FIT_STEP)
+                    turned[j] -= FIT_STEP
                     break
                 if d <= FINGER_RADIUS:
                     break
-                _curl_bone(pb, axis, FIT_STEP * direction)
-                turned += FIT_STEP * direction
-                steps += 1
+                _curl_bone(pb, axis, FIT_STEP)
+                turned[j] += FIT_STEP
 
-            d, inside = _phalanx_state(pb, tree)
-            report.append((bone, turned, d, inside))
+        for j, pb in chain:
+            close(j, pb)
+
+        # **A parent may not close so far that it buries a child.**
+        #
+        # Each phalanx is fitted against the weapon in isolation, so a proximal
+        # joint that finds nothing to stop it closes to its own stop — and drags
+        # the two phalanges below it straight through the receiver. Opening the
+        # PARENT one step and re-closing the children is the cheap, convergent
+        # answer: the chain unwinds until the whole finger is outside, and it
+        # unwinds from the joint that caused the problem rather than by
+        # straightening the fingertip, which is what makes a hand look broken.
+        for _attempt in range(FIT_BACKOFF_STEPS):
+            worst = next((j for j, pb in chain if _phalanx_state(pb, tree)[1]), None)
+            if worst is None or worst == 1:
+                break
+            parent_j, parent_pb = chain[worst - 2]
+            _curl_bone(parent_pb, axis, -FIT_STEP)
+            turned[parent_j] -= FIT_STEP
+            for j, pb in chain[worst - 1:]:
+                close(j, pb)
+
+        for j, pb in chain:
+            d, ins = _phalanx_state(pb, tree)
+            report.append(("%sFinger%d_%s" % (fname, j, side), turned[j], d, ins))
     return report
 
 

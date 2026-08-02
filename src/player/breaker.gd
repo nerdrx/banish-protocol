@@ -17,11 +17,21 @@ extends Node3D
 ## Long enough to register at 60 fps without smearing into a beam. The cutter is
 ## a snap, not a laser.
 const LASH_TIME: float = 0.1
-## Widened in M4.95: at 0.05 the streak was a hairline that vanished on a
-## nose-to-wall shot (M3's point-blank complaint), where the streak is only a
-## sliver long to begin with. A thicker snap reads at any range and still stays
-## well shy of a laser at fifteen metres.
-const LASH_WIDTH: float = 0.075
+## Widened in M4.95 to 0.075, because at 0.05 the streak was a hairline that
+## vanished on a nose-to-wall shot (M3's point-blank complaint), where the streak
+## is only a sliver long to begin with.
+##
+## PT1 walks that back. A friend playtest returned "the laser beam is wayyyy too
+## thick", and they are right: 7.5 cm of additive white across the middle of the
+## frame is a laser, and DESIGN.md's whole argument for this weapon is that it is
+## "a short-range hitscan cutter — a tool, not a gun". The point-blank read was a
+## real problem and this is not a straight revert to 0.05; 0.045 keeps a visible
+## streak on a nose-to-wall shot (the glow at the impact end and the muzzle flash
+## at the origin do most of that work anyway — see GLOW_ENERGY) while cutting the
+## on-screen mass of a fifteen-metre shot by 40%. Same number on every peer: the
+## width is a constant, not replicated state, so a crewmate's lash is exactly as
+## thin as your own.
+const LASH_WIDTH: float = 0.045
 const COLOUR: Color = Color(0.72, 0.96, 1.0)
 ## Energy of the impact-end glow, lighting whatever the cut lands on. Fires on
 ## every shot, point-blank ones included — where, with the muzzle flash at the

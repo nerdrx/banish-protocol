@@ -158,7 +158,6 @@ var _alarm_flash: float = 0.0
 var _arc: MeshInstance3D = null
 var _arc_material: ShaderMaterial = null
 var _arc_sweep: float = 0.0
-var _hurt_flash: float = 0.0
 ## 0 -> 1 collapse once it goes down.
 var _death: float = 0.0
 
@@ -193,7 +192,7 @@ func aim_point() -> Vector3:
 func _assemble() -> void:
 	# Depth-scaled past DEPTH_FLOOR (M4.9). `layer_number` is set by
 	# Antivirus.setup() before this runs, so a deep Sentinel assembles heavier.
-	health = Balance.sentinel_health(layer_number)
+	set_health(Balance.sentinel_health(layer_number))
 	_build_purge_arc()
 
 	# Sized to the authored mesh (0.85 m wide, 2.6 m tall). The box monolith it
@@ -617,7 +616,7 @@ func _on_hurt() -> void:
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _hit() -> void:
-	_hurt_flash = 1.0
+	trigger_hurt_flash()
 	# The 'yes, that worked' crunch when the shot lands on the exposed core. Fired
 	# on every peer while the shielding is down (SCAN/PURGE) — the same window the
 	# bonus damage lives in. A back-shot on a plated body has no dedicated asset;
@@ -792,7 +791,7 @@ func _process(delta: float) -> void:
 	_drive_walk(delta)
 	_drive_secondaries(delta)
 	_alarm_flash = maxf(_alarm_flash - delta * 1.6, 0.0)
-	_hurt_flash = maxf(_hurt_flash - delta * 3.0, 0.0)
+	decay_hurt_flash(delta, 3.0)
 	_update_purge_arc(delta)
 	if not _is_host:
 		# Clients do not run `_watch_heading` (it lives in the host's `_act`), so
@@ -832,7 +831,7 @@ func _process(delta: float) -> void:
 	# shielding drops: dull plate while dormant, a hot exposed lamp while awake.
 	if core_exposed():
 		core *= 1.8
-	core += _alarm_flash * 6.0 + _hurt_flash * 9.0
+	core += _alarm_flash * 6.0 + hurt_flash() * 9.0
 	_trim_material.emission_energy_multiplier = trim * breath
 	_core_material.emission_energy_multiplier = core * breath
 	_core_light.light_energy = core * breath

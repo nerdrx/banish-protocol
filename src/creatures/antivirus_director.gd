@@ -468,4 +468,16 @@ func _process(delta: float) -> void:
 	labels.sort()
 	for label: String in labels:
 		parts.append("%s=%d" % [label, int(census[label])])
-	print("[AI] layer %d processes=%d %s" % [_layer_number, total, " ".join(parts)])
+	# PT1: the census carries INTEGRITY as well as state. `sync_integrity` is what
+	# the enemy readouts draw from, it is host-authoritative and replicated, and
+	# the only honest way to show a client is seeing a crewmate's damage is to
+	# print the client's own copy of the number next to the host's.
+	var wounded: PackedStringArray = PackedStringArray()
+	for creature: Antivirus in _creatures():
+		if creature.sync_integrity < 0.999:
+			wounded.append("%d:%d%%" % [creature.slot_index,
+					int(round(creature.sync_integrity * 100.0))])
+	print("[AI] %s layer %d processes=%d %s%s" % [
+		"HOST " if multiplayer.is_server() else "CLIENT",
+		_layer_number, total, " ".join(parts),
+		"  integrity[" + " ".join(wounded) + "]" if wounded.size() > 0 else ""])

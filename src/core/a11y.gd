@@ -66,10 +66,30 @@ var dampened_protocol: bool = false
 ## prominently in settings (spec 06) because the players who need it must find it
 ## in seconds.
 var sound_captions: bool = false
-## Subtitles (speech / authored text) are a separate track and default ON — the
-## industry norm, low cost. Little literal dialogue exists pre-M6, so this mostly
-## gates MOTHER's future glyph barks; wired now so the toggle exists.
-var subtitles: bool = true
+## Subtitles — MOTHER's authored speech, rendered as text under the reticle.
+##
+## **DEFAULT OFF as of PT1, and the toggle is now actually in the menu.**
+##
+## The first friend playtest reported "the hearing aid text needs a setting so it
+## can be toggled off, actually it should be off by default", and both halves of
+## that were true. M5 shipped this defaulting ON — the industry norm, and a
+## defensible one — with `sound_captions` (a different track) as the only thing
+## the settings panel exposed. So the text a player kept seeing was MOTHER's
+## subtitle track, there was no control for it anywhere in the game, and the
+## caption toggle they did find was wired to something else entirely. The bug was
+## never a wrong default on the caption system; it was a second text track with
+## no switch.
+##
+## The accessibility tension is real and worth naming rather than hiding: a deaf
+## player who never opens the menu now misses MOTHER's voice entirely. Two things
+## answer that and neither is optional. First, MOTHER is ATMOSPHERE, not
+## instruction — the threat telegraph belongs to `sound_captions`, which is the
+## setting the safety law (pillar 7) actually names, and nothing that keeps you
+## alive is spoken. Second, both switches now sit adjacent under ACCESSIBILITY in
+## the settings panel, one line apart, so the player who needs either finds both
+## in the same glance. Discoverability is the mitigation; a default nobody asked
+## for is not.
+var subtitles: bool = false
 ## When captions are on: append a direction arrow, bucket the distance. Both
 ## default ON — the direction IS the point of the system.
 var caption_directional: bool = true
@@ -180,11 +200,50 @@ func _load() -> void:
 	var cfg: ConfigFile = ConfigFile.new()
 	if cfg.load(CONFIG_PATH) != OK:
 		return
+	_read(cfg)
+
+
+## What a FRESH profile boots with: every fallback in `_read`, read through
+## `_read` itself so the answer can never drift from the real load path.
+##
+## An empty `ConfigFile` returns the fallback for every key, so this is exactly
+## what the game does on a machine that has never run it. `--selftest` asserts
+## the two text tracks come back silent — the PT1 complaint was "the hearing aid
+## text should be off by default", and a default that is only documented is a
+## default nobody can prove.
+func fresh_defaults() -> Dictionary:
+	var before: Dictionary = _snapshot()
+	_read(ConfigFile.new())
+	var fresh: Dictionary = _snapshot()
+	_restore(before)
+	return fresh
+
+
+func _snapshot() -> Dictionary:
+	return {
+		"reduced_flashing": reduced_flashing, "warning_ack": warning_ack,
+		"dampened_protocol": dampened_protocol, "sound_captions": sound_captions,
+		"subtitles": subtitles, "caption_directional": caption_directional,
+		"caption_distance": caption_distance, "caption_all_sounds": caption_all_sounds,
+		"caption_size": caption_size, "caption_bg_opacity": caption_bg_opacity,
+		"caption_max_lines": caption_max_lines,
+	}
+
+
+func _restore(state: Dictionary) -> void:
+	for key: String in state:
+		set(key, state[key])
+
+
+func _read(cfg: ConfigFile) -> void:
 	reduced_flashing = bool(cfg.get_value(SECTION, "reduced_flashing", false))
 	warning_ack = bool(cfg.get_value(SECTION, "warning_ack", false))
 	dampened_protocol = bool(cfg.get_value(SECTION, "dampened_protocol", false))
 	sound_captions = bool(cfg.get_value(CAPTION_SECTION, "sound_captions", false))
-	subtitles = bool(cfg.get_value(CAPTION_SECTION, "subtitles", true))
+	# The fallback matches the declared default. A settings file written before
+	# PT1 carries `subtitles=true` and is HONOURED — a player who had them on
+	# keeps them on; only a fresh profile gets the new default.
+	subtitles = bool(cfg.get_value(CAPTION_SECTION, "subtitles", false))
 	caption_directional = bool(cfg.get_value(CAPTION_SECTION, "directional", true))
 	caption_distance = bool(cfg.get_value(CAPTION_SECTION, "distance", true))
 	caption_all_sounds = bool(cfg.get_value(CAPTION_SECTION, "all_sounds", false))

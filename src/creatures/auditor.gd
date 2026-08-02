@@ -58,7 +58,6 @@ var _strike_time: float = 0.0
 var _face_target: Node3D = null
 
 ## Local.
-var _hurt_flash: float = 0.0
 var _death: float = 0.0
 var _last_position: Vector3 = Vector3.ZERO
 var _measured_speed: float = 0.0
@@ -93,7 +92,7 @@ func aim_point() -> Vector3:
 
 
 func _assemble() -> void:
-	health = Balance.hunter_health(Balance.AUDITOR_HEALTH, layer_number)
+	set_health(Balance.hunter_health(Balance.AUDITOR_HEALTH, layer_number))
 
 	var shape: CollisionShape3D = CollisionShape3D.new()
 	var capsule: CapsuleShape3D = CapsuleShape3D.new()
@@ -286,7 +285,7 @@ func _on_hurt() -> void:
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _hit() -> void:
-	_hurt_flash = 1.0
+	trigger_hurt_flash()
 	Audio.play_3d(&"sentinel_core_hit", global_position)
 
 
@@ -349,7 +348,7 @@ func _process(delta: float) -> void:
 	_measured_speed = lerpf(_measured_speed, clampf(moved, 0.0, 6.0), 1.0 - exp(-8.0 * delta))
 	_drive_animation()
 
-	_hurt_flash = maxf(_hurt_flash - delta * 3.0, 0.0)
+	decay_hurt_flash(delta, 3.0)
 	_apply_state_visual()
 	_update_audio()
 
@@ -386,9 +385,10 @@ func _apply_state_visual() -> void:
 		int(State.STRIKE):
 			core = 6.0
 			trim = 2.2
-	if _hurt_flash > 0.0:
-		core += _hurt_flash * 8.0
-		trim += _hurt_flash * 2.0
+	var flash: float = hurt_flash()
+	if flash > 0.0:
+		core += flash * 8.0
+		trim += flash * 2.0
 	_core_material.emission_energy_multiplier = core
 	_trim_material.emission_energy_multiplier = trim
 	_core_light.light_energy = 0.7 + core * 0.4

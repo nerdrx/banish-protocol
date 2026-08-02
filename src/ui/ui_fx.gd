@@ -347,8 +347,25 @@ const CROSS_HEAT_FRACTION: float = 0.62
 
 ## Hit confirmation. A tick on the reticle, gone almost before it registers —
 ## which is the point: you should feel it landed rather than see a notification.
-const HIT_TICK_TIME: float = 0.16
-const HIT_TICK_TRAVEL: float = 3.0
+## PT1: the hit tick, sharpened.
+##
+## The playtest read the old tick as "not good enough feedback when an enemy is
+## hit", and the numbers say why: four hairlines travelling 3 px, at bracket
+## weight, gone in 0.16 s. That is a reticle *acknowledging* a hit; a player
+## wants a reticle that *reacts* to one. Longer travel, a heavier stroke, and a
+## fifth longer on screen — still under a fifth of a second, still the same four
+## marks reusing the bracket geometry (a hit must never look like a new icon
+## appearing), and still nothing at all when you miss.
+##
+## Rate: this fires at the breaker's own cadence, up to ~3.85 Hz. It is a small
+## phosphor mark on a dark reticle, not a general flash — WCAG 2.3.1 governs
+## luminance changes over a large area, and this covers ~0.02% of the frame — but
+## it is scaled by `A11y.flash_scale` anyway, because the cheapest way to keep the
+## safety law true is to never make an exception to it.
+const HIT_TICK_TIME: float = 0.19
+const HIT_TICK_TRAVEL: float = 6.5
+const HIT_TICK_LEN: float = 5.5
+const HIT_TICK_WIDTH: float = 2.0
 ## A kill. Four short fragments thrown off the centre, in the hostile red, and
 ## still under a fifth of a second.
 const KILL_BURST_TIME: float = 0.22

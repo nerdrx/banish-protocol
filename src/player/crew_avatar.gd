@@ -208,7 +208,14 @@ const FP_HOLD_OFFSET: Vector3 = Vector3(0.028, 0.052, -0.030)
 ## (see the rigid-translation argument above) and every state that was tuned
 ## against them — rest, fire, look-down, wall-tuck — still resolves the same way.
 const FP_ARM_BONES: Array[String] = ["Right shoulder", "Left shoulder"]
-const FP_ARM_OFFSET: Vector3 = Vector3(0.150, 0.105, -0.010)
+## PT1 drops the vertical by 2 cm, 0.105 -> 0.085. Two reports arrived together
+## off the same frames — "the gun doesn't move with the camera" and "it reads as
+## pointing above the reticle" — and the second had a third, quieter half: the
+## hold sat a touch high in the frame. The convergence below does most of that
+## work (it takes the emitter 21 cm down), and this is the remainder: enough that
+## the receiver stops crowding the centre, small enough that the knuckles stay
+## on the bottom edge where M4.8 walked them to.
+const FP_ARM_OFFSET: Vector3 = Vector3(0.150, 0.085, -0.010)
 ## Chest yaw for the first-person hold, in radians.
 ##
 ## Translating the hold outward alone leaves the barrel parallel to the view axis
@@ -234,6 +241,132 @@ const FP_HOLD_YAW: float = 0.045
 ## a pale slab across a third of the frame. If the weapon needs to show its side,
 ## rotate the socket, not the torso.
 const FP_HOLD_CANT: float = 0.0
+## PT1 — the first-person hold PITCHES WITH THE LENS.
+##
+## The top complaint out of the first friend playtest was "the gun doesn't
+## properly move with the camera", and every scripted capture in this repo had
+## said the hold was fine, because no scripted capture had ever moved a mouse
+## vertically. `--gunlog` (Debug) measured it in a live session and the answer was
+## not subtle. The GRIP, in the lens's own frame, metres, as the player looks
+## around (a hold bolted to the lens holds all three numbers still):
+##
+##   lens pitch  -1.45 (full down)  ->  (0.27, +0.16, -0.20)
+##   lens pitch   0.00 (level)      ->  (0.27, -0.27, -0.21)
+##   lens pitch  +0.70              ->  (0.27, -0.44, +0.06)   BEHIND the lens
+##
+## Six hundred millimetres of travel, on a weapon held two hundred from the eye.
+##
+## The cause is structural. Yaw is free — the avatar is a child of the Player and
+## `rotate_y` in `_unhandled_input` turns them both on the same frame — but PITCH
+## lives on the `Head` node, which carries the camera and nothing else. The body
+## never pitched at all. Look up and the weapon sinks out of the bottom of the
+## world; look down and your own torso swings across the frame. A player reads
+## that, correctly, as a gun that is not attached to their view.
+##
+## The fix is the one every shooter uses, adapted to a rig where the arms are
+## real bones on a real body: the hold is **rigidly rotated about the lens** by
+## the lens's own pitch. Rotating a rigid body about a point is a rotation plus a
+## translation, and both are applied to the two SHOULDER bones — the same two
+## bones the outboard cheat already moves, for the same reason (they carry the
+## arms, the hands and the rifle, and no torso geometry at all). Everything below
+## them follows for free, so the two-handed grip survives by construction.
+##
+## `_hold_pitch` reads the live lens angle, written from `Player._process` on the
+## same frame the mouse moved it — never from the replicated pose, which is a
+## physics tick old and would reintroduce exactly the lag this is fixing.
+##
+## **One rotation, at one joint, and that is not a style choice.** Two obvious
+## refinements were built, measured and thrown away, and both failed the same way:
+##
+##   * splitting the pitch so the CHEST folds a quarter of it (a person looking at
+##     their own boots does bend) — but the chest folds about the sternum, not
+##     about the lens, so a quarter of the rotation escapes the compensation. The
+##     grip drifted 8 cm vertically and 21 cm in depth across the pitch range, and
+##     at a full look-up it ended 8 cm from the near plane and clipped away.
+##   * easing the follow off toward the pitch limits, to spare the shoulder seam —
+##     which reintroduces exactly the sliding the complaint is about, in the
+##     situation (looking at the floor, looking at the ceiling) where a player is
+##     most likely to be checking whether their weapon is still there.
+##
+## With the whole rotation at the compensated joint the hold is EXACT: measured
+## across the full ±1.45 rad of lens travel, the grip and the emitter each move
+## less than one millimetre. That is the number this constant is 1.0 for.
+const FP_PITCH_FOLLOW: float = 1.0
+
+## AIM CONVERGENCE — the barrel points AT the reticle, not over it.
+##
+## Second PT1 report, off the frames the pitch fix produced: "the gun reads as
+## pointing ABOVE the reticle — it should point AT it." Measured rather than
+## argued, with the hold's own instrument (`--gunlog`, camera-space metres at a
+## level view, before this constant existed):
+##
+##   grip     (0.258, -0.170, -0.188)
+##   emitter  (0.156, +0.071, -0.668)
+##   barrel    (-0.102, +0.241, -0.480) -> 25.9 deg UP and 10.7 deg inboard
+##
+## Twenty-six degrees of elevation on a weapon held two hundred millimetres from
+## the eye: the barrel line crossed the top of the frame while the shot landed on
+## the crosshair, so the weapon and its own beam visibly disagreed. That was
+## invisible before this milestone for the same reason everything else in this
+## file was — the socket the weapon was DRAWN on was not the pose the arms were
+## POSED in (see `_follow_hand`), so nobody had ever seen where the barrel really
+## pointed.
+##
+## The fix is the one every shooter uses, and the name is borrowed from the
+## gunnery it comes from: the barrel is not parallel to the sight line, it is
+## CONVERGED with it, meeting the aim ray at a chosen distance. Solved once, in
+## closed form, at the level view:
+##
+##   want   normalize((0, 0, -CONVERGE_DISTANCE) - grip)
+##   pitch  the rotation about the lens's RIGHT that lands the barrel's height
+##          on `want.y`                                               = -0.466
+##   yaw    the rotation about the lens's UP that then lands its bearing on
+##          `want`'s                                                  = -0.213
+##
+## Solved in that order and not as two independent differences, because the pair
+## is applied as `Yaw * Pitch` and a yaw does not change a direction's height
+## while a pitch very much changes its bearing. Taking each angle as its own
+## before-and-after difference is the obvious shortcut and it misses by 1.3
+## degrees — 27 cm at the convergence distance, which is a Scrubber's width.
+##
+## Re-solved once more after `AIM_ROLL` was zeroed in the build tool (the hold
+## re-poses when the weapon it is gripping stops being rolled), and the pair is
+## roll-free BY CONSTRUCTION: `Yaw * Pitch` about the lens's own up and right
+## produces no roll about the resulting forward axis — verified as well as argued,
+## because `--gunlog` now measures the weapon's roll relative to the lens directly
+## and it does not move when these two change.
+##
+## Once, and not per frame, because the pitch follow above made the whole hold
+## RIGID IN THE LENS'S FRAME: the geometry these numbers are derived from is now
+## the same at every look angle, which is exactly why the convergence holds at
+## the pitch extremes without a solver and without touching a wrist.
+##
+## The distance is a choice, not a measurement. Converge too near and the barrel
+## visibly crosses the sight line and points inboard of the reticle at range;
+## too far and it never quite arrives. Twelve metres is past the breaker's own
+## eight-metre reach and inside the range anything is legible at in this dark, so
+## the barrel is on the crosshair everywhere a shot can actually land.
+const CONVERGE_DISTANCE: float = 12.0
+const CONVERGE_YAW: float = -0.213
+const CONVERGE_PITCH: float = -0.466
+
+## Sway — the whisper of weight, and NEVER the attachment itself.
+##
+## The distinction is the whole lesson of this milestone. `ViewModel` (the
+## fallback rig) smooths the hold TOWARD the lens, which means during any fast
+## turn the weapon is somewhere the player did not put it. Here the hold is rigid
+## and the sway is a small additive offset laid on top of it: a hard flick still
+## ends with the weapon exactly where it belongs, having leaned into the turn on
+## the way. Amplitudes are in radians and deliberately tiny — this is a tool being
+## carried, not a scope being whipped around.
+const HOLD_SWAY_LAG: float = 16.0
+const HOLD_SWAY_YAW: float = 0.055
+const HOLD_SWAY_PITCH: float = 0.040
+## Angular rate, in rad/s, at which the sway offset saturates. A brisk turn is
+## ~3 rad/s; a flick is ten times that, and past saturation extra speed must not
+## buy extra lean or a fast player's weapon swings out of frame.
+const HOLD_SWAY_SATURATION: float = 7.0
+
 ## Weapon collision, the avatar's half. See `Player._update_weapon_tuck` for the
 ## probe and for why NULLVOID collides the weapon instead of rendering it through
 ## a second camera.
@@ -283,7 +416,11 @@ var _accent_colour: Color = DEFAULT_ACCENT
 ## tick it was captured on. See `_clip_rotation`.
 var _clip_rotations: Dictionary = {}
 var _clip_frame: int = -1
-var _hand: BoneAttachment3D = null
+## The weapon socket. A plain Node3D driven by `_follow_hand`, NOT a
+## BoneAttachment3D — see that function for the bug that cost this milestone an
+## afternoon.
+var _hand: Node3D = null
+var _hand_bone: int = -1
 var _eye: Node3D = null
 var _body_mesh: MeshInstance3D = null
 var _head_mesh: MeshInstance3D = null
@@ -314,6 +451,16 @@ const MUZZLE_FLASH_ENERGY: float = 2.6
 const MUZZLE_FLASH_MIN_INTERVAL: float = 0.34
 
 var _look: Vector2 = Vector2.ZERO
+## PT1. The live lens pitch and the lens's own position in the avatar's frame,
+## both written by the owning Player every rendered frame — see `set_lens`. The
+## hold is rotated about that point by that angle, which is what makes it track.
+var _hold_pitch: float = 0.0
+var _lens_local: Vector3 = Vector3(0.0, 1.62, -0.16)
+## Additive hold sway, chasing the lens's angular rate. See HOLD_SWAY_LAG.
+var _hold_sway: Vector2 = Vector2.ZERO
+var _last_hold_look: Vector2 = Vector2.ZERO
+var _pending_look: Vector2 = Vector2.ZERO
+var _has_hold_look: bool = false
 ## 0..1 weapon-collision tuck, written by the owning Player once a frame.
 var _tuck: float = 0.0
 var _speed: float = 0.0
@@ -369,12 +516,11 @@ func _build(colour: Color) -> void:
 			else:
 				push_warning("[CrewAvatar] no '%s' bone; the first-person hold "
 						% arm_name + "will be lopsided")
-		var hand: int = _skeleton.find_bone(HAND_BONE)
-		if hand >= 0:
-			_hand = BoneAttachment3D.new()
+		_hand_bone = _skeleton.find_bone(HAND_BONE)
+		if _hand_bone >= 0:
+			_hand = Node3D.new()
 			_hand.name = "HandSocket"
 			_skeleton.add_child(_hand)
-			_hand.bone_idx = hand
 
 	var player: AnimationPlayer = CreatureKit.find_player(_model)
 	CreatureKit.set_looping(player, PackedStringArray(["idle", "walk", "run"]))
@@ -513,8 +659,10 @@ func socket_breaker(colour: Color) -> void:
 func drive(delta: float, speed: float, heading: Vector3, down: float) -> void:
 	_speed = lerpf(_speed, speed, 1.0 - exp(-9.0 * delta))
 	_down = down
+	_advance_hold_sway(delta)
 	_choose_clip()
 	_track_head(delta, heading)
+	_follow_hand()
 
 	_since_full_flash += delta
 	_flash = maxf(_flash - delta, 0.0)
@@ -586,6 +734,11 @@ func _track_head(delta: float, heading: Vector3) -> void:
 	# Chest first: the lift has to land before the neck and head are posed
 	# relative to it, or the head-look fights the lean.
 	if _has_aim and _down < 0.5:
+		# PT1: how much lens pitch the hold takes, and how it is split between the
+		# chest fold and the shoulder rotation. Zero on a remote copy — a crewmate
+		# across the room keeps the honest pose, the same rule the outboard cheat
+		# has always followed.
+		var follow: float = _hold_pitch * FP_PITCH_FOLLOW if _first_person else 0.0
 		# The tuck cancels the first-person lift and then keeps going, so a player
 		# pressed against a wall ends up below the honest low ready rather than
 		# merely back at it.
@@ -608,10 +761,94 @@ func _track_head(delta: float, heading: Vector3) -> void:
 			# M4.8 dropped the rest height and left the two effects the same size.
 			# Only the outboard and forward travel comes back in.
 			reach.y = FP_ARM_OFFSET.y
-			for arm: int in _arm_bones:
-				_shift_bone(arm, reach)
+			_pitch_hold(reach, follow)
 	_aim_bone(_neck_bone, _look * NECK_SHARE)
 	_aim_bone(_head_bone, _look * (1.0 - NECK_SHARE))
+
+
+## Places the held-weapon assembly: converged on the crosshair, then rotated
+## rigidly about the LENS by `pitch`. `reach` is the outboard cheat this hold
+## already had.
+##
+## Two rigid transforms, composed, both landing on the two shoulder bones —
+## because rotating a rigid body about a point that is not its own origin is a
+## rotation plus a translation, and the shoulders are where this file is allowed
+## to apply both (they carry the arms, the hands and the rifle, and no torso
+## geometry). Everything below them follows for free, so the two-handed grip and
+## every wrist angle survive by construction: nothing here poses a wrist.
+##
+##   1. CONVERGENCE, about the grip. A fixed rotation that swings the barrel down
+##      and inboard until its axis meets the camera's aim ray. See CONVERGE_*.
+##   2. LENS PITCH, about the eye. E + R * (X - E) for every point X, which is
+##      what nails the whole assembly to the view. See FP_PITCH_FOLLOW.
+##
+## Order matters and this is the only order that works. The convergence is a fact
+## about the weapon's relationship to the LENS, so it has to be inside the lens
+## rotation — applied first in the level frame, then carried around by the pitch.
+## Applied the other way it would converge only at a level view and drift off the
+## reticle everywhere else.
+##
+## The shoulder's starting position is read back out of the skeleton rather than
+## derived from the rest pose, because the base pose is not the rest pose: the
+## chest carries the aim lift, the first-person yaw and the wall tuck, and every
+## one of those has already moved the shoulder before we get here. Reading the
+## answer is both shorter and immune to the next thing that poses the chest.
+func _pitch_hold(reach: Vector3, pitch: float) -> void:
+	if _arm_bones.is_empty():
+		return
+	var to_local: Transform3D = global_transform.affine_inverse() \
+			* _skeleton.global_transform
+	# The convergence, plus the sway riding on top of it. Both are expressed in
+	# the LENS's frame — at a level view that is the avatar's frame, and the pitch
+	# rotation below carries them into every other view unchanged.
+	var converge: Basis = Basis(Vector3.UP, CONVERGE_YAW + _hold_sway.x * HOLD_SWAY_YAW) \
+			* Basis(Vector3.RIGHT, CONVERGE_PITCH + _hold_sway.y * HOLD_SWAY_PITCH)
+	var lens: Basis = Basis(Vector3.RIGHT, pitch)
+	var total: Basis = lens * converge
+	var grip: Vector3 = _grip_local(to_local)
+	for arm: int in _arm_bones:
+		# Base pose first, so the read-back below sees the hold where the existing
+		# tuning put it.
+		_shift_bone(arm, reach)
+		var shoulder: Vector3 = to_local * _skeleton.get_bone_global_pose(arm).origin
+		# 1. swing about the grip, 2. swing the result about the lens.
+		var converged: Vector3 = grip + converge * (shoulder - grip)
+		var placed: Vector3 = _lens_local + lens * (converged - _lens_local)
+		_twist_bone(arm, total)
+		_shift_bone(arm, reach + placed - shoulder)
+
+
+## Where the breaker's own origin sits in the avatar's frame, THIS frame, derived
+## from the wrist bone rather than read off the socket node.
+##
+## The socket is only re-seated at the end of `drive()` (see `_follow_hand`), so
+## reading `_gun.global_position` here would pivot this frame's convergence about
+## last frame's grip — a lag of exactly the kind the rest of this file exists to
+## remove. The bone pose is current the moment it is asked for.
+func _grip_local(to_local: Transform3D) -> Vector3:
+	if _hand_bone < 0:
+		return _lens_local
+	return to_local * (_skeleton.get_bone_global_pose(_hand_bone)
+			* Transform3D(Basis(HAND_ROTATION), HAND_OFFSET)).origin
+
+
+## Composes an arbitrary world-space rotation onto a bone's clip pose.
+##
+## `_aim_bone`'s (yaw, pitch) pair cannot express this: the convergence and the
+## lens pitch are rotations about DIFFERENT axes applied in a fixed order, and
+## decomposing their product back into one yaw and one pitch is only exact when
+## one of them is zero. Every argument in `_aim_bone` about composing onto the
+## CLIP's pose rather than the live one applies here unchanged — see
+## `_clip_rotation`.
+func _twist_bone(bone: int, avatar_delta: Basis) -> void:
+	if bone < 0:
+		return
+	var body: Basis = global_transform.basis
+	var world: Basis = body * avatar_delta * body.inverse()
+	var parent: Basis = _parent_basis(bone)
+	var local: Basis = parent.inverse() * world * parent
+	_skeleton.set_bone_pose_rotation(bone,
+			local.get_rotation_quaternion() * _clip_rotation(bone))
 
 
 ## The basis a bone's pose is expressed in: its parent's pose, in world terms.
@@ -688,6 +925,37 @@ func _clip_rotation(bone: int) -> Quaternion:
 	return _clip_rotations[bone]
 
 
+## PT1. Where the lens is and where it is pointing, in the avatar's own frame,
+## written by the owning Player from `_process` — the SAME frame the mouse moved
+## it, which is the entire point. Reading the replicated `sync_pitch` instead
+## would pose the hold one physics tick behind the view it is supposed to be
+## bolted to, which is the lag half of the complaint this exists to answer.
+##
+## `look` is (yaw, pitch) for the sway; `lens_local` is the eye position the hold
+## is rotated about. Only the local first-person copy is ever told.
+func set_lens(look: Vector2, lens_local: Vector3) -> void:
+	_hold_pitch = look.y
+	_lens_local = lens_local
+	_last_hold_look = look if not _has_hold_look else _last_hold_look
+	_has_hold_look = true
+	_pending_look = look
+
+
+## The additive lean. Chases the lens's angular RATE (not its angle), saturates
+## early, and settles fast — see HOLD_SWAY_LAG for why this is an offset laid on
+## a rigid hold rather than a smoothing of the hold itself.
+func _advance_hold_sway(delta: float) -> void:
+	if not _first_person or delta <= 0.0:
+		return
+	var dyaw: float = wrapf(_pending_look.x - _last_hold_look.x, -PI, PI)
+	var dpitch: float = _pending_look.y - _last_hold_look.y
+	_last_hold_look = _pending_look
+	var want: Vector2 = Vector2(
+			clampf(dyaw / delta / HOLD_SWAY_SATURATION, -1.0, 1.0),
+			clampf(dpitch / delta / HOLD_SWAY_SATURATION, -1.0, 1.0))
+	_hold_sway = _hold_sway.lerp(want, 1.0 - exp(-HOLD_SWAY_LAG * delta))
+
+
 ## Weapon collision, 0 = clear, 1 = pressed against a wall. Written by the owning
 ## Player every frame; only the first-person copy does anything with it.
 func set_tuck(amount: float) -> void:
@@ -712,6 +980,54 @@ func fire() -> void:
 ## the eye bones. Null until the model is loaded.
 func eye() -> Node3D:
 	return _eye
+
+
+## Puts the weapon socket on the hand bone, AFTER this frame's pose is final.
+##
+## This replaces a `BoneAttachment3D`, and the reason is the second real bug PT1
+## turned up — the one behind "the hands looked cursed on the gun".
+##
+## `BoneAttachment3D` refreshes itself from the skeleton's `skeleton_updated`
+## signal, which fires when the skeleton processes its own update. Every pose this
+## file writes — the aim lift, the first-person yaw, the outboard shoulder cheat,
+## the wall tuck, and now the pitch follow — is written from `drive()`, i.e. from
+## `Player._process`, i.e. AFTER that update has already run for the frame; the
+## AnimationTree then overwrites the bones from its physics callback before the
+## next one. So the socket was never posed from the pose the ARMS were being
+## rendered with. Measured, with the pitch follow deliberately exaggerated to make
+## it visible: the wrist bone at (0.297, 1.298, -0.153) and the weapon it is
+## supposedly gripping at (0.281, 1.448, -0.349) — **25 cm apart**. Both hands are
+## posed onto a grip that is not where the weapon is, which is exactly what
+## "cursed, very bent" looks like from behind the lens.
+##
+## It was invisible before this milestone because every override this file wrote
+## was CONSTANT: a socket driven from a stale pose still converges on the right
+## answer when the right answer never changes. The moment the hold started
+## tracking a live mouse, the lag became the whole effect.
+##
+## A plain Node3D we position ourselves cannot drift: it is written at the end of
+## `drive()`, so the weapon is always socketed to the pose the same frame renders.
+func _follow_hand() -> void:
+	if _hand == null or not is_instance_valid(_hand) or _hand_bone < 0:
+		return
+	_hand.transform = _skeleton.get_bone_global_pose(_hand_bone)
+
+
+## World position of the breaker's own origin — the grip, not the barrel tip.
+## Read by `--gunlog`; see `Player.hold_world_point`.
+func hold_point() -> Vector3:
+	if _gun != null and is_instance_valid(_gun):
+		return _gun.global_position
+	return global_position
+
+
+## The weapon's own orientation in the world, so an instrument can ask what its
+## ROLL is relative to the lens rather than guessing from a picture. Identity
+## when there is no weapon, which reads as "no cant" and is the honest answer.
+func hold_basis() -> Basis:
+	if _gun != null and is_instance_valid(_gun):
+		return _gun.global_transform.basis.orthonormalized()
+	return global_transform.basis
 
 
 ## World position of the breaker's emitter, so the beam-lash leaves the rifle the
