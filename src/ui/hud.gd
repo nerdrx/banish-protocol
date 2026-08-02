@@ -104,6 +104,42 @@ const CRT_SHADER: Shader = preload("res://src/ui/crt.gdshader")
 @onready var _integrity_panel: Control = %IntegrityPanel
 @onready var _data_panel: Control = %DataPanel
 
+# --- M4.9: the quiet-instrument HUD -----------------------------------------
+## Integrity is a thin arc hugging the Cycles ring rather than a bar of its own —
+## the resting cluster is one gauge, and the arc surfaces on it only when you are
+## hurt. The old IntegrityPanel bar (`_integrity_fill`/`_integrity_label`) is
+## retired to `visible = false` in the scene; nothing drives it any more.
+@onready var _integrity_arc: ArcMeter = %IntegrityArc
+## The tiny persistent layer numeral the descent title fades back to.
+@onready var _layer_tag: Label = %LayerTag
+## The "BUFFERED DATA" caption — a surface-managed label that yields to its numeral.
+@onready var _data_caption: Label = %DataCaption
+
+## Every element that is not the resting cluster is a `UiFx.Surface`: hidden until
+## it is relevant, then faded. Constructed once, ticked every frame — see
+## `_update_surfaces`. The cluster itself (the Cycles ring, its numeral, the small
+## data readout, the tiny layer tag) is the only thing persistent by construction.
+var _srf_integrity: UiFx.Surface = null
+var _srf_kit: UiFx.Surface = null
+var _srf_crew: UiFx.Surface = null
+var _srf_title: UiFx.Surface = null
+var _srf_link: UiFx.Surface = null
+## Captions that show on first change then yield to the shape they name.
+var _srf_cycles_caption: UiFx.Surface = null
+var _srf_data_caption: UiFx.Surface = null
+var _srf_kit_label: UiFx.Surface = null
+## Which pool band the caption last poked on, so a steady drain does not keep the
+## label alive — only a band CROSSING (green->amber->red) re-surfaces it.
+var _cycles_band: int = -1
+## Last flare stock seen, so a change (throw / restock) surfaces the kit briefly.
+var _flare_seen: int = -1
+## Last buffered-data value seen, so a pickup or a spend surfaces its caption.
+var _carried_seen: int = -1
+## The demoted diagnostics line ("LISTEN HOST · N CREW", link latency). Out of the
+## gameplay HUD by default; a debug overlay, shown only under `Debug.hud_debug`
+## or surfaced briefly when the link itself is the relevant thing (bad latency).
+var _link_bad: bool = false
+
 var _ping_clock: float = 0.0
 var _notice_clock: float = 0.0
 var _pulse: float = 0.0
@@ -218,6 +254,10 @@ func _ready() -> void:
 	_invite_button.pressed.connect(func() -> void: SteamHub.open_invite_overlay())
 	_summary_button.pressed.connect(_on_leave_pressed)
 
+	# Before anything pokes one: _rebuild_crew and _on_layer_changed below both
+	# surface an element, and _process ticks them every frame after that.
+	_build_surfaces()
+
 	_pause.visible = false
 	_summary.visible = false
 	_notice_label.text = ""
@@ -292,6 +332,7 @@ func _process(delta: float) -> void:
 	_update_gate(delta)
 	_update_boot(delta)
 	_update_degradation()
+	_update_surfaces(delta)
 	_update_glitch(delta)
 	_update_crosshair(delta)
 	_update_parallax(delta)
@@ -519,14 +560,13 @@ func _update_crosshair(delta: float) -> void:
 ## is carrying — because that is the order a program shell would bring its own
 ## readouts up in, and it happens to scan left-to-right as well.
 func _begin_boot() -> void:
+	# Only the resting cluster compiles in. Everything else is a Surface now
+	# (M4.9): the roster, the descent title, the kit and the integrity arc are
+	# hidden until they are relevant, and their first pokes below (the crew
+	# rebuild, the arrival layer-change) surface them the moment the shell is up.
 	_add_boot(_crosshair, BOOT_CROSSHAIR_START)
-	_add_boot(_crew_cluster, 0.10)
 	_add_boot(_cycles_panel, BOOT_CYCLES_START)
-	_add_boot(_integrity_panel, 0.36)
-	_add_boot(_kit_panel, 0.46)
-	_add_boot(_data_panel, 0.56)
-	_add_boot(_layer_label, 0.66)
-	_add_boot(_link_label, 0.74)
+	_add_boot(_data_panel, 0.5)
 
 	_boot_line.text = "INSTANCE 0x%04X  ·  RUNTIME OK" % _instance_hash()
 	_boot_line.visible_ratio = 0.0
@@ -624,6 +664,19 @@ func _instance_hash() -> int:
 func _update_cycles(delta: float) -> void:
 	var fraction: float = Run.display_fraction()
 
+	# The pool caption ("SHARED CYCLES", "/ 100") shows on a band CROSSING — green
+	# to amber to red — then yields to the ring and the numeral. A steady drain
+	# must not keep the label lit, so it pokes on the transition only, never on the
+	# per-second tick of the number itself.
+	var band: int = 0
+	if fraction < Balance.CYCLES_WARNING_FRACTION:
+		band = 2
+	elif fraction < UiFx.RING_AMBER_FRACTION:
+		band = 1
+	if band != _cycles_band:
+		_cycles_band = band
+		_srf_cycles_caption.surface()
+
 	# Sprinting bills the pool at 2.5x (Balance.SPRINT_DRAIN_MULT). The ember is
 	# that surcharge made visible — read off the same speed the host bills from,
 	# not off a separate input bit, so what you see is what you are paying.
@@ -693,39 +746,50 @@ func _update_cycles(delta: float) -> void:
 func _on_siphon_taken(_index: int, _pool: float) -> void:
 	_pulse = 1.0
 	_surge_clock = 0.0
+	# A refill is a relevant change: let the pool caption say its piece and fade.
+	_srf_cycles_caption.surface()
 
 
+## The descent title. It announces the layer for ~2 s on arrival and then yields
+## to the tiny persistent numeral in the cluster — DESIGN.md: "layer title only on
+## descent". Retinted to the phosphor so the card belongs to the same instrument
+## as the rest of the shell rather than reading as leftover architecture teal.
 func _on_layer_changed(number: int) -> void:
 	_layer_label.text = "LAYER %02d" % number
+	_layer_label.add_theme_color_override("font_color", UiFx.SYSTEM)
+	_layer_tag.text = "L%02d" % number
+	_layer_tag.add_theme_color_override("font_color", COLOUR_DIM)
+	_srf_title.surface()
 
 
 # ---------------------------------------------------------------- integrity --
 
+## Integrity as a thin arc hugging the Cycles ring — hidden at full, surfacing on
+## any wound and holding through the slow regen until it has genuinely healed.
+## DESIGN.md's quiet rule: "integrity hidden at full". The old horizontal bar
+## (`_integrity_fill`/`_integrity_label`, now `visible = false` in the scene) is
+## retired; the arc's shape and the alert line carry what it used to spell out.
 func _update_integrity() -> void:
 	var value: float = Run.local_integrity()
 	# Against your OWN ceiling, which Checksum raises. A tier-5 program sitting at
-	# 150 integrity is at 67%, not at "150%", and the bar has to say so.
+	# 150 integrity is at 67%, not "150%", and the arc has to say so.
 	var fraction: float = clampf(
 			value / maxf(Run.integrity_max_of(Net.local_id()), 1.0), 0.0, 1.0)
-	var full: float = float(_integrity_fill.get_parent_control().size.x)
-	_integrity_fill.size.x = full * fraction
+	_integrity_arc.value = fraction
 
 	var colour: Color = COLOUR_OK
 	if fraction <= 0.0:
 		colour = COLOUR_WARNING
 	elif fraction < 0.4:
 		colour = COLOUR_AMBER
-	_integrity_fill.color = colour
+	_integrity_arc.fill_color = colour
 
-	if Run.local_corrupted():
-		_integrity_label.text = "CORRUPTED"
-		_integrity_label.add_theme_color_override("font_color", COLOUR_WARNING)
-	elif fraction <= 0.0:
-		_integrity_label.text = "DECOMPILED  ·  SPECTATING"
-		_integrity_label.add_theme_color_override("font_color", COLOUR_WARNING)
-	else:
-		_integrity_label.text = "INTEGRITY %d%%" % int(round(fraction * 100.0))
-		_integrity_label.add_theme_color_override("font_color", COLOUR_DIM)
+	# The heart of the rule: at full integrity the arc is simply not drawn.
+	# Anything less than full — or corrupted, or decompiled — surfaces it, and the
+	# per-frame poke keeps it up through the slow regen back to 100%, so a scar is
+	# legible right up until it has actually closed.
+	if fraction < 0.999 or Run.local_corrupted():
+		_srf_integrity.surface()
 
 
 # ------------------------------------------------------------------ channel --
@@ -791,6 +855,12 @@ func _update_kit() -> void:
 	var heavy: bool = Run.local_buffered() > int(Modules.local_loadout()["carry_free"])
 	_data_value.add_theme_color_override("font_color",
 			COLOUR_AMBER if heavy else UiFx.SYSTEM_HOT)
+	# The data caption ("BUFFERED DATA") flashes when the number moves — a chip
+	# magnetised in, a purchase spent — then yields to the numeral it labels.
+	if carried != _carried_seen:
+		if _carried_seen >= 0:
+			_srf_data_caption.surface()
+		_carried_seen = carried
 
 	var heat: float = 0.0
 	var locked: bool = false
@@ -804,6 +874,12 @@ func _update_kit() -> void:
 	_kit_label.text = "BREAKER  ·  OVERHEATED" if locked else "BREAKER"
 	_kit_label.add_theme_color_override("font_color",
 			COLOUR_WARNING if locked else COLOUR_DIM)
+	# DESIGN.md: "breaker heat only when hot". The whole kit — heat and flare pips
+	# — is hidden at rest and surfaces on relevance: the cutter running hot or
+	# locked out, or the flare stock changing (a throw, a restock at a cabinet).
+	if heat > 0.04 or locked:
+		_srf_kit.surface()
+		_srf_kit_label.surface()
 
 	var stock: int = Run.flares_of(Net.local_id())
 	var capacity: int = int(Modules.local_loadout()["flares"])
@@ -815,6 +891,10 @@ func _update_kit() -> void:
 		# darker version of the lit colour — it is the tube with nothing on it.
 		_pips[i].color = UiFx.SYSTEM_HOT if i < stock \
 				else Color(0.16, 0.11, 0.05, 0.85)
+	if stock != _flare_seen:
+		if _flare_seen >= 0:
+			_srf_kit.surface()
+		_flare_seen = stock
 
 
 # -------------------------------------------------------------------- alerts --
@@ -837,6 +917,9 @@ func _update_alerts() -> void:
 	if down.is_empty():
 		_alert_label.text = ""
 	else:
+		# A downed crewmate is ongoing relevance: the roster is re-poked every
+		# frame it lasts, so it holds until everyone is back up, then fades.
+		_srf_crew.surface()
 		var lines: PackedStringArray = PackedStringArray()
 		for peer: int in down:
 			var seconds: int = int(ceilf(Run.corruption_left(peer)))
@@ -864,6 +947,9 @@ func _update_alerts() -> void:
 func _on_damaged(from: Vector3) -> void:
 	_damage_flash = 1.0
 	_glitch = 1.0
+	# The integrity arc comes up the instant you are hit, not a frame later when
+	# the replicated value lands — a wound should register the moment it happens.
+	_srf_integrity.surface()
 	_damage_local = Vector2.ZERO
 	if _player == null or not is_instance_valid(_player):
 		return
@@ -904,13 +990,20 @@ func _update_damage(delta: float) -> void:
 ## readout (the chromatic split — cheaper and sharper than a per-control shader
 ## on a Label), and the list of clusters that jump.
 func _install_glitch_rig() -> void:
-	_clusters = [_crew_cluster, _cycles_panel, _integrity_panel, _kit_panel, _data_panel]
+	# IntegrityPanel is retired (M4.9): integrity is the arc on the ring now, and it
+	# jumps with the CyclesPanel it lives inside — there is no separate cluster to
+	# shake any more.
+	_clusters = [_crew_cluster, _cycles_panel, _kit_panel, _data_panel]
 	_capture_cluster_homes()
 
 	_cycles_ghosts = _make_ghosts(_cycles_value)
 	_data_ghosts = _make_ghosts(_data_value)
 
-	_flicker_labels = [_cycles_caption, _kit_label, _integrity_label, _cycles_cap]
+	# The captions are surface-managed now — `_update_surfaces` owns their
+	# modulate.a — so the degrade flicker must not also write it or the two fight.
+	# Degradation still reads loudly on the specks, the tube's tearing and the
+	# ring's burnt ticks; a blinking caption was always the least of it.
+	_flicker_labels = []
 
 
 func _capture_cluster_homes() -> void:
@@ -971,7 +1064,12 @@ func _update_glitch(delta: float) -> void:
 			return
 		_glitch = maxf(_glitch - delta / UiFx.GLITCH_TIME, 0.0)
 
-	var shift: float = _glitch * UiFx.GLITCH_SHIFT
+	# SAFETY (a11y): the flinch's positional jump and chromatic shear are small-area
+	# and brief (HUD-only, ~0.2 s), so they hold with Reduced Flashing OFF — but
+	# they are a new M4.9 flash source, so they scale by the same global switch and
+	# go still under Reduced Flashing. The callsign corruption below is text, not a
+	# flash, and is left alone.
+	var shift: float = _glitch * UiFx.GLITCH_SHIFT * A11y.flash_scale
 	var tick: float = floor(UiFx.clock() * 45.0)
 	for i: int in _clusters.size():
 		var jump: Vector2 = Vector2(
@@ -989,7 +1087,7 @@ func _split(ghosts: Array[Label], source: Label) -> void:
 	# hashed per flinch rather than fixed, so two hits in a row do not shear
 	# identically — a repeated identical artefact reads as an animation.
 	var direction: float = 1.0 if UiFx.hash01(floor(UiFx.clock() * 5.0)) < 0.5 else -1.0
-	var offset: float = _glitch * UiFx.GLITCH_SLIP * direction
+	var offset: float = _glitch * UiFx.GLITCH_SLIP * direction * A11y.flash_scale
 	for i: int in ghosts.size():
 		var ghost: Label = ghosts[i]
 		if ghost.text != source.text:
@@ -1068,13 +1166,11 @@ func _update_degradation() -> void:
 func _install_depth() -> void:
 	_tilt(_crew_cluster, UiFx.CLUSTER_TILT_DEG)
 	_tilt(_cycles_panel, -UiFx.CLUSTER_TILT_DEG)
-	_tilt(_integrity_panel, -UiFx.CLUSTER_TILT_DEG)
 	_tilt(_kit_panel, -UiFx.CLUSTER_TILT_DEG)
 	_tilt(_data_panel, UiFx.CLUSTER_TILT_DEG)
 
 	_sheen(%CrewSheen, 0.55)
 	_sheen(%CyclesSheen, -0.4)
-	_sheen(%IntegritySheen, -0.35)
 	_sheen(%KitSheen, -0.35)
 	_sheen(%DataSheen, 0.4)
 
@@ -1084,10 +1180,11 @@ func _install_depth() -> void:
 ## The readouts worth corrupting when the pool runs dry. Re-taken on resize with
 ## the cluster homes — same geometry, same staleness.
 func _capture_speck_regions() -> void:
+	# Only the persistent readouts carry dead pixels. The kit and the integrity arc
+	# are hidden most of the time, and specks drawn over an empty corner read as a
+	# bug rather than as decay.
 	_specks.regions = [
 		Rect2(_cycles_panel.position, _cycles_panel.size),
-		Rect2(_kit_panel.position, _kit_panel.size),
-		Rect2(_integrity_panel.position, _integrity_panel.size),
 		Rect2(_data_panel.position, _data_panel.size),
 	]
 
@@ -1137,6 +1234,126 @@ func _update_parallax(delta: float) -> void:
 	_root.position = _parallax.limit_length(UiFx.PARALLAX_PIXELS * 1.6)
 
 
+# ---------------------------------------------------------------- surfacing --
+#
+# The quiet-instrument rule (M4.9), made to run. The resting cluster — the Cycles
+# ring, its numeral, the small buffered-data readout, the tiny layer tag — is
+# always up. Every other element is a `UiFx.Surface`: hidden until it earns a
+# frame, then faded. The pokes live in the update functions above (integrity while
+# hurt, the kit while hot, a caption on a change, the roster on a crew change, the
+# title on descent); this is where the alphas are ticked and where a capture pins
+# or clears them so a `--hud-state` shot lands the same picture every machine.
+
+func _build_surfaces() -> void:
+	_srf_integrity = UiFx.Surface.new()
+	_srf_kit = UiFx.Surface.new()
+	_srf_crew = UiFx.Surface.new(UiFx.ROSTER_HOLD)
+	_srf_title = UiFx.Surface.new(UiFx.TITLE_HOLD, UiFx.TITLE_RISE, UiFx.TITLE_FALL)
+	_srf_link = UiFx.Surface.new()
+	_srf_cycles_caption = UiFx.Surface.new(
+			UiFx.CAPTION_HOLD, UiFx.SURFACE_RISE, UiFx.CAPTION_FALL)
+	_srf_data_caption = UiFx.Surface.new(
+			UiFx.CAPTION_HOLD, UiFx.SURFACE_RISE, UiFx.CAPTION_FALL)
+	_srf_kit_label = UiFx.Surface.new(
+			UiFx.CAPTION_HOLD, UiFx.SURFACE_RISE, UiFx.CAPTION_FALL)
+	# Everything surface-managed starts dark. The .tscn already zeroes the two
+	# top-level panels' modulate; the arc and the labels are zeroed here so the
+	# very first frame (before the first tick) does not flash them.
+	_integrity_arc.modulate.a = 0.0
+	_kit_panel.modulate.a = 0.0
+	_crew_cluster.modulate.a = 0.0
+	_layer_label.modulate.a = 0.0
+	_link_label.modulate.a = 0.0
+	_cycles_caption.modulate.a = 0.0
+	_cycles_cap.modulate.a = 0.0
+	_data_caption.modulate.a = 0.0
+	_kit_label.modulate.a = 0.0
+
+
+## Ticks every surface and writes its alpha. Capture pins run first, so a
+## `--hud-state` shot forces exactly the elements it is about and clears the rest
+## — the picture never depends on which frame the shutter caught a fade on.
+func _update_surfaces(delta: float) -> void:
+	_apply_surface_capture()
+
+	_crew_cluster.modulate.a = _srf_crew.tick(delta)
+	_layer_label.modulate.a = _srf_title.tick(delta)
+	_kit_panel.modulate.a = _srf_kit.tick(delta)
+	_integrity_arc.modulate.a = _srf_integrity.tick(delta)
+	_link_label.modulate.a = _srf_link.tick(delta)
+
+	# Captions ride inside a cluster that is at full opacity once booted, so their
+	# alpha is the surface's directly. The pool caption and its "/ 100" cap move
+	# together — one label, told in two Labels.
+	var cap: float = _srf_cycles_caption.tick(delta)
+	_cycles_caption.modulate.a = cap
+	_cycles_cap.modulate.a = cap
+	_data_caption.modulate.a = _srf_data_caption.tick(delta)
+	_kit_label.modulate.a = _srf_kit_label.tick(delta)
+
+
+## The capture path for the surfacing layer. Each `--hud-state` names the elements
+## it is a portrait of and silences the rest, the same discipline the boot and
+## damage flinches already use. Values faked purely for the shutter (a wound the
+## run did not take, a heat the breaker is not making) are set here and re-set
+## every frame, so the picture is stable and the HUD stays a pure observer of Run.
+func _apply_surface_capture() -> void:
+	match Debug.hud_state:
+		"resting":
+			# The headline shot: genuinely near-empty. Only the resting cluster
+			# survives — ring, numeral, tiny layer tag.
+			_srf_integrity.clear()
+			_srf_kit.clear()
+			_srf_crew.clear()
+			_srf_title.clear()
+			_srf_link.clear()
+			_srf_cycles_caption.clear()
+			_srf_data_caption.clear()
+			_srf_kit_label.clear()
+		"descent":
+			# The layer announcing itself: the big title up, the pool caption with
+			# it, everything else quiet.
+			_srf_title.pin()
+			_srf_cycles_caption.pin()
+			_srf_crew.clear()
+			_srf_kit.clear()
+			_srf_integrity.clear()
+		"combat":
+			# The breaker running hot. The kit surfaces and the heat bar is faked
+			# near lockout for the shot — the same standing as the damage arc's
+			# faked direction.
+			_srf_kit.pin()
+			_srf_kit_label.pin()
+			_srf_title.clear()
+			_srf_crew.clear()
+			var track: Control = _heat_fill.get_parent_control()
+			_heat_fill.size.x = float(track.size.x) * 0.82
+			_heat_fill.color = COLOUR_AMBER
+			_kit_label.text = "BREAKER"
+			_kit_label.add_theme_color_override("font_color", COLOUR_DIM)
+		"damaged":
+			# Integrity surfaced and reading a wound. The arc value is faked the
+			# same way the flinch fakes its direction — no shutter lands inside a
+			# real hit by luck.
+			_srf_integrity.pin()
+			_integrity_arc.value = 0.58
+			_integrity_arc.fill_color = COLOUR_AMBER
+			_srf_title.clear()
+			_srf_crew.clear()
+			_srf_kit.clear()
+		"full", "warn", "low":
+			# Pool-level portraits (the settled HUD at N% Cycles). These are resting
+			# shots at a pool level, so the transient elements are silenced and the
+			# integrity arc and pool caption keep their natural logic — at a healthy
+			# pool the arc stays hidden, and the band crossing surfaces the caption.
+			_srf_crew.clear()
+			_srf_title.clear()
+			_srf_kit.clear()
+			_srf_link.clear()
+		_:
+			pass
+
+
 # --------------------------------------------------------------------- crew --
 
 func _rebuild_crew() -> void:
@@ -1148,6 +1365,11 @@ func _rebuild_crew() -> void:
 	ids.sort()
 	for id: int in ids:
 		_crew_list.add_child(_crew_row(int(id)))
+	# The roster surfaces on any change — a join, a leave, a deletion — then fades.
+	# DESIGN.md: "roster only on change". Guarded because Net.crew_changed can
+	# arrive before _build_surfaces on a pathological early packet.
+	if _srf_crew != null:
+		_srf_crew.surface()
 	_refresh_link()
 
 
@@ -1223,21 +1445,39 @@ func _refresh_link() -> void:
 		else:
 			tag.text = "%d ms" % Net.ping_ms(id)
 
+	# The diagnostics line ("LISTEN HOST · N CREW", link latency, OFFLINE) is
+	# demoted out of the gameplay HUD — DESIGN.md M4.9: "demote debug-flavored
+	# lines out of the gameplay HUD (keep in a debug overlay)". It shows
+	# continuously only under `Debug.hud_debug`; otherwise it stays dark and
+	# surfaces on its own merit — a link going bad is worth a word, "you are the
+	# host" is not. The alpha is driven by `_srf_link` in `_update_surfaces`.
 	if not Net.is_online:
-		_link_label.text = "OFFLINE"
+		if Debug.hud_debug:
+			_link_label.text = "OFFLINE"
+			_link_label.add_theme_color_override("font_color", COLOUR_DIM)
+			_srf_link.surface()
+		else:
+			_link_label.text = ""
 		return
 
-	if multiplayer.is_server():
-		_link_label.text = "LISTEN HOST  ·  %d CREW" % Net.crew.size()
+	var host: bool = multiplayer.is_server()
+	var ping: int = 0 if host else Net.ping_ms(1)
+	var text: String = "LISTEN HOST  ·  %d CREW" % Net.crew.size() if host \
+			else "LINK %d ms" % ping
+	var quality: Color = UiFx.SYSTEM
+	if not host and ping > 120:
+		quality = COLOUR_WARNING
+	elif not host and ping > 60:
+		quality = COLOUR_AMBER
+	_link_label.add_theme_color_override("font_color", quality)
+
+	# Re-poked every ping tick (0.5 s, inside the surface hold) so the overlay
+	# holds solid while the debug flag is on; a bad link surfaces for its own sake.
+	if Debug.hud_debug or (not host and ping > 120):
+		_link_label.text = text
+		_srf_link.surface()
 	else:
-		var ping: int = Net.ping_ms(1)
-		_link_label.text = "LINK %d ms" % ping
-		var quality: Color = UiFx.SYSTEM
-		if ping > 120:
-			quality = Color(0.95, 0.45, 0.4)
-		elif ping > 60:
-			quality = Color(0.95, 0.75, 0.35)
-		_link_label.add_theme_color_override("font_color", quality)
+		_link_label.text = ""
 
 
 # ----------------------------------------------------------- injection gate --

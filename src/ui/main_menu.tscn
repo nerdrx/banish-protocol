@@ -121,7 +121,7 @@ theme_override_colors/font_outline_color = Color(0.24, 0.62, 0.95, 0.28)
 theme_override_constants/outline_size = 10
 theme_override_fonts/font = ExtResource("3_title")
 theme_override_font_sizes/font_size = 42
-text = "LIMBO PROTOCOL"
+text = "BANISH PROTOCOL"
 horizontal_alignment = 1
 
 [node name="AccentBar" type="ColorRect" parent="Margin/Column"]

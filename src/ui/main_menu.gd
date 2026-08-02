@@ -186,6 +186,11 @@ func _open_console(returning: bool) -> void:
 		_dissolve_target = 0.55
 	_apply_dissolve()
 
+	# Capture hook: the first-launch safety warning is otherwise reachable only on a
+	# real, un-automated first launch. `--hud-state a11ywarn` photographs it.
+	if Debug.hud_state == "a11ywarn":
+		_show_photosensitivity_warning.call_deferred()
+
 	# A capture of the menu must be of the *finished* menu, and an automated run
 	# must never sit through a reveal it did not ask for.
 	if Debug.automated:
@@ -196,7 +201,91 @@ func _open_console(returning: bool) -> void:
 		for label: Label in _reveal_labels:
 			label.visible_ratio = 1.0
 		return
+	# SAFETY-CRITICAL (limbo-a11y): the first-launch photosensitivity caution, shown
+	# once before any animated menu content is legible, offering Reduced Flashing at
+	# equal prominence. Skipped under automation (returned above) so a capture is
+	# never of the warning. Deferred so the menu finishes laying out first.
+	if not A11y.warning_ack:
+		_show_photosensitivity_warning.call_deferred()
 	_reveal_clock = 0.0
+
+
+## SAFETY-CRITICAL (limbo-a11y 01-photosensitivity). The first-launch caution.
+##
+## Built in code as a CanvasLayer above everything, deliberately WITHOUT the CRT
+## tube or any glitch driver — the one screen in the game that must never flash is
+## the one warning about flashing. The menu's animated backdrop is frozen while it
+## is up (`set_process(false)`) and hidden under a near-opaque plate, so nothing
+## strobes behind it either. Two buttons of EQUAL weight — the safe option is not a
+## secondary link. Shown once (A11y.warning_ack); a fuller settings pass will make
+## it reachable again and add the standing toggle.
+func _show_photosensitivity_warning() -> void:
+	set_process(false)  # freeze the ticker and console sweep behind the plate
+
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.name = "PhotosensitivityWarning"
+	layer.layer = 200
+	add_child(layer)
+
+	var plate: ColorRect = ColorRect.new()
+	plate.set_anchors_preset(Control.PRESET_FULL_RECT)
+	plate.color = Color(0.015, 0.015, 0.022, 0.985)
+	plate.mouse_filter = Control.MOUSE_FILTER_STOP  # swallows input to the menu behind
+	layer.add_child(plate)
+
+	var center: CenterContainer = CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	plate.add_child(center)
+
+	var column: VBoxContainer = VBoxContainer.new()
+	column.custom_minimum_size = Vector2(560.0, 0.0)
+	column.add_theme_constant_override("separation", 18)
+	center.add_child(column)
+
+	var title: Label = Label.new()
+	title.text = "PHOTOSENSITIVITY WARNING"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 24)
+	title.add_theme_color_override("font_color", UiFx.WARNING)
+	column.add_child(title)
+
+	var body: Label = Label.new()
+	body.text = "This game contains flashing lights, strobing, and rapid glitch " \
+			+ "effects that may affect players with photosensitive epilepsy.\n\n" \
+			+ "Reduced Flashing softens these effects well below the safety " \
+			+ "threshold. You can change this at any time in settings."
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_theme_font_size_override("font_size", 15)
+	body.add_theme_color_override("font_color", UiFx.TEXT)
+	column.add_child(body)
+
+	var buttons: HBoxContainer = HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 20)
+	column.add_child(buttons)
+
+	var reduce: Button = Button.new()
+	reduce.text = "ENABLE REDUCED FLASHING"
+	reduce.custom_minimum_size = Vector2(250.0, 46.0)
+	buttons.add_child(reduce)
+
+	var cont: Button = Button.new()
+	cont.text = "CONTINUE"
+	cont.custom_minimum_size = Vector2(250.0, 46.0)
+	buttons.add_child(cont)
+
+	# One dismissal path, both buttons acknowledge so it never re-shows; only the
+	# left one also flips the switch on. Restores the menu's animation on close.
+	var dismiss: Callable = func(enable: bool) -> void:
+		if enable:
+			A11y.set_reduced_flashing(true)
+		A11y.acknowledge_warning()
+		layer.queue_free()
+		set_process(true)
+	reduce.pressed.connect(dismiss.bind(true))
+	cont.pressed.connect(dismiss.bind(false))
+	reduce.grab_focus.call_deferred()
 
 
 func _process(delta: float) -> void:
@@ -863,7 +952,7 @@ func _fill_lobby_list(lobbies: Array) -> void:
 		_lobby_select.add_item(String(entry.get("name", "CREW")).to_upper())
 	var empty: bool = lobbies.is_empty()
 	if empty:
-		_lobby_select.add_item("NO FRIENDS RUNNING LIMBO PROTOCOL")
+		_lobby_select.add_item("NO FRIENDS RUNNING BANISH PROTOCOL")
 	_lobby_select.disabled = empty
 	_steam_join_button.disabled = empty
 

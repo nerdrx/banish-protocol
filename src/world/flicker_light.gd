@@ -53,13 +53,27 @@ static func level(which: Mode, t: float, offset: float) -> float:
 			var a: float = sin(t * 7.3 + offset)
 			var b: float = sin(t * 2.17 + offset * 1.7)
 			var alive: float = smoothstep(-0.55, -0.2, a * 0.6 + b * 0.4)
-			var k: float = 0.08 + 0.92 * alive
-			# One hard strobe per dropout as it re-strikes.
-			if alive > 0.02 and alive < 0.25:
-				k += 0.7 * float(int(t * 40.0) % 2)
-			return k
+			# SAFETY-CRITICAL (a11y #6). The old re-strike was `+= 0.7 * (int(t*40)
+			# % 2)` — a WORLD LIGHT strobing at 20 Hz at +70%, a WCAG 2.3.1 seizure
+			# risk. Now it is a SINGLE soft overshoot keyed to the (slow) recovery
+			# ENVELOPE, not to a fast time strobe: brightest as the fixture comes
+			# back, settling to full, so `k` rises monotonically and there is exactly
+			# one flash per dropout — bounded by the 7.3 rad/s beat (~1.2 Hz), far
+			# under 3 Hz, and this holds with Reduced Flashing OFF. `--selftest`
+			# measures the real peak rate. A11y.flash_scale removes the overshoot in
+			# Reduced Flashing, leaving only the dim/recover envelope.
+			var strike: float = smoothstep(0.05, 0.35, alive) * (1.0 - alive)
+			return 0.08 + 0.92 * alive + 0.30 * strike * A11y.flash_scale
 		Mode.ARC:
-			return 0.55 + 0.45 * absf(sin(t * 21.0 + sin(t * 6.1) * 2.0 + offset))
+			# SAFETY-CRITICAL (a11y #7). Was `0.55 + 0.45*absf(sin(t*21 + sin(6.1t)*2))`
+			# — the base AND the frequency-modulation drove the instantaneous rate to
+			# ~6.7 Hz at 45% swing on a world light. Now the phase advances at most
+			# 8.5 rad/s (base 7.0 + a gentle 1.5 rad/s wobble), so the rectified flash
+			# rate peaks at 8.5/PI ~= 2.7 Hz — under 3 Hz BY CONSTRUCTION — and the
+			# swing is capped to 0.2 peak-to-peak. The base stays lit so a calmed
+			# fixture reads as a gentle idle, never darkness.
+			var amp: float = 0.20 * A11y.flash_scale
+			return 0.80 + amp * (absf(sin(t * 7.0 + sin(t * 3.0) * 0.5 + offset)) - 0.5)
 		Mode.ALERT_PULSE:
 			var phase: float = fmod(t * 0.75 + offset, 1.0)
 			return 0.15 + 0.85 * smoothstep(0.0, 0.08, phase) \

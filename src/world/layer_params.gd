@@ -22,6 +22,20 @@ static func of(layer_number: int) -> Dictionary:
 	# 0 at layer 1, 1.0 at DEPTH_FLOOR and beyond.
 	var depth: float = clampf(float(n - 1) / float(DEPTH_FLOOR - 1), 0.0, 1.0)
 
+	# M4.9 (balance lab): shard value grows linearly to the depth floor, then
+	# LOGARITHMICALLY past it. The old `1 + (n-1)*0.35` was linear and unbounded,
+	# so deep hauls ran away (a layer-40 chip was worth 14x a surface one and still
+	# climbing), which made "one more ring" strictly dominant past ~20 rather than
+	# a gamble. The two branches are equal at n=DEPTH_FLOOR (both 1 + 13*0.35 =
+	# 5.55), so the curve is continuous and IDENTICAL at and below layer 14; only
+	# the deep-layer tail is tamed. Still a pure function of n, no clamp on depth —
+	# this is the one economy knob that must keep rising, just slower.
+	var data_mult: float
+	if n <= DEPTH_FLOOR:
+		data_mult = 1.0 + float(n - 1) * 0.35
+	else:
+		data_mult = 1.0 + 13.0 * 0.35 * (1.0 + log(1.0 + float(maxi(n - DEPTH_FLOOR, 0)) / 8.0))
+
 	return {
 		"layer": n,
 		"depth": depth,
@@ -48,10 +62,14 @@ static func of(layer_number: int) -> Dictionary:
 		"height_range": Vector2(lerpf(4.2, 3.4, depth), lerpf(7.0, 5.0, depth)),
 
 		# --- M3 hooks (defined, not yet consumed) -------------------------
-		"antivirus_budget": 2 + int(round(depth * 10.0)),
+		# M4.9 (balance lab): base 2 -> 4. The director reserves a Scrubber floor
+		# out of this now (see AntivirusDirector._purchase), so the surface layers
+		# need a couple more points of budget to still field the Sentinel they used
+		# to plus the reserved pack; +2 base keeps layers 1-6 feeling identical.
+		"antivirus_budget": 4 + int(round(depth * 10.0)),
 		"scrubber_speed": lerpf(1.0, 1.55, depth),
 		"sentinel_count": 0 if n < 3 else 1 + int(depth * 2.0),
-		"data_multiplier": 1.0 + float(n - 1) * 0.35,
+		"data_multiplier": data_mult,
 		# What the Compiler on this layer will sell you (M4). Four layers per
 		# tier, so tier 5 is stocked from layer 17 down — or from the layer-15
 		# sanctuary, which stocks one above its layer. Deliberately NOT tied to

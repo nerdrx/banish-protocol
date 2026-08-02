@@ -246,6 +246,11 @@ var hud_state: String = ""
 ## spinning up, half the readouts have not resolved, and the self-test line is
 ## mid-type. Later than this and it just looks like the finished HUD.
 var hud_boot_phase: float = 0.35
+## `--hud-debug`. Restores the diagnostics line the quiet-instrument HUD (M4.9)
+## demotes out of gameplay ("LISTEN HOST · N CREW", link latency, OFFLINE) as a
+## standing debug overlay. Read by Hud._refresh_link. Off means the line stays
+## dark and only surfaces on its own merit (a link actually going bad).
+var hud_debug: bool = false
 
 # --- M4 modules / economy ----------------------------------------------------
 ## `--modules`, applied to Modules once the autoloads are standing.
@@ -293,6 +298,9 @@ var _has_forced_color: bool = false
 
 var _dump_seed: int = 0
 var _dump_layer: int = 1
+## `--tailprobe WHICH`. Which creature the spring-tail inspection stages.
+var _tail_which: String = "sentinel"
+var _last_probe_t: float = 0.0
 ## `--steamjoin` target.
 var _lobby_id: int = 0
 
@@ -374,6 +382,12 @@ func _ready() -> void:
 		_stay_out_of_the_way()
 	if _mode == "dump":
 		_dump_layer_graph.call_deferred()
+		return
+	if _mode == "selftest":
+		_balance_selftest.call_deferred()
+		return
+	if _mode == "tailprobe":
+		_run_tail_probe.call_deferred()
 		return
 	if _mode.is_empty() and screenshot_path.is_empty() and auto_quit_after <= 0.0 \
 			and not steam_selftest:
@@ -558,6 +572,8 @@ func _parse_args(args: PackedStringArray) -> void:
 					i += 1
 					hud_boot_phase = clampf(args[i].to_float(), 0.0, 1.0)
 				_apply_hud_state()
+			"--hud-debug":
+				hud_debug = true
 			"--log-ai":
 				log_ai = true
 			"--log-fps":
@@ -658,6 +674,16 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
 					i += 1
 					_flare_delay = args[i].to_float()
+			"--selftest":
+				_mode = "selftest"
+			"--tailprobe":
+				# Dev inspection for the M4.9 spring tails: stage one creature on a
+				# lit turntable-less side view so the resting sag can be judged and
+				# tuned. Pair with `--screenshot PATH`.
+				_mode = "tailprobe"
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_tail_which = args[i]
 			"--dumplayer":
 				_mode = "dump"
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
@@ -741,7 +767,12 @@ func _apply_hud_state() -> void:
 			start_cycles = 45.0
 		"low":
 			start_cycles = 10.0
-		"boot", "damage", "debrief", "decompile", "refused", "compiling":
+		"boot", "damage", "debrief", "decompile", "refused", "compiling", \
+				"resting", "descent", "combat", "damaged", "a11ywarn":
+			# M4.9 quiet-instrument capture states. The pool stays full — these are
+			# portraits of the resting HUD, the descent card and a hot breaker, not
+			# of a drained pool — and the surfacing pins in Hud._apply_surface_capture
+			# fake whatever the run itself is not doing (a wound, breaker heat).
 			pass
 		_:
 			push_warning("[Debug] unknown --hud-state '%s'" % hud_state)
@@ -881,6 +912,224 @@ func _pick_color(fallback_index: int) -> Color:
 	return GameState.local_color if fallback_index == 0 \
 			else GameState.DEFAULT_COLORS[
 					fallback_index % GameState.DEFAULT_COLORS.size()]
+
+
+# ------------------------------------------------------------------ selftest --
+
+## `--selftest`: headless invariant checks for the balance numbers that a
+## determinism dump cannot see (they are pure sim-time scalars). Prints one line
+## per check and quits non-zero if any fail, so a reviewer — or CI — can gate on
+## `godot --headless --path . -- --selftest`. Added in M4.9 for the sprint-billing
+## invariant the SPRINT_BILLING_SPEED bump depends on.
+func _balance_selftest() -> void:
+	var failures: int = 0
+
+	# The sprint-billing invariant: a player walking flat-out with a maxed Servos
+	# track must stay UNDER SPRINT_BILLING_SPEED, or merely walking would bill the
+	# pool at the sprint rate. WALK_SPEED and the Servos ceiling are the two numbers
+	# that fight; this asserts the margin the M4.9 retune (5.4 -> 6.0) restored.
+	var servo_moves: Array = Balance.MODULES["servos"]["move"]
+	var max_move: float = float(servo_moves[servo_moves.size() - 1])
+	var max_walk: float = Player.WALK_SPEED * max_move
+	if max_walk < Balance.SPRINT_BILLING_SPEED:
+		print("[SelfTest] PASS  sprint-billing: max walk %.3f (WALK %.1f x Servos %.2f) < billing %.2f (margin %.3f)" % [
+			max_walk, Player.WALK_SPEED, max_move, Balance.SPRINT_BILLING_SPEED,
+			Balance.SPRINT_BILLING_SPEED - max_walk])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  sprint-billing: max walk %.3f >= billing %.2f" % [
+			max_walk, Balance.SPRINT_BILLING_SPEED])
+
+	# And the converse: a real sprint must always bill. The slowest a sprint moves
+	# (no Servos, unstarved) has to clear the threshold, or sprinting could be free.
+	if Player.SPRINT_SPEED > Balance.SPRINT_BILLING_SPEED:
+		print("[SelfTest] PASS  sprint-bills: sprint %.2f > billing %.2f" % [
+			Player.SPRINT_SPEED, Balance.SPRINT_BILLING_SPEED])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  sprint-bills: sprint %.2f <= billing %.2f" % [
+			Player.SPRINT_SPEED, Balance.SPRINT_BILLING_SPEED])
+
+	# SAFETY-CRITICAL (limbo-a11y 01-photosensitivity): flash-rate caps. Measures
+	# the flicker curves that drive WORLD LIGHTS at their loudest (Reduced Flashing
+	# OFF — A11y.flash_scale is 1.0 here, the ship-gate worst case) and asserts the
+	# fastest pair of consecutive flashes stays at or under 3 Hz (WCAG 2.3.1). This
+	# is the "frame-rate-of-flash" measurement; the old DYING (20 Hz) and ARC
+	# (~6.7 Hz) curves would fail it, which is the point.
+	for probe: Dictionary in [
+			{"m": FlickerLight.Mode.DYING, "n": "DYING"},
+			{"m": FlickerLight.Mode.ARC, "n": "ARC"}]:
+		var meas: Dictionary = _measure_flash_hz(int(probe["m"]))
+		var hz: float = float(meas["peak_hz"])
+		var amp: float = float(meas["max_amp"])
+		if hz <= 3.0:
+			print("[SelfTest] PASS  flash-rate %-5s: peak %.2f Hz <= 3.0 Hz (max flash amp %.2f)" % [
+				String(probe["n"]), hz, amp])
+		else:
+			failures += 1
+			printerr("[SelfTest] FAIL  flash-rate %-5s: peak %.2f Hz > 3.0 Hz (WCAG 2.3.1)" % [
+				String(probe["n"]), hz])
+
+	print("[SelfTest] %d check(s) failed" % failures)
+	get_tree().quit(1 if failures > 0 else 0)
+
+
+## Densely samples a `FlickerLight` curve and reports the fastest flash rate in it
+## and the largest flash amplitude. A "flash" is a rise of at least the WCAG
+## general-flash floor (0.10 relative luminance) followed by a fall; the peak Hz is
+## the reciprocal of the smallest gap between two such peaks. Pure maths, no
+## rendering — reproducible and CI-able. A11y.flash_scale is at its default 1.0 in
+## a selftest run, so this is the unconditional (Reduced-Flashing-OFF) worst case.
+const _FLASH_SAMPLE_HZ: float = 600.0
+const _FLASH_WINDOW_S: float = 20.0
+const _FLASH_AMP: float = 0.10
+
+func _measure_flash_hz(mode: int) -> Dictionary:
+	var n: int = int(_FLASH_SAMPLE_HZ * _FLASH_WINDOW_S)
+	var dt: float = 1.0 / _FLASH_SAMPLE_HZ
+	var prev: float = FlickerLight.level(mode, 0.0, 0.0)
+	var rising: bool = false
+	var last_trough: float = prev
+	var last_peak_t: float = -1.0
+	var min_gap: float = INF
+	var max_amp: float = 0.0
+	for i: int in range(1, n):
+		var t: float = float(i) * dt
+		var v: float = FlickerLight.level(mode, t, 0.0)
+		if v > prev + 0.00001:
+			if not rising:
+				last_trough = prev  # direction turned up: prev was a trough
+			rising = true
+		elif v < prev - 0.00001:
+			if rising:
+				# direction turned down: prev was a peak. Count it if the climb from
+				# the last trough cleared the flash floor.
+				var amp: float = prev - last_trough
+				if amp >= _FLASH_AMP:
+					max_amp = maxf(max_amp, amp)
+					if last_peak_t >= 0.0:
+						min_gap = minf(min_gap, t - last_peak_t)
+					last_peak_t = t
+			rising = false
+		prev = v
+	return {"peak_hz": 0.0 if is_inf(min_gap) else 1.0 / min_gap, "max_amp": max_amp}
+
+
+# ----------------------------------------------------------------- tailprobe --
+
+## `--tailprobe WHICH` (sentinel|crew). Stages ONE creature on a bare lit floor,
+## side-on, and lets its M4.9 spring tail settle before saving `--screenshot PATH`.
+## The one shot that proves the resting SAG — a heavy downward curve, tip below the
+## root — rather than the rig's horizontal bind pose. A permanent dev tool for
+## tuning the tail; it boots through the normal path, so autoloads are live.
+func _run_tail_probe() -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	# Replace the menu that auto-loaded with a bare stage.
+	var current: Node = get_tree().current_scene
+	if current != null:
+		current.queue_free()
+	await get_tree().process_frame
+
+	var root: Window = get_tree().root
+	root.size = Vector2i(1280, 720)
+
+	var env: WorldEnvironment = WorldEnvironment.new()
+	var e: Environment = Environment.new()
+	e.background_mode = Environment.BG_COLOR
+	e.background_color = Color(0.015, 0.02, 0.03)
+	e.ambient_light_color = Color(0.35, 0.4, 0.5)
+	e.ambient_light_energy = 0.5
+	env.environment = e
+	root.add_child(env)
+	var key: DirectionalLight3D = DirectionalLight3D.new()
+	key.rotation_degrees = Vector3(-38.0, 52.0, 0.0)
+	key.light_energy = 1.6
+	root.add_child(key)
+	var rim: OmniLight3D = OmniLight3D.new()
+	rim.position = Vector3(-2.6, 2.2, -2.2)
+	rim.light_energy = 7.0
+	rim.omni_range = 15.0
+	rim.light_color = Color(0.55, 0.72, 1.0)
+	root.add_child(rim)
+	# A collision floor on the world layer so a physics-driven creature stands on it
+	# instead of free-falling through a purely visual plane.
+	var floor_body: StaticBody3D = StaticBody3D.new()
+	floor_body.collision_layer = 1
+	floor_body.collision_mask = 0
+	root.add_child(floor_body)
+	var floor_col: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(16.0, 0.4, 16.0)
+	floor_col.shape = box
+	floor_col.position = Vector3(0.0, -0.2, 0.0)
+	floor_body.add_child(floor_col)
+	var floor_mesh: MeshInstance3D = MeshInstance3D.new()
+	var plane: PlaneMesh = PlaneMesh.new()
+	plane.size = Vector2(16.0, 16.0)
+	floor_mesh.mesh = plane
+	var fm: StandardMaterial3D = StandardMaterial3D.new()
+	fm.albedo_color = Color(0.05, 0.06, 0.08)
+	floor_mesh.material_override = fm
+	floor_body.add_child(floor_mesh)
+
+	var creature: Node3D = null
+	if _tail_which == "crew":
+		var crew: CrewAvatar = CrewAvatar.create(GameState.local_color)
+		root.add_child(crew)
+		creature = crew
+	else:
+		var graph: LayerGraph = LayerGraph.generate(12345, 8)
+		var sent: Sentinel = Sentinel.new()
+		root.add_child(sent)
+		sent.setup(0, Vector3.ZERO, 0, 20, graph)
+		# Leave _process ON: the head-track dirties the skeleton each frame, which is
+		# what makes the SkeletonModifier (the tail spring) re-run. In-game the AI and
+		# the crew's AnimationTree do this every frame; a frozen skeleton does not.
+		creature = sent
+	creature.position = Vector3.ZERO
+
+	var cam: Camera3D = Camera3D.new()
+	root.add_child(cam)
+	# Side-on and a touch behind, aimed at the hips where the tail roots — the one
+	# framing that can actually judge a sag.
+	cam.position = Vector3(2.7, 1.35, -1.9)
+	cam.look_at(Vector3(0.0, 1.0, -0.25))
+	cam.current = true
+	print("[Debug] tailprobe staged '%s'" % _tail_which)
+
+	# Let the spring settle to its resting droop, sampling the tip as it goes so an
+	# over-damped slow settle can be told from a structurally-stuck bind pose.
+	var skel: Skeleton3D = CreatureKit.find_skeleton(creature)
+	var tip: int = -1 if skel == null else skel.find_bone("Tail5")
+	var root_b: int = -1 if skel == null else skel.find_bone("Tail_Rt")
+	if skel != null:
+		print("[Debug] tail driver=%s" % (skel.get_node_or_null("TailDriver") != null))
+	for t: float in [0.5, 2.0, 4.0, 6.0]:
+		await get_tree().create_timer(t if t == 0.5 else t - _last_probe_t).timeout
+		_last_probe_t = t
+		if skel != null and tip >= 0 and root_b >= 0:
+			var ty: float = (skel.global_transform * skel.get_bone_global_pose(tip)).origin.y
+			var ry: float = (skel.global_transform * skel.get_bone_global_pose(root_b)).origin.y
+			print("[Debug] tailprobe t=%.1fs  Tail5.y=%.3f  drop_below_root=%.3f" % [
+				t, ty, ry - ty])
+	if skel != null:
+		var sim: Node = skel.get_node_or_null("TailSpring")
+		print("[Debug] tailprobe sim=%s active=%s" % [
+			sim != null, "n/a" if sim == null else str(sim.get("active"))])
+		for bn: String in ["Tail_Rt", "Tail1", "Tail3", "Tail5"]:
+			var bi: int = skel.find_bone(bn)
+			if bi >= 0:
+				var gp: Vector3 = (skel.global_transform * skel.get_bone_global_pose(bi)).origin
+				print("[Debug]   %-8s worldY=%.3f  pos=%s" % [
+					bn, gp.y, str(gp.snapped(Vector3.ONE * 0.01))])
+	RenderingServer.force_draw()
+	var img: Image = root.get_texture().get_image()
+	var path: String = screenshot_path if not screenshot_path.is_empty() \
+			else "user://tailprobe.png"
+	img.save_png(path)
+	print("[Debug] tailprobe saved %s" % path)
+	get_tree().quit(0)
 
 
 # ----------------------------------------------------------------- dumplayer --

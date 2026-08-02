@@ -138,6 +138,108 @@ static func emissive(colour: Color, energy: float,
 	return material
 
 
+const GEL_SHADER: Shader = preload("res://src/shaders/nv_slime.gdshader")
+static var _gel_noise: NoiseTexture2D = null
+
+
+## The Slime slot: dark-glass gel with an internal glow (M4.9, ported from the
+## limbo-lookdev2 recipe). `core_color` is the one faction token — the crew's
+## player-phosphor accent, or the Sentinel's deep red circulating between shell and
+## bones. Dark-first (near-black albedo); the glow lives INSIDE the shell and the
+## pale Bone geometry (see `bone_material`) reads through it up close.
+static func gel_material(core_color: Color, energy: float,
+		pulse: float = 0.22) -> ShaderMaterial:
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = GEL_SHADER
+	mat.set_shader_parameter("core_color",
+			Vector3(core_color.r, core_color.g, core_color.b))
+	mat.set_shader_parameter("core_energy", energy)
+	mat.set_shader_parameter("pulse_amount", pulse)
+	mat.set_shader_parameter("core_noise", _gel_noise_texture())
+	return mat
+
+
+## One shared animated noise field for the gel veins, built once.
+static func _gel_noise_texture() -> NoiseTexture2D:
+	if _gel_noise != null:
+		return _gel_noise
+	var n: FastNoiseLite = FastNoiseLite.new()
+	n.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	n.frequency = 0.045
+	n.fractal_octaves = 3
+	_gel_noise = NoiseTexture2D.new()
+	_gel_noise.noise = n
+	_gel_noise.seamless = true
+	_gel_noise.width = 256
+	_gel_noise.height = 256
+	return _gel_noise
+
+
+## The Bone slot: pale and emissive-lifted so the interior skeleton reads THROUGH
+## the gel shell up close (PRESS.md recipe values). Countable at 1-2 m, swallowed
+## toward black by the gel's absorption by ~8 m.
+static func bone_material(pale: Color = Color(0.47, 0.446, 0.40)) -> StandardMaterial3D:
+	var mat: StandardMaterial3D = StandardMaterial3D.new()
+	mat.albedo_color = pale
+	mat.metallic = 0.0
+	mat.roughness = 0.44
+	mat.emission_enabled = true
+	mat.emission = Color(1.0, 0.88, 0.72)
+	mat.emission_energy_multiplier = 0.6
+	mat.disable_receive_shadows = true
+	return mat
+
+
+## Hangs the tail. Attaches a TailDriver to the Tail1..Tail5 chain so the tail SAGS
+## into a heavy downward curve at rest, lags on turns, streams with movement and
+## bounces on landing (M4.9). Replaces the rig's dead-straight bind tail and the
+## crew's baked tail keys — a horizontal tail is the un-simulated "cursed" default
+## this exists to kill. (Godot 4.7's SpringBoneSimulator3D would not deflect these
+## rigs' tails; see tail_driver.gd.)
+##
+## `droop_deg` is the per-segment resting bend (it accumulates down the chain into
+## the curve) and `liveliness` scales the dynamic lag/bounce — crew lively, the
+## Sentinel dead-weight. The driver runs LAST in the frame, so it drapes the pose
+## the animation just wrote.
+##
+## Cosmetic and LOCAL per peer (the task's rule): it reads the replicated pose and
+## writes only to this peer's own skeleton, never to networked or seeded state — so
+## it cannot perturb the determinism dump, and two peers seeing slightly different
+## tail motion is expected and fine. The resting droop is the gravity equilibrium,
+## which a standing avatar settles to identically every run under the pinned-60fps
+## capture path, so a standing-still tail capture is reproducible.
+static func build_spring_tail(skeleton: Skeleton3D, droop_deg: float,
+		liveliness: float) -> Node:
+	if skeleton == null or skeleton.find_bone("Tail1") < 0:
+		return null
+	# The Tail1..Tail5 chain, root to tip. `droop_deg` is the per-segment resting
+	# bend; because each bone's rotation is relative to its already-bent parent, the
+	# bends ACCUMULATE down the chain into a hanging curve. A shape ramp puts the
+	# most droop through the middle so the tail arcs rather than kinking at the base.
+	const SHAPE: Array = [0.7, 1.0, 1.1, 1.0, 0.85]
+	var bones: PackedInt32Array = PackedInt32Array()
+	var droop: PackedFloat32Array = PackedFloat32Array()
+	var i: int = 0
+	for name: String in ["Tail1", "Tail2", "Tail3", "Tail4", "Tail5"]:
+		var bi: int = skeleton.find_bone(name)
+		if bi >= 0:
+			bones.append(bi)
+			droop.append(deg_to_rad(droop_deg) * float(SHAPE[mini(i, SHAPE.size() - 1)]))
+		i += 1
+	if bones.is_empty():
+		return null
+	# Properties set BEFORE add_child, because for an in-tree skeleton _ready fires
+	# the instant it is parented and reads them.
+	var driver: Node = preload("res://src/creatures/tail_driver.gd").new()
+	driver.name = "TailDriver"
+	driver.set("skeleton", skeleton)
+	driver.set("bones", bones)
+	driver.set("droop", droop)
+	driver.set("liveliness", liveliness)
+	skeleton.add_child(driver)
+	return driver
+
+
 ## Builds the AnimationTree every animated character in the game uses:
 ##
 ##     BlendTree

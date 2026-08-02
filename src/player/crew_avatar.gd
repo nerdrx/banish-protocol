@@ -346,6 +346,11 @@ func _build(colour: Color) -> void:
 		_neck_bone = _skeleton.find_bone("Neck")
 		_head_bone = _skeleton.find_bone("Head")
 		_chest_bone = _skeleton.find_bone("Chest")
+		# M4.9: the tail hangs and stays lively. A crewmate is a running program,
+		# not a corpse — a touch more stiffness and less drag than the Sentinel, so
+		# it sags heavily at rest but swings and streams as they move. Replaces the
+		# baked TAIL_ARC keys the build tool used to sway it with.
+		CreatureKit.build_spring_tail(_skeleton, 30.0, 1.0)
 		for arm_name: String in FP_ARM_BONES:
 			var found: int = _skeleton.find_bone(arm_name)
 			if found >= 0:
@@ -390,13 +395,26 @@ func _build(colour: Color) -> void:
 	_loaded = true
 
 
+## The crew accent — the player's chosen shell-marker colour, used as ONE token
+## across their whole identity (M4.9): the UI phosphor, the body seams (Emiss/Eyes),
+## the shell rim, and the gel's internal glow all read this. Blue (DEFAULT_ACCENT)
+## is ONLY the default swatch, for a program that has not picked a colour yet — it
+## is no longer blended into a chosen colour. Routed through UiFx.clamp_phosphor,
+## the same clamp the UI uses, so a crew colour can never fall in the reserved
+## quarantine-red band the Sentinel owns: red stays faction-locked to the enemy,
+## and four crewmates stay four distinguishable colours in the dark.
+static func crew_accent(colour: Color) -> Color:
+	if colour.get_luminance() <= 0.001:
+		return DEFAULT_ACCENT
+	return UiFx.clamp_phosphor(colour)
+
+
 ## The inverted palette, tinted per player. Called again if the owner's lobby
 ## colour changes.
 func repaint(colour: Color) -> void:
 	if _model == null:
 		return
-	var accent: Color = DEFAULT_ACCENT if colour.get_luminance() <= 0.001 \
-			else DEFAULT_ACCENT.lerp(colour, 0.85)
+	var accent: Color = crew_accent(colour)
 	# Cached, because the corruption fade lerps *from* it and has to be able to
 	# put it back. It used to lerp from the untinted DEFAULT_ACCENT and restore
 	# nothing (the `_down == 0` branch was a self-assignment), so the first time a
@@ -407,12 +425,16 @@ func repaint(colour: Color) -> void:
 	_accent_material = CreatureKit.emissive(accent, ACCENT_ENERGY, 0.55)
 	var shell: StandardMaterial3D = CreatureKit.matte(SHELL, 0.15, 0.46)
 	var plate: StandardMaterial3D = CreatureKit.matte(PLATE, 0.3, 0.32)
+	# M4.9 materials: the Slime shell is dark glass with the pale interior Bone
+	# reading through it, and the internal glow is the player's accent — the same
+	# one token as the seams and the UI phosphor, so a crewmate glows their own
+	# chosen colour from inside their shell as well as along their seams.
 	var palette: Dictionary = {
 		"LightMetal": plate,
 		"Armour": shell,
-		"Bone": plate,
+		"Bone": CreatureKit.bone_material(),
 		"Mask": shell,
-		"Slime": shell,
+		"Slime": CreatureKit.gel_material(accent, 1.2, 0.2),
 		"Emiss": _accent_material,
 		"Eyes": _accent_material,
 	}

@@ -135,7 +135,9 @@ func aim_point() -> Vector3:
 
 
 func _assemble() -> void:
-	health = Balance.SENTINEL_HEALTH
+	# Depth-scaled past DEPTH_FLOOR (M4.9). `layer_number` is set by
+	# Antivirus.setup() before this runs, so a deep Sentinel assembles heavier.
+	health = Balance.sentinel_health(layer_number)
 	_build_purge_arc()
 
 	# Sized to the authored mesh (0.85 m wide, 2.6 m tall). The box monolith it
@@ -186,15 +188,20 @@ func _build_body() -> void:
 	model.name = "Body"
 	_shell.add_child(model)
 
-	var dark: StandardMaterial3D = CreatureKit.matte(SHELL_COLOUR, 0.35, 0.52)
-	var deep: StandardMaterial3D = CreatureKit.matte(
-			CreatureKit.ENEMY_BODY, 0.2, 0.62)
+	# M4.9 materials: all seven slots read distinct (PRESS.md recipe values). The
+	# Slime shell is dark glass with the pale interior Bone reading through it and
+	# the red core circulating under the gel — faction-locked, ALWAYS red, never
+	# player-tinted. Armour a matte plate, LightMetal a contrast gunmetal, Mask a
+	# glossy dark ceramic visor; Emiss/Eyes the hostile red seam and hottest core.
+	var armour: StandardMaterial3D = CreatureKit.matte(Color(0.027, 0.027, 0.034), 0.45, 0.60)
+	var light_metal: StandardMaterial3D = CreatureKit.matte(Color(0.128, 0.133, 0.152), 0.55, 0.28)
+	var mask: StandardMaterial3D = CreatureKit.matte(Color(0.012, 0.013, 0.017), 0.0, 0.08)
 	CreatureKit.paint(CreatureKit.find_mesh(model), {
-		"LightMetal": dark,
-		"Armour": dark,
-		"Bone": dark,
-		"Mask": deep,
-		"Slime": deep,
+		"LightMetal": light_metal,
+		"Armour": armour,
+		"Bone": CreatureKit.bone_material(),
+		"Mask": mask,
+		"Slime": CreatureKit.gel_material(ALARM_COLOUR, 1.6, 0.28),
 		"Emiss": _trim_material,
 		"Eyes": _core_material,
 	})
@@ -203,6 +210,11 @@ func _build_body() -> void:
 	if _skeleton != null:
 		_neck_bone = _skeleton.find_bone("Neck")
 		_head_bone = _skeleton.find_bone("Head")
+		# M4.9: the tail hangs like dead weight. A quarantine process is not an
+		# animal — very low stiffness, heavy drag and strong gravity so the tail
+		# sags into a heavy downward curve and sways slow and menacing, never
+		# standing out along the bind pose.
+		CreatureKit.build_spring_tail(_skeleton, 34.0, 0.5)
 
 
 ## The quarantine dressing, socketed at the attach points the kit was authored

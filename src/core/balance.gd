@@ -67,7 +67,14 @@ const SPRINT_DRAIN_MULT: float = 2.5
 ## A player only counts as sprinting for billing purposes above this speed, so
 ## holding shift while stood still is free (and so the host can infer sprint from
 ## the pose stream instead of replicating an extra input bit).
-const SPRINT_BILLING_SPEED: float = 5.4
+##
+## M4.9 (balance lab): raised 5.4 -> 6.0. At 5.4 a maxed-Servos walk (WALK_SPEED
+## 4.2 * 1.22 = 5.124) sat only 0.28 under the threshold, so a starved-but-fast
+## build could brush sprint billing while merely walking. 6.0 restores a clean
+## margin (5.124 < 6.0) while still landing well under SPRINT_SPEED (6.9), so an
+## actual sprint always bills. The invariant WALK_SPEED * max(Servos.move) <
+## SPRINT_BILLING_SPEED is checked headless by `--selftest` (see Debug).
+const SPRINT_BILLING_SPEED: float = 6.0
 
 # --- siphon taps ------------------------------------------------------------
 
@@ -203,7 +210,13 @@ const SENTINEL_WALK_SPEED: float = 1.6
 const SENTINEL_SCAN_RANGE: float = 19.0
 const SENTINEL_SCAN_HALF_ANGLE_DEG: float = 14.0
 const SENTINEL_WAKE_RANGE: float = 22.0
-const SENTINEL_PURGE_SPEED: float = 2.6
+## M4.9 (balance lab): 2.6 -> 4.6. At 2.6 the purge lunge was slower than a walk
+## and trivially back-pedalled, so the Sentinel's one offensive window never
+## landed and the fight was pure attrition on the core. 4.6 makes closing the arc
+## a real threat you have to answer, without making it a Scrubber-fast chaser
+## (still under SCRUBBER_STALK_SPEED 4.6's pack pressure in feel because it only
+## moves this fast during the brief purge commit).
+const SENTINEL_PURGE_SPEED: float = 4.6
 const SENTINEL_PURGE_RANGE: float = 4.0
 const SENTINEL_PURGE_ARC_DEG: float = 55.0
 const SENTINEL_PURGE_DAMAGE: float = 26.0
@@ -221,7 +234,14 @@ const SENTINEL_CORE_MULTIPLIER: float = 3.0
 const SENTINEL_CORE_ARC_DEG: float = 75.0
 ## What a dead Sentinel spills, and how many piles it scatters into. This is what
 ## the vault was actually guarding.
-const SENTINEL_DROP_SHARDS: int = 9
+##
+## M4.9 (balance lab): the kill drop drops 9 -> 5 while the vault floor it guards
+## rises (SHARDS_VAULT 8-12 -> 11-16, in LayerGraph). The reward for clearing a
+## vault is unchanged in total, but it moves off the kill and onto the room: a
+## crew that fights the Sentinel and one that slips the vault while it scans now
+## come out closer to even, which is the "shooting is one option" the killability
+## law asks for rather than "the kill IS the loot".
+const SENTINEL_DROP_SHARDS: int = 5
 const SENTINEL_DROP_PIECES: int = 3
 ## How far outside its vault a Sentinel will chase. Beyond this it walks home.
 const SENTINEL_LEASH: float = 16.0
@@ -292,6 +312,18 @@ static func shard_value(layer_number: int) -> int:
 	return maxi(int(round(float(SHARD_BASE_VALUE) * float(params["data_multiplier"]))), 1)
 
 
+## Sentinel hit points on `layer_number`. M4.9 (balance lab): armour now scales
+## past the depth floor. At and below DEPTH_FLOOR it is the flat SENTINEL_HEALTH;
+## past it, +8% per layer, so a layer-20 quarantine process is ~1.48x the wall a
+## layer-14 one is. Everything else on the threat curve flattens at the floor
+## (LayerParams.depth clamps at 14) while the crew's Breaker keeps climbing to
+## tier 5 — without this the deepest Sentinels got *easier* in real terms every
+## ring. Pure sim-time: applied per-creature at assembly, never to generation.
+static func sentinel_health(layer_number: int) -> float:
+	var over: int = maxi(layer_number - LayerParams.DEPTH_FLOOR, 0)
+	return SENTINEL_HEALTH * (1.0 + 0.08 * float(over))
+
+
 # --- modules (M4) -----------------------------------------------------------
 #
 # The eight permanent tracks from DESIGN.md's meta-progression section. Every
@@ -359,7 +391,13 @@ const MODULES: Dictionary = {
 		"glyph": "⌁",
 		"note": "CUTTER DAMAGE ↑  ·  REACH ↑",
 		"prices": [320, 880, 2400, 6300, 17000],
-		"damage": [42.0, 50.0, 60.0, 72.0, 86.0, 104.0],
+		# M4.9 (balance lab): reshaped 42/50/60/72/86/104 -> 42/48/52/62/76/104.
+		# Against SCRUBBER_HEALTH 100 the old curve broke to a 2-shot kill at tier 1
+		# (50) already, so the first Breaker tier trivialised the whole early game.
+		# The new curve keeps tier 1 a 3-shot (48) and tier 2 barely a 2-shot (52),
+		# so the 2-shot breakpoint moves to tier 2 where it is paid for — the deep
+		# tiers (76/104) are unchanged, so the endgame ceiling is the same.
+		"damage": [42.0, 48.0, 52.0, 62.0, 76.0, 104.0],
 		"range": [8.0, 9.0, 10.2, 11.6, 13.2, 15.0],
 	},
 	# --- Optics: buying vision ---------------------------------------------

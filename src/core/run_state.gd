@@ -969,7 +969,14 @@ func _siphon_request(index: int) -> void:
 
 	spent_siphons[index] = true
 	siphons_drained += 1
-	cycles = minf(cycles + Balance.SIPHON_YIELD, cycles_max)
+	# M4.9 (balance lab): crew-scaled yield. A flat 70 refilled the same absolute
+	# amount into a 100-Cycle solo pool and a 400-Cycle four-crew pool, so a tap
+	# was worth 4x as much of the clock to a solo agent and left big crews
+	# perpetually starved. Scaling by crew keeps a tap worth roughly the same
+	# FRACTION of the pool at any size. Solo (0.55 + 0.45*1 = 1.0) is unchanged;
+	# four crew return 2.35x. Host-only path, so Net.crew is authoritative here.
+	var crew: int = maxi(Net.crew.size(), 1)
+	cycles = minf(cycles + Balance.SIPHON_YIELD * (0.55 + 0.45 * float(crew)), cycles_max)
 	_apply_siphon.rpc(index, cycles)
 
 

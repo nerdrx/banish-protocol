@@ -70,6 +70,11 @@ uniform float gain : hint_range(0.0, 3.0) = 1.06;
 // --- gameplay drivers ----------------------------------------------------
 // A hit. Horizontal hold goes, one band tears, the phosphor smears sideways.
 uniform float damage : hint_range(0.0, 1.0) = 0.0;
+
+// SAFETY (limbo-a11y #9). The damage/tear here is positional shear on the HUD's
+// own tube (small area, ~0.2 s), so it is kept — but its amplitude is scaled by
+// the project-wide flash switch for comfort (to 0.4 under Reduced Flashing).
+global uniform float a11y_flash;
 // The shared pool draining. The signal itself starts failing.
 uniform float degrade : hint_range(0.0, 1.0) = 0.0;
 // Interface boot: the degauss wobble and the brightness coming up.
@@ -104,12 +109,13 @@ void fragment() {
 	// the rest. No RGB split, no block displacement — those are digital faults
 	// and they belong to MOTHER, not to your hardware.
 	if (damage > 0.001) {
-		float slip = (hash11(floor(TIME * 34.0)) - 0.5) * 0.035 * damage;
+		float damp = mix(0.4, 1.0, a11y_flash);
+		float slip = (hash11(floor(TIME * 34.0)) - 0.5) * 0.035 * damage * damp;
 		uv.x += slip;
 		float band = step(0.5, hash11(floor(TIME * 21.0) + 3.0));
 		float tear_y = fract(hash11(floor(TIME * 21.0)) * 3.7);
 		if (abs(uv.y - tear_y) < 0.035 * damage) {
-			uv.x += band * (hash11(floor(TIME * 61.0)) - 0.5) * 0.14 * damage;
+			uv.x += band * (hash11(floor(TIME * 61.0)) - 0.5) * 0.14 * damage * damp;
 		}
 	}
 

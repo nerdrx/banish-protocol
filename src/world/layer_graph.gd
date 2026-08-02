@@ -87,9 +87,20 @@ const BACKDOOR: String = "backdoor"
 
 ## Shards per room by archetype. The vault is where the haul is; everywhere else
 ## is loose change, and the sanctuary hands you a parting gift.
-const SHARDS_VAULT: Vector2i = Vector2i(8, 12)
-const SHARDS_ROOM: Vector2i = Vector2i(0, 3)
+##
+## M4.9 (balance lab): the vault floor rises (8-12 -> 11-16) to absorb the reward
+## the Sentinel kill-drop gave up (SENTINEL_DROP_SHARDS 9 -> 5), so clearing a
+## vault is worth about what it was but the payout sits on the ROOM not the kill.
+## Ordinary rooms floor at 1 (was 0) so a swept room is never a total blank — the
+## intricacy law dislikes empty rooms, and a room with nothing to find reads as
+## one the generator forgot.
+const SHARDS_VAULT: Vector2i = Vector2i(11, 16)
+const SHARDS_ROOM: Vector2i = Vector2i(1, 3)
 const SHARDS_BACKDOOR: Vector2i = Vector2i(2, 3)
+## The drop-shaft room's guaranteed cache. `_place_shards` still skips the SHAFT
+## archetype (no farming the exit by rerolling), so this fixed handful is the only
+## salvage there — see `_place_shaft_cache`.
+const SHARDS_SHAFT_CACHE: int = 2
 
 # --- output -----------------------------------------------------------------
 
@@ -764,10 +775,15 @@ func _place_furniture() -> void:
 	# every shard, nest, post and Compiler on every saved seed is exactly where it
 	# was before the functional clutter existed.
 	_place_props()
+	# M4.9 appends last of all. The shaft cache draws from `_rng` after everything
+	# else, so it adds two lines to the dump without shifting a single nest, post,
+	# Compiler or prop above it — the same append discipline M4 and M4.8 used.
+	_place_shaft_cache()
 
 
 ## Salvage. Vaults are rich, everything else is loose change; the drop-shaft room
-## is left empty so nobody is farming the exit.
+## is skipped here so nobody farms the exit by rerolling — its guaranteed cache is
+## placed separately in `_place_shaft_cache`.
 func _place_shards() -> void:
 	for room: Dictionary in rooms:
 		var archetype: String = String(room["archetype"])
@@ -783,6 +799,24 @@ func _place_shards() -> void:
 		for i: int in count:
 			shard_points.append(_scatter_point(room, 2.2))
 			shard_rooms.append(int(room["index"]))
+
+
+## The drop-shaft room's guaranteed cache (M4.9). `_place_shards` skips the SHAFT
+## archetype so the exit cannot be farmed by rerolling the layer; this hands the
+## crew a small FIXED handful there instead — enough that riding the trunk down is
+## never a dead room, never enough to camp. A distinct, guaranteed spawn: fixed
+## count, tighter scatter, and the only placement that draws from `_rng` after the
+## props, so it perturbs nothing above it. On a backdoor layer the shaft room is a
+## sanctuary that `_place_shards` already stocks (archetype BACKDOOR), so skip it.
+func _place_shaft_cache() -> void:
+	if is_backdoor:
+		return
+	if shaft_index < 0 or shaft_index >= rooms.size():
+		return
+	var room: Dictionary = rooms[shaft_index]
+	for i: int in SHARDS_SHAFT_CACHE:
+		shard_points.append(_scatter_point(room, 1.6))
+		shard_rooms.append(int(room["index"]))
 
 
 ## One nest anchor per unlit room and one post per vault, both well inside the
@@ -1227,7 +1261,7 @@ func spawn_point(index: int) -> Transform3D:
 ## with the Sentinel somewhere else — would still desync a crew.
 func to_text() -> String:
 	var lines: PackedStringArray = PackedStringArray()
-	lines.append("LIMBO PROTOCOL LAYER DUMP")
+	lines.append("BANISH PROTOCOL LAYER DUMP")
 	lines.append("layer=%d sub_seed=%d backdoor=%s" % [
 		layer_number, layer_seed, str(is_backdoor)])
 	lines.append(LayerParams.describe(layer_number))

@@ -27,6 +27,14 @@ render_mode unshaded;
 
 uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_linear;
 
+// SAFETY-CRITICAL (limbo-a11y 01-photosensitivity). Project-wide flash switch,
+// declared in project.godot [shader_globals] and driven by the A11y autoload.
+// 1.0 = normal (already inside the unconditional caps below), 0.0 = Reduced
+// Flashing. It only ever scales an ALREADY-capped temporal term further down —
+// the ship-gate ceilings here (rates, the removed full-frame invert) do NOT
+// depend on it.
+global uniform float a11y_flash;
+
 // Master. Gameplay can pull the whole grade down for cutscenes/menus.
 uniform float intensity : hint_range(0.0, 2.0) = 1.0;
 
@@ -81,14 +89,17 @@ void fragment() {
 	float fail = clamp(degradation + fade * 0.75, 0.0, 1.0);
 
 	// --- datamosh: horizontal bands slip sideways (v1 behaviour) -----------
+	// SAFETY (a11y #2/#3): band reroll capped 14 Hz -> 6 Hz and the tear pick 6 Hz
+	// -> 3 Hz so neither reads as strobing motion; the sideways SHIFT (positional,
+	// not luminance) is scaled down further by a11y_flash for Reduced Flashing.
 	if (fail > 0.001) {
 		float band = floor(uv.y * mix(18.0, 46.0, fail));
-		float jitter = hash11(band + floor(TIME * mix(3.0, 14.0, fail)) * 37.0);
+		float jitter = hash11(band + floor(TIME * mix(3.0, 6.0, fail)) * 37.0);
 		float active = step(1.0 - fail * 0.45, jitter);
-		uv.x += (jitter - 0.5) * 0.09 * fail * active;
-		float tear = hash11(floor(TIME * 6.0));
+		uv.x += (jitter - 0.5) * 0.09 * fail * active * mix(0.25, 1.0, a11y_flash);
+		float tear = hash11(floor(TIME * 3.0));
 		if (tear > 1.0 - fail * 0.25 && abs(uv.y - fract(tear * 7.3)) < 0.02) {
-			uv.x += (tear - 0.5) * 0.25;
+			uv.x += (tear - 0.5) * 0.25 * mix(0.25, 1.0, a11y_flash);
 		}
 		uv.x = clamp(uv.x, 0.0, 1.0);
 	}
@@ -128,7 +139,9 @@ void fragment() {
 	ab *= (0.35 + local_edge * aberration_edge);
 	// The flinch's split is not edge-weighted: a hit fringes the whole frame,
 	// which is exactly what makes it read as an impact rather than as a lens.
-	ab += aberration * glitch * 22.0;
+	// SAFETY (a11y #10): brief and event-driven, a colour fringe not a luminance
+	// flash, so kept — but scaled to 0.4 under Reduced Flashing.
+	ab += aberration * glitch * 22.0 * mix(0.4, 1.0, a11y_flash);
 	vec2 offset = centered * ab * (0.25 + dist * dist * 2.4);
 
 	vec3 color;
@@ -158,18 +171,24 @@ void fragment() {
 	// --- alert grade -------------------------------------------------------
 	if (alert > 0.001) {
 		vec3 hot = vec3(l) * vec3(1.35, 0.62, 0.60) + color * vec3(0.55, 0.25, 0.25);
-		float pulse = 0.72 + 0.28 * sin(TIME * 4.2);
+		// SAFETY (a11y #5): 0.668 Hz is already sub-threshold, but it is a large RED
+		// field, so under Reduced Flashing the pulse holds steady (a11y_flash -> 0
+		// removes the throb) and the mix cap stays at 0.55.
+		float pulse = 0.72 + 0.28 * sin(TIME * 4.2) * a11y_flash;
 		color = mix(color, hot, alert * 0.55 * pulse);
 	}
 
-	// --- scanline tearing / palette flips (v1 behaviour) --------------------
+	// --- scanline tearing (v1 behaviour) -----------------------------------
+	// SAFETY-CRITICAL (a11y #1/#4). The v1 FULL-FRAME PALETTE INVERSION
+	// (`color = vec3(1.0) - color` picked at up to 9 Hz) is REMOVED: a whole-screen
+	// invert is a maximal general flash and, on any red frame, a red flash — it
+	// would fail PEAT on its own and gates ship. The datamosh above already reads
+	// as signal failure without it. The scrolling scanline stays, but its
+	// modulation is capped 0.22 -> 0.15 and scaled by a11y_flash (to 0.05 under
+	// Reduced Flashing).
 	if (fail > 0.001) {
 		float scan = sin(uv.y * 780.0 + TIME * 40.0) * 0.5 + 0.5;
-		color *= 1.0 - scan * 0.22 * fail;
-		float flip = hash11(floor(TIME * 9.0) + 11.0);
-		if (flip > 1.0 - fail * 0.06) {
-			color = vec3(1.0) - color;
-		}
+		color *= 1.0 - scan * (0.05 + 0.10 * a11y_flash) * fail;
 	}
 
 	// --- grain -------------------------------------------------------------

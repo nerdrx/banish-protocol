@@ -5,7 +5,7 @@ config_version=5
 
 [application]
 
-config/name="LIMBO PROTOCOL"
+config/name="BANISH PROTOCOL"
 config/description="1-4 player co-op first-person roguelite. You are an invading program descending through the security layers of a rogue AI to steal its data."
 run/main_scene="res://src/ui/main_menu.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
@@ -15,6 +15,7 @@ config/quit_on_go_back=false
 
 [autoload]
 
+A11y="*res://src/core/a11y.gd"
 Rng="*res://src/core/rng.gd"
 Modules="*res://src/core/modules.gd"
 GameState="*res://src/core/game_state.gd"
@@ -25,6 +26,19 @@ Props="*res://src/core/prop_state.gd"
 Debug="*res://src/core/debug.gd"
 SteamHub="*res://src/core/steam_service.gd"
 Achievements="*res://src/core/achievements.gd"
+
+[shader_globals]
+
+; SAFETY-CRITICAL (limbo-a11y 01-photosensitivity). Project-wide flash switch read
+; by every fragment shader with a temporal-flash term (post_process, crt). 1.0 =
+; normal (still inside the unconditional caps compiled into the effects), driven
+; toward 0.0 by A11y Reduced Flashing. Declared here so the uniform exists from
+; engine start — the A11y autoload only SETS its value, avoiding any load-order
+; race between a shader compiling and the switch being registered.
+a11y_flash={
+"type": "float",
+"value": 1.0
+}
 
 [debug]
 

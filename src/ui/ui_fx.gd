@@ -382,6 +382,43 @@ const TOAST_SPRING: float = 26.0
 const TOAST_DAMPING: float = 8.5
 const TOAST_REVEAL: float = 0.26
 
+# --- surfacing (M4.9): the quiet-instrument rule ----------------------------
+#
+# DESIGN.md's quiet-instrument rule: "the resting HUD is nearly empty ... Elements
+# SURFACE on relevance ... and fade when stable. Labels appear briefly on change,
+# then yield to shape/position. Every element must justify every frame it is
+# visible."
+#
+# `Surface` (bottom of this file) is the one mechanism all of that runs on: a
+# poke-able alpha with a dwell and a fade. Call `surface()` once for an event
+# (a chip picked up, a descent) or every frame while a condition holds (integrity
+# below full, the breaker hot); it fades `SURFACE_FALL` after the last poke. A
+# capture `pin()`s it fully on, the same way the boot and damage flinches are
+# pinned, so a `--hud-state` screenshot lands the same picture every machine.
+#
+# Two asymmetries are deliberate. Rise is fast and fade is slow: an element that
+# eases in reads as a popup, one that snaps out reads as a bug. And a *label*
+# holds shorter than the *shape* it names — the word is read once and then gets
+# out of the way of the gauge.
+
+## Default dwell at full before an un-repoked element begins to fade, and the
+## chase rates that bring it up and let it down. Frame-rate independent.
+const SURFACE_HOLD: float = 2.0
+const SURFACE_RISE: float = 16.0
+const SURFACE_FALL: float = 3.4
+## The descent title is the one element with a longer, calmer dwell — a card that
+## announces the layer for ~2 s and then yields to a tiny persistent numeral.
+const TITLE_HOLD: float = 2.0
+const TITLE_RISE: float = 8.0
+const TITLE_FALL: float = 2.4
+## A caption ("SHARED CYCLES", "BREAKER") shows on first change then gets out of
+## the way of the shape it labels — shorter hold than the element it belongs to.
+const CAPTION_HOLD: float = 1.5
+const CAPTION_FALL: float = 3.0
+## The roster surfaces on a crew change and holds a beat longer than the rest, so
+## a join or a downed crewmate is legible before it fades to nothing.
+const ROSTER_HOLD: float = 3.0
+
 # --- menu depth -------------------------------------------------------------
 ## Parallax travel of the injection console's layers against the pointer, in
 ## pixels, from back to front. The schematic drifts most, the bezel not at all —
@@ -453,3 +490,62 @@ static func phosphor_decay(delta: float) -> float:
 	if delta <= 0.0:
 		return 0.0
 	return clampf(pow(0.5, delta / maxf(PHOSPHOR_HALFLIFE, 0.001)), 0.0, 0.98)
+
+
+## One surfacing HUD element — the quiet-instrument rule made mechanical.
+##
+## Hidden at rest (`alpha` 0). `surface()` brings it up: call it once for a
+## discrete event, or every frame while an ongoing condition holds (each call
+## just re-arms the dwell). It fades once nothing has poked it for `hold_time`
+## seconds. `pin()` forces it fully shown for a deterministic capture; `clear()`
+## drops it with no fade when a whole subsystem goes away or a resting capture
+## wants the screen genuinely empty.
+##
+## Constructed ONCE per element and ticked every frame, so nothing here allocates
+## on the hot path — the same discipline as ArcMeter's tick cache. The alpha it
+## returns is the element's `modulate.a`; a caller composes nothing else onto it.
+class Surface extends RefCounted:
+	var alpha: float = 0.0
+	var hold_time: float = UiFx.SURFACE_HOLD
+	var rise_rate: float = UiFx.SURFACE_RISE
+	var fall_rate: float = UiFx.SURFACE_FALL
+	## Seconds of dwell left before the fade begins. Re-armed by `surface()`.
+	var _hold: float = 0.0
+	## Capture override: once pinned, the element is fully shown regardless.
+	var _pinned: bool = false
+
+	func _init(hold: float = UiFx.SURFACE_HOLD, rise: float = UiFx.SURFACE_RISE,
+			fall: float = UiFx.SURFACE_FALL) -> void:
+		hold_time = hold
+		rise_rate = rise
+		fall_rate = fall
+
+	## Bring it up and re-arm the dwell. `hold` overrides the default for this poke
+	## (a longer-lived alert can ask for more time without changing the element's
+	## resting behaviour).
+	func surface(hold: float = -1.0) -> void:
+		_hold = hold if hold >= 0.0 else hold_time
+
+	## Force it fully shown from now on. The capture path — mirrors how the boot
+	## and damage states pin their own animations so a shutter is reproducible.
+	func pin() -> void:
+		_pinned = true
+		alpha = 1.0
+
+	## Drop it immediately, no fade. Used by a resting capture and by a subsystem
+	## that has genuinely gone (the crew emptied, the run ended).
+	func clear() -> void:
+		_hold = 0.0
+		alpha = 0.0
+
+	## Advance one frame and return the new alpha. Rise is fast, fade is slow.
+	func tick(delta: float) -> float:
+		if _pinned:
+			alpha = 1.0
+			return 1.0
+		if _hold > 0.0:
+			_hold = maxf(_hold - delta, 0.0)
+			alpha = UiFx.chase(alpha, 1.0, rise_rate, delta)
+		else:
+			alpha = UiFx.chase(alpha, 0.0, fall_rate, delta)
+		return alpha

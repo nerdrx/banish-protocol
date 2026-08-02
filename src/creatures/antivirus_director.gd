@@ -117,23 +117,35 @@ func _on_noise(where: Vector3, rooms: int, source: String, seconds: float) -> vo
 func _purchase() -> void:
 	var params: Dictionary = LayerParams.of(_layer_number)
 	var budget: int = int(params["antivirus_budget"])
+	# M4.9 (balance lab): reserve a Scrubber floor before the Sentinels spend, so a
+	# vault layer can never come out all-Sentinel-no-pack — the "swarm from the
+	# dark" is the pillar, and a lone slow Sentinel with no cleaners around it is a
+	# turret, not a threat. The reserve is released back into the Scrubber buy
+	# below, so it is a FLOOR on Scrubbers, not a cap on anything; paired with the
+	# +2 budget base (LayerParams) it adds early pack pressure rather than trading
+	# the Sentinel away for it.
+	var reserved: int = mini(2, budget)
+	# Clamp the layer's Sentinel count to the posts the graph actually placed.
 	var sentinels: int = mini(int(params["sentinel_count"]), graph.sentinel_posts.size())
 
 	var placed_sentinels: int = 0
 	for i: int in sentinels:
-		if budget < SENTINEL_COST:
+		# Sentinels spend only what is left ABOVE the reserve.
+		if budget - reserved < SENTINEL_COST:
 			break
 		budget -= SENTINEL_COST
 		_build(true, i)
 		placed_sentinels += 1
 
+	# Everything left — the reserve plus whatever the Sentinels did not spend —
+	# becomes Scrubbers, one per point, clamped to the nests the layer has.
 	var scrubbers: int = mini(budget, graph.scrubber_nests.size())
 	for i: int in scrubbers:
 		_build(false, i)
 	_scrubber_cap = scrubbers
 
-	print("[AI] layer %d antivirus: %d scrubbers, %d sentinels (budget %d)" % [
-		_layer_number, scrubbers, placed_sentinels, int(params["antivirus_budget"])])
+	print("[AI] layer %d antivirus: %d scrubbers, %d sentinels (budget %d, floor %d)" % [
+		_layer_number, scrubbers, placed_sentinels, int(params["antivirus_budget"]), reserved])
 
 
 func _build(is_sentinel: bool, slot: int, suffix: String = "") -> void:
