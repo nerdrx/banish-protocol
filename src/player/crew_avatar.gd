@@ -98,7 +98,12 @@ const HAND_BONE: String = "Right wrist"
 ## together, so the rifle's transform *in the wrist's own frame* is invariant
 ## under it. Refreshed anyway, because these are transcribed numbers and a
 ## transcribed number that is only nearly current is how drift starts.
-const HAND_OFFSET: Vector3 = Vector3(0.00457, 0.02926, -0.03751)
+##
+## PT4 re-authored the LEFT hand onto the handguard (see `FOREGRIP_LOCAL` in the
+## build tool) and moved these by 0.04 mm — same invariance, same reason: the
+## right hand and the weapon are one rigid piece and the left hand is not part
+## of the socket. Transcribed again anyway, same doctrine.
+const HAND_OFFSET: Vector3 = Vector3(0.00461, 0.02928, -0.03747)
 const HAND_ROTATION: Quaternion = Quaternion(-0.754991, -0.186312, -0.601213, 0.183897)
 
 ## Everything descended from this bone is "upper body" and takes the rifle-hold
@@ -291,55 +296,85 @@ const FP_HOLD_CANT: float = 0.0
 ## With the whole rotation at the compensated joint the hold is EXACT: measured
 ## across the full ±1.45 rad of lens travel, the grip and the emitter each move
 ## less than one millimetre. That is the number this constant is 1.0 for.
+##
+## PT4 SUPERSEDES THE MECHANISM AND KEEPS THE LAW. The hold no longer follows the
+## lens's PITCH; it is placed in the lens's whole TRANSFORM, every frame, by
+## `_pitch_hold`. Head pitch was never the only thing between the eye and the
+## world — `Player._update_view` also writes a bob, a landing dip, a breathing
+## sway and a hit shake onto `camera`, in translation AND in rotation, including
+## ROLL — and a hold that compensated for one term of that and not the other four
+## is a hold that slides whenever the player is doing anything. The constant stays
+## at 1.0 and stays documented because the law it encodes ("all of it, at one
+## joint, no easing") is what PT4 kept; the arithmetic moved to the lens basis.
 const FP_PITCH_FOLLOW: float = 1.0
 
-## AIM CONVERGENCE — the barrel points AT the reticle, not over it.
+## AIM CONVERGENCE — solved against the live geometry, every frame, forever.
 ##
-## Second PT1 report, off the frames the pitch fix produced: "the gun reads as
-## pointing ABOVE the reticle — it should point AT it." Measured rather than
-## argued, with the hold's own instrument (`--gunlog`, camera-space metres at a
-## level view, before this constant existed):
+## ## What three rounds of this complaint got wrong
 ##
-##   grip     (0.258, -0.170, -0.188)
-##   emitter  (0.156, +0.071, -0.668)
-##   barrel    (-0.102, +0.241, -0.480) -> 25.9 deg UP and 10.7 deg inboard
+## "The gun reads as pointing ABOVE the reticle" (PT1), "still looks crooked"
+## (PT2), and then, from a real session at 3440x1440: "GUN STILL DOESNT POINT
+## TOWARDS THE RETICLE" (PT4). Each round measured clean and each round shipped a
+## CONSTANT: a closed-form yaw/pitch pair solved once, at a level view, against
+## one frame of one pose.
 ##
-## Twenty-six degrees of elevation on a weapon held two hundred millimetres from
-## the eye: the barrel line crossed the top of the frame while the shot landed on
-## the crosshair, so the weapon and its own beam visibly disagreed. That was
-## invisible before this milestone for the same reason everything else in this
-## file was — the socket the weapon was DRAWN on was not the pose the arms were
-## POSED in (see `_follow_hand`), so nobody had ever seen where the barrel really
-## pointed.
+## The standing hypothesis going into PT4 was ultrawide — every constant solved
+## against the 16:9 design camera, the game is hor+, therefore a baked
+## convergence must point somewhere else at 21:9. **It is wrong.** `--aimtrace`
+## (Debug), same scene, same frame count, three windows:
 ##
-## The fix is the one every shooter uses, and the name is borrowed from the
-## gunnery it comes from: the barrel is not parallel to the sight line, it is
-## CONVERGED with it, meeting the aim ray at a chosen distance. Solved once, in
-## closed form, at the level view:
+##   1280x720   mean miss at 12 m   46.5 cm
+##   3440x1440  mean miss at 12 m   45.1 cm
+##   5120x1440  mean miss at 12 m   46.6 cm
 ##
-##   want   normalize((0, 0, -CONVERGE_DISTANCE) - grip)
-##   pitch  the rotation about the lens's RIGHT that lands the barrel's height
-##          on `want.y`                                               = -0.466
-##   yaw    the rotation about the lens's UP that then lands its bearing on
-##          `want`'s                                                  = -0.213
+## Aspect changes nothing and it cannot. The reticle is the lens's own forward
+## ray; a convergence puts the barrel line through a point ON that ray; and a 3D
+## line through a point projects to a 2D line through that point's projection at
+## every field of view and every aspect there is. Field of view does not enter
+## either, which is why there is no `fov` anywhere below and why a future FOV
+## slider needs no hook here. Anything in this file that claimed to solve
+## convergence "for the aspect" would be solving a problem that does not exist.
 ##
-## Solved in that order and not as two independent differences, because the pair
-## is applied as `Yaw * Pitch` and a yaw does not change a direction's height
-## while a pitch very much changes its bearing. Taking each angle as its own
-## before-and-after difference is the obvious shortcut and it misses by 1.3
-## degrees — 27 cm at the convergence distance, which is a Scrubber's width.
+## ## What is actually wrong
 ##
-## Re-solved once more after `AIM_ROLL` was zeroed in the build tool (the hold
-## re-poses when the weapon it is gripping stops being rolled), and the pair is
-## roll-free BY CONSTRUCTION: `Yaw * Pitch` about the lens's own up and right
-## produces no roll about the resulting forward axis — verified as well as argued,
-## because `--gunlog` now measures the weapon's roll relative to the lens directly
-## and it does not move when these two change.
+## The same instrument, standing perfectly still at a level view, sampled over
+## two seconds instead of photographed once:
 ##
-## Once, and not per frame, because the pitch follow above made the whole hold
-## RIGID IN THE LENS'S FRAME: the geometry these numbers are derived from is now
-## the same at every look angle, which is exactly why the convergence holds at
-## the pitch extremes without a solver and without touching a wrist.
+##   miss at 12 m   min 27.7 cm   mean 96.5 cm   max 127.4 cm
+##   roll                                         -2.6 deg .. +5.7 deg
+##
+## **The miss is not a number, it is a cycle**, and it goes round once per loop
+## of the `aim_idle` clip. Every pose this file writes is composed ONTO the clip
+## (`_clip_rotation`, and it has to be, or the walk stops walking) — so the
+## clip's own motion on the chest and the shoulders travels down the arm, through
+## the wrist, and comes out of the muzzle multiplied by half a metre of barrel.
+## A constant cannot cancel a moving thing. The three previous rounds each solved
+## for one phase of that cycle, verified at that phase, and shipped; a player,
+## who sees all of it, correctly reported the gun does not point at the reticle.
+##
+## `Player`'s own lens is the second half. Bob, dip, breath and shake are written
+## onto `camera` on top of the head's pitch, and the hold compensated for the
+## pitch alone — so the barrel also drifted off the reticle whenever the player
+## walked, landed, or got hit.
+##
+## ## The fix
+##
+## Both halves are the same mistake — a constant standing in for something live —
+## so they get the same fix. Nothing is baked. Every frame, `_pitch_hold`:
+##
+##   1. MEASURES the weapon where the animation actually left it this frame: the
+##      grip and the emitter, derived from the wrist bone rather than read off
+##      the socket node (which is one frame stale — see `_follow_hand`).
+##   2. Reads the LIVE LENS — `Player` hands over the camera's full transform in
+##      the avatar's frame, not a pitch angle — and puts the aim point at
+##      `CONVERGE_DISTANCE` down its forward axis.
+##   3. Solves the one rotation about the grip that takes the measured barrel
+##      onto that point, and the one roll about the result that levels the weapon
+##      to the lens's own horizon. Both in closed form, no iteration, no solver.
+##
+## The barrel is then on the reticle BY CONSTRUCTION rather than by tuning: at
+## any pitch, at any aspect, at any field of view, at any phase of any clip, and
+## at whatever the animation does next month. The residual is floating point.
 ##
 ## The distance is a choice, not a measurement. Converge too near and the barrel
 ## visibly crosses the sight line and points inboard of the reticle at range;
@@ -347,25 +382,61 @@ const FP_PITCH_FOLLOW: float = 1.0
 ## eight-metre reach and inside the range anything is legible at in this dark, so
 ## the barrel is on the crosshair everywhere a shot can actually land.
 const CONVERGE_DISTANCE: float = 12.0
-const CONVERGE_YAW: float = -0.213
-const CONVERGE_PITCH: float = -0.466
 
-## Sway — the whisper of weight, and NEVER the attachment itself.
+## Where the grip sits in the LENS's own frame, in metres. Right, up, forward.
 ##
-## The distinction is the whole lesson of this milestone. `ViewModel` (the
-## fallback rig) smooths the hold TOWARD the lens, which means during any fast
-## turn the weapon is somewhere the player did not put it. Here the hold is rigid
-## and the sway is a small additive offset laid on top of it: a hard flick still
-## ends with the weapon exactly where it belongs, having leaned into the turn on
-## the way. Amplitudes are in radians and deliberately tiny — this is a tool being
-## carried, not a scope being whipped around.
+## The hold is rigid in this frame — that is what every round of "the gun doesn't
+## move with the camera" has been asking for, and PT4 is the first version that
+## delivers it against the whole lens rather than against its pitch.
+##
+## Measured, not chosen: this is the mean of the settled grip over a full loop of
+## the idle clip on the build this replaced, so the weapon sits exactly where four
+## milestones of framing tuning left it and the fix changes where the gun POINTS
+## without changing where it SITS. `FP_ARM_OFFSET` and `FP_HOLD_OFFSET` still pose
+## the arms and still decide what the elbow does; they no longer decide where the
+## hold ends up, because a chain of five bone offsets deciding that was how the
+## grip quietly moved 8 cm between milestones and nobody noticed.
+const HOLD_LENS_OFFSET: Vector3 = Vector3(0.233, -0.167, -0.108)
+
+## Sway — the whisper of weight, and NEVER the aim.
+##
+## The distinction is the whole lesson of this file, and PT4 sharpened it. PT1
+## made the sway a ROTATION of the hold: 0.055 rad of yaw lean, which is 3.2
+## degrees, which is **66 cm at the convergence distance**. So the one part of
+## the hold that was deliberately allowed to move was, on its own, thirteen times
+## the error budget this milestone is held to — and it moved exactly when a live
+## player was turning, which is exactly when they were looking at it. Every
+## scripted capture missed it because no scripted capture had ever swung a mouse.
+##
+## Sway is now expressed only in the two channels that CANNOT take the barrel off
+## the reticle:
+##
+##   * a TRANSLATION of the grip in the lens's frame. The aim is re-solved from
+##     wherever the grip ends up, so a hold that has leaned 4 cm into a turn is
+##     still pointing at the crosshair — it is just pointing at it from slightly
+##     to one side, which is what a carried weapon does.
+##   * a ROLL about the barrel's own axis, which by definition moves no point on
+##     that axis at all. It is free, so it is where most of the character went.
+##
+## Metres and radians. Bigger than the numbers they replace, and the hold reads
+## as heavier rather than looser, because none of it is error any more.
 const HOLD_SWAY_LAG: float = 16.0
-const HOLD_SWAY_YAW: float = 0.055
-const HOLD_SWAY_PITCH: float = 0.040
+const HOLD_SWAY_SHIFT: Vector2 = Vector2(0.038, 0.030)
+const HOLD_SWAY_ROLL: float = 0.075
 ## Angular rate, in rad/s, at which the sway offset saturates. A brisk turn is
 ## ~3 rad/s; a flick is ten times that, and past saturation extra speed must not
 ## buy extra lean or a fast player's weapon swings out of frame.
 const HOLD_SWAY_SATURATION: float = 7.0
+
+## How much of the lens's walk bob the weapon is allowed to LAG behind.
+##
+## A hold that is rigid in the lens's frame does not bob, because the lens is
+## bobbing under it and they move together — which is correct, and dead. This
+## puts a fraction of the bob back as a counter-translation, so the weapon rides
+## the walk cycle visibly while staying exactly on the reticle (see the sway note
+## above: a translation cannot take the barrel off the crosshair). Zero is a
+## weapon welded to the eye; one is a weapon that ignores the walk entirely.
+const HOLD_BOB_LAG: float = 0.55
 
 ## Weapon collision, the avatar's half. See `Player._update_weapon_tuck` for the
 ## probe and for why NULLVOID collides the weapon instead of rendering it through
@@ -379,6 +450,25 @@ const HOLD_SWAY_SATURATION: float = 7.0
 ## is standing flat against.
 const TUCK_PITCH: float = 0.58
 const TUCK_OFFSET: Vector3 = Vector3(-0.035, -0.022, 0.095)
+
+## PT4: AND the same two moves again, in the LENS's frame.
+##
+## This is the one thing the per-frame placement broke and had to be given back
+## deliberately, and it is worth naming loudly because the failure mode is
+## dangerous: the hold is now placed at `HOLD_LENS_OFFSET` outright, so a tuck
+## expressed ONLY as a chest pose gets silently cancelled by the very next line
+## and the weapon goes back to clipping straight through the wall the probe
+## just found. The chest pair above still runs — it is what makes the TORSO hunch,
+## which is most of what the tuck reads as — and these two are what actually move
+## the weapon now.
+##
+## Metres and radians in the lens's own axes: in toward the body, down, and back
+## toward the eye; then the aim itself drops, because a weapon brought in to
+## clear a wall points at the floor in front of it and not at the crosshair. That
+## last one is the single deliberate exception to this file's convergence law,
+## and it is deliberate: at full tuck the player is not aiming.
+const TUCK_LENS_SHIFT: Vector3 = Vector3(-0.055, -0.085, 0.110)
+const TUCK_LENS_AIM: float = 0.58
 
 ## Where the animation tracks live, relative to the AnimationPlayer's root.
 const TRACK_PREFIX: String = "Armature/Skeleton3D"
@@ -451,11 +541,20 @@ const MUZZLE_FLASH_ENERGY: float = 2.6
 const MUZZLE_FLASH_MIN_INTERVAL: float = 0.34
 
 var _look: Vector2 = Vector2.ZERO
-## PT1. The live lens pitch and the lens's own position in the avatar's frame,
-## both written by the owning Player every rendered frame — see `set_lens`. The
-## hold is rotated about that point by that angle, which is what makes it track.
+## PT1/PT4. The live LENS, in the avatar's own frame, written by the owning
+## Player every rendered frame — see `set_lens`. The hold is placed in this frame
+## outright, which is what makes it track.
+##
+## `_lens_pitch` survives only as the sway's input; the placement uses the basis,
+## because head pitch is one of five things `Player._update_view` puts between the
+## eye and the world and a hold that follows one of them slides under the other
+## four.
 var _hold_pitch: float = 0.0
 var _lens_local: Vector3 = Vector3(0.0, 1.62, -0.16)
+var _lens_basis: Basis = Basis.IDENTITY
+## The walk bob the lens is currently carrying, in the lens's frame, so the hold
+## can lag a fraction of it back. See HOLD_BOB_LAG.
+var _lens_bob: Vector3 = Vector3.ZERO
 ## Additive hold sway, chasing the lens's angular rate. See HOLD_SWAY_LAG.
 var _hold_sway: Vector2 = Vector2.ZERO
 var _last_hold_look: Vector2 = Vector2.ZERO
@@ -734,11 +833,6 @@ func _track_head(delta: float, heading: Vector3) -> void:
 	# Chest first: the lift has to land before the neck and head are posed
 	# relative to it, or the head-look fights the lean.
 	if _has_aim and _down < 0.5:
-		# PT1: how much lens pitch the hold takes, and how it is split between the
-		# chest fold and the shoulder rotation. Zero on a remote copy — a crewmate
-		# across the room keeps the honest pose, the same rule the outboard cheat
-		# has always followed.
-		var follow: float = _hold_pitch * FP_PITCH_FOLLOW if _first_person else 0.0
 		# The tuck cancels the first-person lift and then keeps going, so a player
 		# pressed against a wall ends up below the honest low ready rather than
 		# merely back at it.
@@ -761,61 +855,185 @@ func _track_head(delta: float, heading: Vector3) -> void:
 			# M4.8 dropped the rest height and left the two effects the same size.
 			# Only the outboard and forward travel comes back in.
 			reach.y = FP_ARM_OFFSET.y
-			_pitch_hold(reach, follow)
+			_pitch_hold(reach)
 	_aim_bone(_neck_bone, _look * NECK_SHARE)
 	_aim_bone(_head_bone, _look * (1.0 - NECK_SHARE))
 
 
-## Places the held-weapon assembly: converged on the crosshair, then rotated
-## rigidly about the LENS by `pitch`. `reach` is the outboard cheat this hold
-## already had.
+## Places the held-weapon assembly: measured where the animation left it, then
+## moved bodily onto the lens and turned until the barrel is on the crosshair.
+## `reach` is the outboard cheat this hold already had.
 ##
-## Two rigid transforms, composed, both landing on the two shoulder bones —
-## because rotating a rigid body about a point that is not its own origin is a
+## ONE rigid transform, solved this frame, landing on the two shoulder bones —
+## because moving a rigid body about a point that is not its own origin is a
 ## rotation plus a translation, and the shoulders are where this file is allowed
 ## to apply both (they carry the arms, the hands and the rifle, and no torso
 ## geometry). Everything below them follows for free, so the two-handed grip and
 ## every wrist angle survive by construction: nothing here poses a wrist.
 ##
-##   1. CONVERGENCE, about the grip. A fixed rotation that swings the barrel down
-##      and inboard until its axis meets the camera's aim ray. See CONVERGE_*.
-##   2. LENS PITCH, about the eye. E + R * (X - E) for every point X, which is
-##      what nails the whole assembly to the view. See FP_PITCH_FOLLOW.
+## The map every point X of the assembly goes through is
 ##
-## Order matters and this is the only order that works. The convergence is a fact
-## about the weapon's relationship to the LENS, so it has to be inside the lens
-## rotation — applied first in the level frame, then carried around by the pitch.
-## Applied the other way it would converge only at a level view and drift off the
-## reticle everywhere else.
+##     X  ->  want_grip + R * (X - grip)
+##
+## with `grip` measured this frame and `want_grip` read off the live lens. Feed
+## it the grip and you get `want_grip`; feed it the emitter and you get a point
+## on the sight line — which is the whole claim of this function, and it is an
+## identity rather than a tuning.
+##
+## ## Why it is solved and not baked
+##
+## See the CONVERGENCE note above. Briefly: the pose this rotation corrects is
+## written by an animation clip, so it MOVES, and three milestones of constants
+## each cancelled one phase of that movement and left a 1.3 metre cycle in the
+## other phases.
+##
+## ## Order
+##
+## The swing is solved against the wanted grip, not the measured one, so the
+## translation is folded in before the aim rather than after it. Solving the
+## other way round and then translating would slide the barrel off the point it
+## had just been aimed at, by the full lever arm of the offset — which is the
+## same class of mistake as converging outside the lens rotation, and it is worth
+## naming because the code reads almost identically either way.
 ##
 ## The shoulder's starting position is read back out of the skeleton rather than
 ## derived from the rest pose, because the base pose is not the rest pose: the
 ## chest carries the aim lift, the first-person yaw and the wall tuck, and every
 ## one of those has already moved the shoulder before we get here. Reading the
 ## answer is both shorter and immune to the next thing that poses the chest.
-func _pitch_hold(reach: Vector3, pitch: float) -> void:
+func _pitch_hold(reach: Vector3) -> void:
 	if _arm_bones.is_empty():
 		return
 	var to_local: Transform3D = global_transform.affine_inverse() \
 			* _skeleton.global_transform
-	# The convergence, plus the sway riding on top of it. Both are expressed in
-	# the LENS's frame — at a level view that is the avatar's frame, and the pitch
-	# rotation below carries them into every other view unchanged.
-	var converge: Basis = Basis(Vector3.UP, CONVERGE_YAW + _hold_sway.x * HOLD_SWAY_YAW) \
-			* Basis(Vector3.RIGHT, CONVERGE_PITCH + _hold_sway.y * HOLD_SWAY_PITCH)
-	var lens: Basis = Basis(Vector3.RIGHT, pitch)
-	var total: Basis = lens * converge
-	var grip: Vector3 = _grip_local(to_local)
+
+	# The base pose, on BOTH arms, BEFORE anything is measured — so every number
+	# below describes the pose this function is actually correcting. (The version
+	# this replaces measured the grip before applying the reach and then pivoted
+	# the convergence about a point 17 cm from the hand it meant to pivot about.)
+	#
+	# ## The rotation reset is not tidiness. It is the whole frame-rate story.
+	#
+	# This function SOLVES its rotation from the pose it measures, and then writes
+	# that solution as `total * clip` — so the thing it measures had better be the
+	# CLIP, or it is correcting one pose and composing onto another.
+	#
+	# The AnimationTree writes the clip once per PHYSICS tick and `drive()` runs
+	# once per RENDERED frame. At 60/60 they alternate and the pose read here is
+	# always the clip's, which is why every capture on this machine was clean. Put
+	# two rendered frames inside one tick — which is what a 120 Hz panel does to a
+	# 60 Hz simulation, and what most of the machines this ships to will do — and
+	# the second frame measures last frame's ALREADY-CORRECTED arm, solves a swing
+	# that assumes it is uncorrected, and lands the barrel a whole correction off.
+	# Measured with `--physics-hz 30`, before this line existed:
+	#
+	#     miss at 12 m   median 0.26 cm   p95 4115 cm   max 19076 cm
+	#     grip           281 mm of travel PER FRAME, alternating
+	#
+	# Which is not a small aim error. It is the hands and the weapon jumping a
+	# quarter of a metre on every other frame — the "upper body and hands with the
+	# gun kept flickering" report, exactly, and invisible to a 60 Hz test rig.
+	#
+	# `_clip_rotation` is cached for the whole physics tick (it captures the
+	# tree's own pose on the first read, which happens here), so this restores the
+	# same clean pose on every rendered frame inside a tick, however many there
+	# are. The position is already immune: `_shift_bone` writes from the REST
+	# pose, absolutely, for exactly this reason — see its own note.
 	for arm: int in _arm_bones:
-		# Base pose first, so the read-back below sees the hold where the existing
-		# tuning put it.
+		_skeleton.set_bone_pose_rotation(arm, _clip_rotation(arm))
 		_shift_bone(arm, reach)
+
+	# --- where the weapon is, this frame -------------------------------------
+	var gun: Transform3D = _gun_local(to_local)
+	var grip: Vector3 = gun.origin
+	var bore: Vector3 = gun.basis * _emitter_in_gun()
+	var aimed: bool = bore.length_squared() > 1.0e-8
+	if aimed:
+		bore = bore.normalized()
+
+	# --- where the lens is, this frame ---------------------------------------
+	#
+	# `_lens_basis` is the camera's own basis in the avatar's frame, so it already
+	# carries the head pitch AND the bob roll, the landing dip and the hit shake.
+	# The hold rides all of it, which is what "attached to the view" has to mean.
+	var sway: Vector3 = Vector3(
+			_hold_sway.x * HOLD_SWAY_SHIFT.x,
+			-_hold_sway.y * HOLD_SWAY_SHIFT.y,
+			0.0) - _lens_bob * HOLD_BOB_LAG + TUCK_LENS_SHIFT * _tuck
+	var want_grip: Vector3 = _lens_local + _lens_basis * (HOLD_LENS_OFFSET + sway)
+	var total: Basis = Basis.IDENTITY
+	if aimed:
+		# The aim drops as the weapon tucks — see TUCK_LENS_AIM. Everywhere else
+		# this is exactly the sight line.
+		var aim: Vector3 = _lens_local + _lens_basis \
+				* (Basis(Vector3.RIGHT, -TUCK_LENS_AIM * _tuck)
+					* Vector3(0.0, 0.0, -CONVERGE_DISTANCE))
+		var want_bore: Vector3 = (aim - want_grip).normalized()
+		# 1. the minimal swing that lands the barrel on the sight line.
+		total = _swing(bore, want_bore)
+		# 2. and the roll about that barrel, which cannot disturb step 1 because
+		#    every point on the axis of a rotation is a fixed point of it. Levels
+		#    the weapon to the LENS's horizon rather than to the world's, so a
+		#    hold under a rolling lens rolls with it instead of appearing to
+		#    counter-rotate. `_hold_sway` buys its lean here for free.
+		var up: Vector3 = (total * (gun.basis * Vector3.UP)).normalized()
+		var in_lens: Vector3 = _lens_basis.inverse() * up
+		total = Basis(want_bore,
+				-atan2(in_lens.x, in_lens.y) - _hold_sway.x * HOLD_SWAY_ROLL) * total
+
+	# --- and put it there ----------------------------------------------------
+	for arm: int in _arm_bones:
 		var shoulder: Vector3 = to_local * _skeleton.get_bone_global_pose(arm).origin
-		# 1. swing about the grip, 2. swing the result about the lens.
-		var converged: Vector3 = grip + converge * (shoulder - grip)
-		var placed: Vector3 = _lens_local + lens * (converged - _lens_local)
+		var placed: Vector3 = want_grip + total * (shoulder - grip)
 		_twist_bone(arm, total)
 		_shift_bone(arm, reach + placed - shoulder)
+
+
+## The minimal rotation taking `from` onto `to`, both unit. No roll about the
+## result by construction — the axis is perpendicular to both, so nothing spins
+## about the barrel that this function did not have to spin.
+static func _swing(from: Vector3, to: Vector3) -> Basis:
+	var along: float = clampf(from.dot(to), -1.0, 1.0)
+	if along > 0.9999999:
+		return Basis.IDENTITY
+	var axis: Vector3 = from.cross(to)
+	if axis.length_squared() < 1.0e-14:
+		# Antiparallel: the swing is a half turn about anything perpendicular. A
+		# hold can never reach this, and a solver that returns garbage at its one
+		# singularity is a solver that fails on the frame somebody photographs.
+		axis = from.cross(Vector3.UP)
+		if axis.length_squared() < 1.0e-14:
+			axis = from.cross(Vector3.RIGHT)
+	return Basis(axis.normalized(), acos(along))
+
+
+## The emitter's position in the WEAPON's own frame — the constant that turns the
+## gun's transform into a barrel direction.
+##
+## Read off the live nodes every frame rather than cached, and that is not
+## laziness: the socket is re-seated at the end of `drive()`, so both of these
+## transforms are one frame stale — and stale by exactly the same amount, which
+## makes the RELATIVE transform between them exact. A cached copy would have to
+## be invalidated by whatever re-sockets the weapon next, and nothing else in
+## this file needs a cache-invalidation rule.
+##
+## Zero when there is no weapon, which reads as "no barrel" and switches the
+## convergence off rather than aiming an imaginary one.
+func _emitter_in_gun() -> Vector3:
+	if _gun == null or not is_instance_valid(_gun) \
+			or _muzzle == null or not is_instance_valid(_muzzle):
+		return Vector3.ZERO
+	return _gun.global_transform.affine_inverse() * _muzzle.global_position
+
+
+## The weapon's whole transform in the avatar's frame, THIS frame, derived from
+## the wrist bone rather than read off the socket node. See `_grip_local` for why
+## the socket cannot be asked.
+func _gun_local(to_local: Transform3D) -> Transform3D:
+	if _hand_bone < 0:
+		return Transform3D(Basis.IDENTITY, _lens_local)
+	return to_local * (_skeleton.get_bone_global_pose(_hand_bone)
+			* Transform3D(Basis(HAND_ROTATION), HAND_OFFSET))
 
 
 ## Where the breaker's own origin sits in the avatar's frame, THIS frame, derived
@@ -931,11 +1149,26 @@ func _clip_rotation(bone: int) -> Quaternion:
 ## would pose the hold one physics tick behind the view it is supposed to be
 ## bolted to, which is the lag half of the complaint this exists to answer.
 ##
-## `look` is (yaw, pitch) for the sway; `lens_local` is the eye position the hold
-## is rotated about. Only the local first-person copy is ever told.
-func set_lens(look: Vector2, lens_local: Vector3) -> void:
+## `look` is (yaw, pitch), and it is now ONLY the sway's input — the rate of a
+## mouse, not the pose of a hold. `lens` is the camera's whole transform in this
+## avatar's frame, which is the pose: PT4 replaced "rotate the hold about the eye
+## by the head's pitch" with "put the hold in the lens", because the head's pitch
+## is one of five things `Player._update_view` writes between the eye and the
+## world and the other four (bob, landing dip, breath, hit shake — translation
+## AND rotation, roll included) were sliding the weapon every time the player
+## moved. Handing over the transform instead of an angle means the next thing
+## anybody adds to that lens is followed for free.
+##
+## `bob` is the walk cycle's own contribution to that transform, passed
+## separately so the hold can lag a fraction of it back and read as carried
+## rather than welded. See HOLD_BOB_LAG.
+##
+## Only the local first-person copy is ever told.
+func set_lens(look: Vector2, lens: Transform3D, bob: Vector3) -> void:
 	_hold_pitch = look.y
-	_lens_local = lens_local
+	_lens_local = lens.origin
+	_lens_basis = lens.basis
+	_lens_bob = bob
 	_last_hold_look = look if not _has_hold_look else _last_hold_look
 	_has_hold_look = true
 	_pending_look = look
@@ -1061,18 +1294,64 @@ func set_first_person() -> void:
 		_body_mesh.layers |= BODY_LAYER
 	_tag_body_layer(_gun)
 
-	# The body light. Mounted at the sternum, aimed at nothing, culled to the
-	# body layer so the room never sees it.
+	# The body light, culled to the body layer so the room never sees it.
+	#
+	# ## PT4 re-aimed it, and the reason is a number
+	#
+	# It used to sit at the sternum with a metre and a half of reach, which meant
+	# the nearest thing to it was the player's own chest at fifteen centimetres.
+	# Looking straight down — which M6.6's decks made an ordinary thing to do,
+	# not a stunt — that chest is the whole frame, and it clipped:
+	#
+	#   lens pitch -1.45, 3440x1440    pixels at full white
+	#     as shipped                     1.024 %
+	#     with this lamp switched off    0.173 %
+	#     with the ACCENT emission off   1.013 %   (i.e. not the accents)
+	#
+	# Five sixths of the blowout was one light. Not the emissive seams, which were
+	# the obvious suspect and are innocent.
+	#
+	# The fix is geometric and STATIC, deliberately. The tempting fix is to fade
+	# the lamp as the player looks down, and it is a trap: that makes a light
+	# whose brightness tracks the mouse, a fast flick strobes it, and every
+	# temporal-brightness effect in this game has to answer to the 3 Hz flash
+	# ceiling (DESIGN.md pillar 7). A lamp that does not change cannot flash.
+	#
+	#   * MOVED OUT IN FRONT of the chest — 60 cm forward, level with the hold —
+	#     so the chest is beyond the lamp's reach entirely instead of being the
+	#     nearest thing to it. Halfway measures do not work here and both were
+	#     tried: leaving it at the sternum and merely dimming it takes the
+	#     blowout from 1.02% to 0.61% and costs the hands; moving it INTO the
+	#     hold instead of in front of it puts the lamp inside the forearm and
+	#     takes the blowout to 7.88%, which is worse than shipping it.
+	#   * REACH cut to 0.8 m. It has to cover the grip and stop; 1.5 m reached
+	#     the hips, the far shoulder and both knees.
+	#   * ATTENUATION up, so what is left falls off hard across the body's depth.
+	#   * SPECULAR OFF. A point light 10 cm inside your own pauldron puts a
+	#     mirror highlight on it, and a specular highlight is the one term that
+	#     goes straight past white with nothing to clamp it.
+	#
+	# It is better on BOTH axes rather than a trade, which is how you know it is
+	# the geometry that was wrong and not the brightness:
+	#
+	#                      look-down clipping     level-view hands
+	#     as shipped         3.180 % / 1.024 %      0.042
+	#     this               0.995 % / 0.243 %      0.099
+	#     lamp switched off  0.817 % / 0.173 %      —
+	#
+	# i.e. the blowout is now within a rounding error of having no lamp at all,
+	# and the hands are two and a half times better lit than the version that was
+	# causing it.
 	var lamp: OmniLight3D = OmniLight3D.new()
 	lamp.name = "BodyLight"
-	lamp.position = Vector3(0.0, 1.35, -0.14)
+	lamp.position = Vector3(0.10, 1.48, -0.60)
 	lamp.light_color = Color(0.78, 0.85, 1.0)
 	# Feeble on purpose: it exists so your hands are not a silhouette, not so you
 	# can read by them.
-	lamp.light_energy = 0.7
-	lamp.omni_range = 1.5
-	lamp.omni_attenuation = 1.2
-	lamp.light_specular = 0.5
+	lamp.light_energy = 0.75
+	lamp.omni_range = 0.8
+	lamp.omni_attenuation = 2.2
+	lamp.light_specular = 0.0
 	lamp.shadow_enabled = false
 	lamp.light_volumetric_fog_energy = 0.0
 	lamp.light_cull_mask = BODY_LAYER

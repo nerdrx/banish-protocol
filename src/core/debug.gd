@@ -425,6 +425,8 @@ var dump_live_path: String = ""
 ## every injection point to the drop shaft and quit non-zero if any leg is
 ## blocked. The solo invariant, checked against real colliders.
 var _pathwalk: bool = false
+## M6.6 `--auditvert`: placement-quality sweep over every vertical element.
+var _auditvert: bool = false
 ## `--tailprobe WHICH`. Which creature the spring-tail inspection stages.
 var _tail_which: String = "sentinel"
 var _last_probe_t: float = 0.0
@@ -525,6 +527,9 @@ func _ready() -> void:
 	# on a 32:9 panel does.
 	_apply_forced_window_size()
 	_apply_forced_display()
+	if physics_hz > 0:
+		Engine.physics_ticks_per_second = physics_hz
+		print("[Debug] --physics-hz: simulation at %d, rendering uncapped" % physics_hz)
 	# Before anything reads a tier or a wallet: Net announces the program the
 	# instant it hosts or joins, and a forced build that arrives after that
 	# announcement is a build the host never hears about.
@@ -555,7 +560,8 @@ func _ready() -> void:
 	# automation guard exists to prevent — stolen focus, a captured pointer — is
 	# exactly what a live playtest needs.
 	automated = (not _mode.is_empty() or not screenshot_path.is_empty() \
-			or auto_quit_after > 0.0 or steam_selftest) and not live_input
+			or auto_quit_after > 0.0 or steam_selftest \
+			or not aim_trace_dir.is_empty() or aim_drive) and not live_input
 	if automated:
 		_stay_out_of_the_way()
 	if _mode == "dump":
@@ -577,11 +583,15 @@ func _ready() -> void:
 		_run_tail_motion.call_deferred()
 		return
 	if _mode.is_empty() and screenshot_path.is_empty() and auto_quit_after <= 0.0 \
-			and not steam_selftest and gun_log_path.is_empty() and burst_dir.is_empty():
+			and not steam_selftest and gun_log_path.is_empty() and burst_dir.is_empty() \
+			and aim_trace_dir.is_empty() and not aim_drive and not aim_overlay_only:
 		set_process(false)
 		return
 	if not gun_log_path.is_empty():
 		_open_gun_log()
+		add_child(LateSampler.new())
+	if not aim_trace_dir.is_empty() or aim_overlay_only or not aim_strip_dir.is_empty():
+		_start_aim_trace.call_deferred()
 	# Stays processing for the whole run, not just while a screenshot is armed:
 	# `_enforce_mouse` has to be live from boot to quit, including across the
 	# menu -> layer scene change and every descent after it.
@@ -928,6 +938,8 @@ func _parse_args(args: PackedStringArray) -> void:
 					_flare_delay = args[i].to_float()
 			"--pathwalk":
 				_pathwalk = true
+			"--auditvert":
+				_auditvert = true
 			"--dumplive":
 				if i + 1 < args.size():
 					i += 1
@@ -1055,6 +1067,48 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
 					i += 1
 					burst_frames = maxi(args[i].to_int(), 1)
+			# --- PT4 aim trace. See the section at the foot of this file. -------
+			"--aimtrace":
+				if i + 1 < args.size():
+					i += 1
+					aim_trace_dir = args[i]
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					var stops: Array[float] = []
+					for piece: String in args[i].split(",", false):
+						stops.append(piece.to_float())
+					if not stops.is_empty():
+						aim_trace_pitches = stops
+			"--aimdrive":
+				aim_drive = true
+			"--physics-hz":
+				# Forces a render frame rate that is NOT the physics rate, which
+				# is the only way to reproduce a whole class of pose bug on a
+				# machine whose display happens to run at 60. This file already
+				# carries one of those (`CrewAvatar._aim_bone`: an override that
+				# compounded `fps/60` times and "only appeared on hardware other
+				# than the developer's"), and PT4 found a second. Half the physics
+				# rate means two rendered frames per tick, which is what a 120 Hz
+				# panel does to a 60 Hz simulation.
+				if i + 1 < args.size():
+					i += 1
+					physics_hz = maxi(args[i].to_int(), 1)
+			"--aimstrip":
+				aim_drive = true
+				if i + 1 < args.size():
+					i += 1
+					aim_strip_dir = args[i]
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					aim_strip_every = maxi(args[i].to_int(), 1)
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					aim_strip_frames = maxi(args[i].to_int(), 1)
+			"--aimoverlay":
+				# The overlay without the sweep: for a live-motion strip, and for
+				# eyeballing a build interactively next to `--playtest`.
+				if aim_trace_dir.is_empty():
+					aim_overlay_only = true
 			_:
 				pass
 		i += 1
@@ -1820,10 +1874,197 @@ func note_built_layer(graph: LayerGraph) -> void:
 ## is called from inside `Layer._rebuild`, and the colliders it is about to test
 ## do not exist until `add_child(_builder)` a few lines further down.
 func arm_path_walk() -> void:
-	if not _pathwalk:
+	if not _pathwalk and not _auditvert:
 		return
 	await get_tree().create_timer(1.5).timeout
+	if _auditvert:
+		_run_vertical_audit()
+		return
 	_run_path_walk()
+
+
+## `--auditvert`: placement quality for every vertical element on the layer.
+##
+## The flood fill proved the crew can WALK the layer. This asks a different and
+## much pickier question: does the vertical vocabulary sit correctly in the world
+## it was dropped into? A stair whose first tread is jammed against a facing wall,
+## a railing running through a server rack, a plinth with a crate half inside it —
+## none of those stop anyone reaching the drop shaft, and all of them look broken.
+##
+## Works off the SCENE, not off the graph. Every vertical mesh is tagged `Vert_*`
+## at build time and the dressing already groups itself under `DataBlock`,
+## `DataRack` and `Crates`; the audit takes world-space AABBs off the real nodes,
+## so it sees where geometry actually ENDED UP rather than where the generator
+## meant to put it. Overlaps are tested with a tolerance, because a deck flush
+## against the wall it hangs off is correct and only a real interpenetration is a
+## finding.
+##
+## Findings are grouped into classes so the fix is a placement RULE and not a
+## per-seed patch — a class with one instance is usually bad luck, a class with
+## forty is a rule that was never written.
+const AUDIT_TOLERANCE: float = 0.06
+## Clear grade a flight's foot needs in front of its first tread. A stair flush
+## ALONG a wall is correct architecture; a stair flush INTO one is the bug the
+## live playtest reported.
+const AUDIT_APPROACH: float = 1.5
+## What counts as a solid the vertical vocabulary must not interpenetrate. Node
+## name stems, matched after the `@Name@2` sigil Godot gives duplicate siblings.
+const AUDIT_SOLID_NAMES: Array[String] = [
+	"DataBlock", "DataRack", "Crates", "DataShard", "DebrisBody",
+	"RewireJunction", "WeldVent", "LootCabinet", "CommandTerminal",
+	"SiphonTap", "CompilerTerminal", "BackdoorNode", "ExfilUplink",
+	"PILLAR_CONDUIT_HERO", "RIB_COLUMN",
+]
+
+func _run_vertical_audit() -> void:
+	var layer: Node = get_tree().get_first_node_in_group("layer")
+	if layer == null:
+		printerr("[VertAudit] FAIL no layer")
+		get_tree().quit(1)
+		return
+	var graph: LayerGraph = layer.get("graph") as LayerGraph
+	var builder: Node = layer.get_node_or_null("ProcLayerBuilder")
+	if graph == null or builder == null:
+		printerr("[VertAudit] FAIL no graph or builder")
+		get_tree().quit(1)
+		return
+
+	var vertical: Array[Dictionary] = []
+	var solids: Array[Dictionary] = []
+	var census: Dictionary = {}
+	_collect_audit_nodes(builder, vertical, solids, census)
+	if log_ai:
+		var seen: Array = census.keys()
+		seen.sort()
+		for n: String in seen:
+			print("[VertAudit]   node %-24s %4d" % [n, int(census[n])])
+
+	var findings: Dictionary = {}
+	var worst: Array[Dictionary] = []
+
+	# --- 1. vertical element vs solid dressing -------------------------------
+	for v: Dictionary in vertical:
+		var va: AABB = v["aabb"]
+		for o: Dictionary in solids:
+			var oa: AABB = o["aabb"]
+			var hit: AABB = va.intersection(oa)
+			if not va.intersects(oa):
+				continue
+			# Shrink both by the tolerance before believing it: touching is not
+			# clipping, and a deck laid against a wall touches by design.
+			var depth: float = minf(minf(hit.size.x, hit.size.y), hit.size.z)
+			if depth <= AUDIT_TOLERANCE:
+				continue
+			var label: String = "%s x %s" % [String(v["kind"]), String(o["kind"])]
+			findings[label] = int(findings.get(label, 0)) + 1
+			worst.append({"label": label, "depth": depth,
+					"at": hit.position + hit.size * 0.5})
+
+	# --- 2. stair-foot approach ----------------------------------------------
+	for link: Dictionary in graph.deck_links:
+		if String(link["kind"]) == LayerGraph.LINK_CATWALK:
+			continue
+		var problem: String = _foot_approach_problem(graph, link)
+		if problem.is_empty():
+			continue
+		findings[problem] = int(findings.get(problem, 0)) + 1
+		worst.append({"label": problem, "depth": 0.0, "at": Vector3(link["foot"])})
+
+	# --- report ---------------------------------------------------------------
+	var total: int = 0
+	for label: String in findings:
+		total += int(findings[label])
+	var classes: Array = findings.keys()
+	classes.sort()
+	print("[VertAudit] seed=%d layer=%d elements=%d solids=%d decks=%d routes=%d findings=%d" % [
+		Rng.run_seed, graph.layer_number, vertical.size(), solids.size(),
+		graph.decks.size(), graph.deck_links.size(), total])
+	for label: String in classes:
+		print("[VertAudit]   %-34s %4d" % [label, int(findings[label])])
+	worst.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a["depth"]) > float(b["depth"]))
+	for i: int in mini(worst.size(), 3):
+		print("[VertAudit]   worst%d %s depth=%.2fm at %s" % [
+			i, String(worst[i]["label"]), float(worst[i]["depth"]),
+			str((worst[i]["at"] as Vector3).snapped(Vector3.ONE * 0.1))])
+	get_tree().quit(0)
+
+
+## Walks the built layer collecting world-space AABBs for both sides of the test.
+func _collect_audit_nodes(node: Node, vertical: Array[Dictionary],
+		solids: Array[Dictionary], census: Dictionary) -> void:
+	# Godot names the SECOND and later siblings that share a name `@DataBlock@2`,
+	# not `DataBlock2` — a leading sigil, not a trailing digit. Matching on
+	# `begins_with("DataBlock")` therefore found exactly one of every group on the
+	# layer and silently under-reported the audit by two orders of magnitude. Strip
+	# the sigil first, then take the stem.
+	var name: String = String(node.name).trim_prefix("@").split("@")[0]
+	var stem: String = name.rstrip("0123456789")
+	census[stem] = int(census.get(stem, 0)) + 1
+	if name.begins_with("Vert_"):
+		var mesh: MeshInstance3D = node as MeshInstance3D
+		if mesh != null:
+			vertical.append({"kind": stem,
+					"aabb": mesh.global_transform * mesh.get_aabb()})
+		return
+	# Everything a deck, ramp or railing could bury, clip or make unusable.
+	#
+	# Not just the big dressing: a chip inside a plinth is loot nobody can pick up,
+	# and a vent behind a stair is a mechanic the breaker cannot reach. The kit's
+	# own standing furniture (hero pillars, rib columns) is in here too, because a
+	# catwalk through a column reads worse than a catwalk through a crate.
+	if stem in AUDIT_SOLID_NAMES:
+		var box: AABB = AABB()
+		var leaf: MeshInstance3D = node as MeshInstance3D
+		if leaf != null:
+			box = leaf.global_transform * leaf.get_aabb()
+		else:
+			box = _merged_aabb(node as Node3D)
+		if box.size.length() > 0.01:
+			solids.append({"kind": stem, "aabb": box})
+		return
+	for child: Node in node.get_children():
+		_collect_audit_nodes(child, vertical, solids, census)
+
+
+func _merged_aabb(root: Node3D) -> AABB:
+	var out: AABB = AABB()
+	var first: bool = true
+	for child: Node in root.get_children():
+		var mesh: MeshInstance3D = child as MeshInstance3D
+		if mesh == null:
+			continue
+		var box: AABB = mesh.global_transform * mesh.get_aabb()
+		if first:
+			out = box
+			first = false
+		else:
+			out = out.merge(box)
+	return out
+
+
+## Does this flight's foot have somewhere to stand? Returns "" when it is fine.
+##
+## Pure graph maths rather than a physics probe, so the same rule can be enforced
+## at generation time (`LayerGraph._split_band`) and asserted in the selftest. The
+## approach box sits in front of the first tread, in the direction a body walks
+## in from; if it leaves the room's snapped shell, the flight is footed into a
+## wall.
+func _foot_approach_problem(graph: LayerGraph, link: Dictionary) -> String:
+	var foot: Vector3 = link["foot"]
+	var head: Vector3 = link["head"]
+	var up: Vector3 = Vector3(head.x - foot.x, 0.0, head.z - foot.z)
+	if up.length() < 0.01:
+		return ""
+	up = up.normalized()
+	var shell: Rect2 = LayerGraph._kit_rect(
+			graph.rooms[int(link["room"])]["min"],
+			graph.rooms[int(link["room"])]["max"])
+	# One body-width in front of the first tread, plus the clearance.
+	var probe: Vector2 = Vector2(foot.x, foot.z) - Vector2(up.x, up.z) * AUDIT_APPROACH
+	if shell.has_point(probe):
+		return ""
+	return "stair foot into wall (no %.1fm approach)" % AUDIT_APPROACH
 
 
 # --------------------------------------------------------- M6.6 verticality --
@@ -3813,7 +4054,7 @@ func _process(delta: float) -> void:
 	_enforce_mouse()
 	_advance_tour(delta)
 	_sample_fps(delta)
-	_sample_gun(delta)
+	_advance_aim_drive(delta)
 	_advance_burst()
 	if not _shot_armed or _shot_taken:
 		return
@@ -3876,7 +4117,11 @@ func _open_gun_log() -> void:
 		push_error("[Debug] --gunlog: cannot write %s" % gun_log_path)
 		gun_log_path = ""
 		return
-	_gun_log.store_line("frame,dt_ms,yaw,pitch,gx,gy,gz,mx,my,mz,roll_deg,bore_deg")
+	# PT4 added `tuck` and `miss_cm`. The two columns turn the log from "where is
+	# the weapon" into "is it aimed, and if not, is that on purpose" — see
+	# `Player.weapon_tuck` and `Debug.bore_offset`.
+	_gun_log.store_line("frame,dt_ms,yaw,pitch,gx,gy,gz,mx,my,mz,roll_deg,bore_deg,"
+			+ "tuck,miss_cm")
 
 
 ## One row per rendered frame: where the grip and the emitter are IN THE LENS'S
@@ -3921,12 +4166,16 @@ func _sample_gun(delta: float) -> void:
 	# and the sight line. The Surge's top edge is raked by design, so the only
 	# honest measure of "is it pointing where I am looking" is the bore.
 	var bore: Vector3 = (muzzle - grip).normalized()
-	_gun_log.store_line("%d,%.3f,%.5f,%.5f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f" % [
-		_gun_frame, delta * 1000.0,
-		atan2(-forward.x, -forward.z),
-		asin(clampf(forward.y, -1.0, 1.0)),
-		grip.x, grip.y, grip.z, muzzle.x, muzzle.y, muzzle.z,
-		roll, rad_to_deg(acos(clampf(bore.dot(Vector3.FORWARD), -1.0, 1.0)))])
+	var offset: Vector2 = bore_offset(grip, muzzle, AIM_RANGE)
+	_gun_log.store_line(
+		"%d,%.3f,%.5f,%.5f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f,%.2f" % [
+			_gun_frame, delta * 1000.0,
+			atan2(-forward.x, -forward.z),
+			asin(clampf(forward.y, -1.0, 1.0)),
+			grip.x, grip.y, grip.z, muzzle.x, muzzle.y, muzzle.z,
+			roll, rad_to_deg(acos(clampf(bore.dot(Vector3.FORWARD), -1.0, 1.0))),
+			float(player.call("weapon_tuck")),
+			(offset.length() * 100.0) if not is_nan(offset.x) else -1.0])
 
 
 ## The saved PNG is the root viewport's own texture, which under `canvas_items`
@@ -4070,3 +4319,407 @@ func _rect_gap(a_low: Vector2, a_high: Vector2, b_low: Vector2, b_high: Vector2)
 	var x_gap: float = maxf(b_low.x - a_high.x, a_low.x - b_high.x)
 	var y_gap: float = maxf(b_low.y - a_high.y, a_low.y - b_high.y)
 	return maxf(maxf(x_gap, y_gap), 0.0)
+
+
+# ------------------------------------------------------------- PT4 aim trace --
+#
+# The fourth round of one complaint: "THE GUN STILL DOESNT POINT TOWARDS THE
+# RETICLE", reported live, at 3440x1440, after three fixes that each measured
+# clean. `--gunlog` proved the hold is ATTACHED (constant grip in the lens's
+# frame); it never proved the hold is AIMED, because a column of camera-space
+# metres is not a picture and nobody had ever looked at the two together.
+#
+# The working hypothesis when this was written was ultrawide: every convergence
+# constant had been solved against the 16:9 design camera, the game is hor+, so
+# a baked convergence should point somewhere else at 21:9. **That hypothesis is
+# wrong, and this instrument is how it was killed.** Three runs, identical
+# scene, identical frame count:
+#
+#     1280x720    miss at 12 m  46.5 cm
+#     3440x1440   miss at 12 m  45.1 cm
+#     5120x1440   miss at 12 m  46.6 cm
+#
+# Aspect changes nothing, and it cannot: the reticle is the lens's own forward
+# ray, the convergence puts the barrel line through a point ON that ray, and a
+# 3D line through a point projects to a 2D line through that point's projection
+# at ANY field of view or aspect. Field of view does not enter either. Anything
+# that claims to solve convergence "for the aspect" is solving a problem that
+# does not exist.
+#
+# What the same runs did show is that the miss MOVES — 10 cm to 122 cm and back,
+# on a loop, with the player standing perfectly still. That is the bug, it is
+# temporal rather than spatial, and it is invisible to every capture this repo
+# has ever taken because a still frame samples one phase of it. Hence: an
+# instrument that reports a DISTRIBUTION over a settled window rather than a
+# reading, and that draws the barrel line into the frame so the number and the
+# picture are the same evidence.
+
+## `--aimtrace DIR`. Empty means off. Sweeps the lens through `aim_trace_pitches`,
+## samples the bore over a settled window at each stop, writes an annotated PNG
+## per stop and prints the table.
+var aim_trace_dir: String = ""
+## The stops, in radians. `Player.PITCH_LIMIT` is 1.45, so the last pair is the
+## hard extreme of the lens's travel — which M6.6 made ordinary, because a game
+## with decks in it has players looking straight up and straight down all day.
+var aim_trace_pitches: Array[float] = [0.0, -0.5, 0.5, -1.0, 1.0, -1.45, 1.45]
+## `--aimdrive`: scripted live-style motion. The mouse never stops moving and the
+## avatar never stops walking, because that is the state the complaint was
+## reported from and the state no scripted capture in this repo had ever been in.
+var aim_drive: bool = false
+## `--aimstrip DIR`: save every `AIM_STRIP_EVERY`th frame during the drive, up to
+## `AIM_STRIP_FRAMES`. The filmstrip a human judges, next to the numbers.
+var aim_strip_dir: String = ""
+## `--aimoverlay`: draw the trace, run no sweep, quit on nobody's schedule.
+var aim_overlay_only: bool = false
+## `--physics-hz N`. Zero leaves the project setting alone. See the parser.
+var physics_hz: int = 0
+
+## Where the barrel is asked to meet the sight line, in metres. Matches
+## `CrewAvatar.CONVERGE_DISTANCE`; the trace is meaningless measured anywhere
+## else, so if that constant moves this one moves with it.
+const AIM_RANGE: float = 12.0
+## Rendered frames of settle before the first stop is sampled. The rule in
+## CLAUDE.md for temporally-accumulated effects.
+const AIM_SETTLE_FRAMES: int = 240
+## And between stops: enough for the pitch to land and the pose to follow.
+const AIM_STOP_SETTLE: int = 30
+## Sampled per stop. At 60 fps that is two seconds — longer than the idle clip's
+## loop, so the window sees every phase of whatever is moving.
+const AIM_STOP_SAMPLES: int = 120
+## `--aimstrip DIR [every] [count]` defaults. Spacing matters more than it looks:
+## the first strip this instrument ever took sampled every 7th frame, which is
+## 1.6 seconds of a 26-second run — the avatar had walked into one wall and the
+## whole filmstrip was fourteen pictures of a tucked weapon. Wide enough to cover
+## the run, or it is not a strip of the run.
+var aim_strip_every: int = 45
+var aim_strip_frames: int = 14
+
+var _aim_overlay: AimOverlay = null
+var _aim_clock: float = 0.0
+var _aim_strip_taken: int = 0
+var _aim_strip_frame: int = 0
+
+
+## Where the barrel line crosses the plane `range_m` ahead of the lens, in the
+## lens's own frame, in metres. `(0, 0)` IS the reticle, at every aspect and
+## every field of view — see the section header.
+##
+## Returns a NaN vector when the barrel does not point forward at all, which is
+## a real state at the pitch extremes and must not be quietly reported as a
+## small miss.
+static func bore_offset(grip: Vector3, muzzle: Vector3, range_m: float) -> Vector2:
+	var span: Vector3 = muzzle - grip
+	if span.length_squared() < 1.0e-12:
+		return Vector2(NAN, NAN)
+	var dir: Vector3 = span.normalized()
+	if dir.z > -0.05:
+		return Vector2(NAN, NAN)
+	var t: float = (-range_m - grip.z) / dir.z
+	if t <= 0.0:
+		return Vector2(NAN, NAN)
+	return Vector2(grip.x + t * dir.x, grip.y + t * dir.y)
+
+
+## The lens-space grip and emitter, this frame. The same two points `--gunlog`
+## logs, factored out so the trace and the log can never drift apart.
+func _aim_sample() -> Dictionary:
+	var player: Node = Net.get_player(Net.local_id())
+	if player == null or not is_instance_valid(player):
+		return {}
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	if camera == null:
+		return {}
+	var lens: Transform3D = camera.global_transform.affine_inverse()
+	var grip: Vector3 = lens * player.call("hold_world_point")
+	var muzzle: Vector3 = lens * player.call("muzzle_world_point")
+	var weapon: Basis = lens.basis * player.call("hold_world_basis")
+	return {
+		"grip": grip,
+		"muzzle": muzzle,
+		"offset": bore_offset(grip, muzzle, AIM_RANGE),
+		"roll": rad_to_deg(atan2(weapon.y.x, weapon.y.y)),
+		"camera": camera,
+		"player": player,
+	}
+
+
+## `--gunlog` samples LAST, after every other node has had its say.
+##
+## This is a correctness fix with a measurable size, and it is worth the extra
+## node. `Debug` is an autoload, so its `_process` runs BEFORE the scene's — which
+## means sampling the hold from there compared THIS frame's camera against LAST
+## frame's weapon pose (`CrewAvatar.drive` runs from `Player._process`). Standing
+## still the two are identical and nobody ever noticed. Swinging a mouse at 1.8
+## rad/s, one frame is 1.8 degrees, which the log reported as **31 cm of miss at
+## 12 m that the renderer never drew**. An instrument that only lies while the
+## player is moving is the worst kind, because moving is when the complaints come
+## from.
+##
+## A child with a large `process_priority` sorts after the scene, so the sample is
+## taken from the state that is about to be rendered.
+class LateSampler extends Node:
+	func _ready() -> void:
+		name = "GunSampler"
+		process_priority = 500
+
+	func _process(delta: float) -> void:
+		Debug._sample_gun(delta)
+
+
+func _start_aim_trace() -> void:
+	_aim_overlay = AimOverlay.new()
+	var layer: CanvasLayer = CanvasLayer.new()
+	layer.name = "AimTrace"
+	# Above the HUD's own tube so the trace is never drawn under a scanline.
+	layer.layer = 128
+	layer.add_child(_aim_overlay)
+	add_child(layer)
+	if not aim_trace_dir.is_empty():
+		_run_aim_trace()
+
+
+## The sweep. One stop per pitch, each sampled over a window rather than read off
+## a frame — see the section header for why a reading is not evidence here.
+func _run_aim_trace() -> void:
+	DirAccess.make_dir_recursive_absolute(aim_trace_dir)
+	var player: Node = null
+	for _wait: int in 900:
+		await get_tree().process_frame
+		player = Net.get_player(Net.local_id())
+		if player != null and is_instance_valid(player):
+			break
+	if player == null or not is_instance_valid(player):
+		printerr("[AimTrace] no local player; nothing to trace")
+		get_tree().quit()
+		return
+	for _settle: int in AIM_SETTLE_FRAMES:
+		await get_tree().process_frame
+
+	var view: Vector2i = get_window().size
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	print("[AimTrace] %dx%d  aspect %.3f  fov %.1f  keep %s  range %.1f m" % [
+		view.x, view.y, float(view.x) / maxf(float(view.y), 1.0),
+		camera.fov if camera != null else 0.0,
+		"HEIGHT" if camera != null and camera.keep_aspect == Camera3D.KEEP_HEIGHT \
+				else "WIDTH", AIM_RANGE])
+	print("[AimTrace] %8s %8s %8s %8s %8s %8s %8s %8s" % [
+		"pitch", "mean_cm", "max_cm", "min_cm", "dx_cm", "dy_cm", "roll_deg", "px"])
+
+	var yaw: float = float(player.get("rotation").y)
+	for pitch: float in aim_trace_pitches:
+		player.call("debug_look", yaw, pitch)
+		for _settle: int in AIM_STOP_SETTLE:
+			await get_tree().process_frame
+		var total: float = 0.0
+		var worst: float = -1.0
+		var best: float = 1.0e9
+		var last: Vector2 = Vector2.ZERO
+		var roll: float = 0.0
+		var counted: int = 0
+		for _sample: int in AIM_STOP_SAMPLES:
+			await get_tree().process_frame
+			# The pitch is re-asserted every frame: the lens is a spring on a
+			# remote copy and a probe that set it once would be measuring the
+			# decay, not the hold.
+			player.call("debug_look", yaw, pitch)
+			var probe: Dictionary = _aim_sample()
+			if probe.is_empty():
+				continue
+			var offset: Vector2 = probe["offset"]
+			if is_nan(offset.x):
+				continue
+			var miss: float = offset.length()
+			total += miss
+			worst = maxf(worst, miss)
+			best = minf(best, miss)
+			last = offset
+			roll = float(probe["roll"])
+			counted += 1
+		if counted == 0:
+			print("[AimTrace] %8.2f   the barrel does not point forward at all" % pitch)
+			continue
+		if _aim_overlay != null:
+			_aim_overlay.caption = "pitch %+.2f rad   %dx%d" % [pitch, view.x, view.y]
+		await RenderingServer.frame_post_draw
+		var shot: String = "%s/aim_%dx%d_p%s.png" % [aim_trace_dir, view.x, view.y,
+			String("%+.2f" % pitch).replace(".", "").replace("+", "p").replace("-", "m")]
+		get_viewport().get_texture().get_image().save_png(shot)
+		print("[AimTrace] %8.2f %8.1f %8.1f %8.1f %8.1f %8.1f %8.2f  %s" % [
+			pitch, total / float(counted) * 100.0, worst * 100.0, best * 100.0,
+			last.x * 100.0, last.y * 100.0, roll, shot.get_file()])
+	print("[AimTrace] done")
+	get_tree().quit()
+
+
+## `--aimdrive`. A mouse that never stops and a body that never stops, driven
+## through `Player.debug_look` and `hold_forward` — the same two paths a human
+## uses. Two incommensurable frequencies per axis so the motion never repeats
+## inside a capture and never settles into a pose the hold could be lucky at.
+func _advance_aim_drive(delta: float) -> void:
+	if not aim_drive:
+		return
+	var player: Node = Net.get_player(Net.local_id())
+	if player == null or not is_instance_valid(player):
+		return
+	_aim_clock += delta
+	if _aim_clock < 2.0:
+		# Let the layer build and the pose settle before the mouse starts.
+		hold_forward = true
+		return
+	var t: float = _aim_clock - 2.0
+	player.call("debug_look",
+			1.10 * sin(t * 0.83) + 0.30 * sin(t * 3.10),
+			1.35 * sin(t * 0.57) + 0.10 * sin(t * 2.70))
+	# Walk in bursts rather than continuously. Held down, the avatar simply pins
+	# itself against the first wall it finds and stays there — so the whole
+	# capture is of a TUCKED weapon, which is deliberately not aimed, and the
+	# trace measures the wall-probe instead of the hold. Six seconds on, three
+	# off: enough walking for the bob to matter, enough pacing to get off the wall.
+	hold_forward = fmod(t, 9.0) < 6.0
+	if aim_strip_dir.is_empty() or _aim_strip_taken >= aim_strip_frames:
+		return
+	_aim_strip_frame += 1
+	if _aim_strip_frame % aim_strip_every != 0:
+		return
+	_save_aim_strip_frame()
+
+
+func _save_aim_strip_frame() -> void:
+	_aim_strip_taken += 1
+	var index: int = _aim_strip_taken
+	if index == 1:
+		DirAccess.make_dir_recursive_absolute(aim_strip_dir)
+	if _aim_overlay != null:
+		_aim_overlay.caption = "motion %02d" % index
+	await RenderingServer.frame_post_draw
+	get_viewport().get_texture().get_image().save_png(
+			"%s/strip_%02d.png" % [aim_strip_dir, index])
+	if index >= aim_strip_frames:
+		print("[AimTrace] strip: wrote %d frames to %s" % [index, aim_strip_dir])
+
+
+## The annotated trace itself: the barrel line, drawn into the frame it is wrong
+## in, next to the reticle it is supposed to be on.
+##
+## Everything is drawn from the LIVE camera each frame — the projection, the
+## reticle, and the aim point twelve metres down the sight line — so the picture
+## cannot disagree with the numbers and neither can be stale.
+##
+## The reticle is drawn TWICE on purpose: once at the unprojected aim point
+## (where the 3D camera says the centre of the sight line lands) and once at the
+## geometric centre of the canvas (where the HUD's own dot is). They coincide on
+## a healthy build at every aspect, and the day they do not, the picture says so
+## instead of an aspect bug hiding inside an aim bug.
+class AimOverlay extends Control:
+	## Stamped into the corner of the shot, so a directory of PNGs is
+	## self-describing.
+	var caption: String = ""
+
+	const BORE_COLOR: Color = Color(1.0, 0.35, 0.2, 0.95)
+	const RETICLE_COLOR: Color = Color(0.3, 1.0, 0.5, 0.95)
+	const MISS_COLOR: Color = Color(1.0, 0.85, 0.2, 0.95)
+	const CANVAS_COLOR: Color = Color(0.35, 0.75, 1.0, 0.7)
+
+	func _ready() -> void:
+		set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		set_process(true)
+
+	func _process(_delta: float) -> void:
+		queue_redraw()
+
+	## Viewport pixels -> this Control's own drawing units.
+	##
+	## `unproject_position` answers in the 3D viewport's pixels; a Control under
+	## `canvas_items` stretch draws in whatever units its canvas transform says,
+	## and its `size` is reported in a THIRD space (the design canvas). Guessing
+	## the ratio from `size / window` is the obvious conversion and it is wrong —
+	## it put the reticle marker at a quarter scale in the top-left corner of the
+	## first trace this instrument ever took. `get_global_transform_with_canvas`
+	## is the engine's own answer to the same question and cannot disagree with
+	## the renderer. The instrument for an aspect complaint does not get to have
+	## an aspect bug.
+	func _to_canvas(point: Vector2) -> Vector2:
+		return get_global_transform_with_canvas().affine_inverse() * point
+
+	## The true centre of the frame, in those same units. Where the HUD's own
+	## reticle dot is drawn, and where the sight line must land.
+	func _screen_centre() -> Vector2:
+		return _to_canvas(Vector2(get_window().size) * 0.5)
+
+	func _draw() -> void:
+		var camera: Camera3D = get_viewport().get_camera_3d()
+		var player: Node = Net.get_player(Net.local_id())
+		if camera == null or player == null or not is_instance_valid(player):
+			return
+		var font: Font = ThemeDB.fallback_font
+		var window: Vector2i = get_window().size
+		# Sized off the frame, not off a constant: a 15 px stamp is a caption at
+		# 720 and a rumour at 1440, and these traces exist to be read.
+		var pt: int = maxi(15, int(float(window.y) / 52.0))
+		var lens: Transform3D = camera.global_transform
+		var grip_world: Vector3 = player.call("hold_world_point")
+		var muzzle_world: Vector3 = player.call("muzzle_world_point")
+		var to_lens: Transform3D = lens.affine_inverse()
+		var grip: Vector3 = to_lens * grip_world
+		var muzzle: Vector3 = to_lens * muzzle_world
+		var offset: Vector2 = Debug.bore_offset(grip, muzzle, Debug.AIM_RANGE)
+		var tuck: float = float(player.call("weapon_tuck"))
+
+		# The sight line's own point at the trace range, and the barrel line's.
+		# Both are taken back out to WORLD space and unprojected, rather than
+		# drawn from canvas arithmetic, so the picture is the camera's own answer.
+		var aim_world: Vector3 = lens * Vector3(0.0, 0.0, -Debug.AIM_RANGE)
+		var centre: Vector2 = _screen_centre()
+		if not camera.is_position_behind(aim_world):
+			centre = _to_canvas(camera.unproject_position(aim_world))
+
+		# The barrel line, extended well past the trace range so its direction is
+		# legible even when the miss is small.
+		var span: Vector3 = muzzle_world - grip_world
+		if span.length_squared() > 1.0e-10:
+			var far: Vector3 = grip_world + span.normalized() * 40.0
+			if not camera.is_position_behind(grip_world) \
+					and not camera.is_position_behind(far):
+				var a: Vector2 = _to_canvas(camera.unproject_position(grip_world))
+				var b: Vector2 = _to_canvas(camera.unproject_position(far))
+				draw_line(a, b, BORE_COLOR, 2.0, true)
+				draw_circle(a, 4.0, BORE_COLOR)
+
+		# Where the barrel actually arrives at the trace range, and how far that
+		# is from where the player is looking.
+		if not is_nan(offset.x):
+			var hit_world: Vector3 = lens * Vector3(offset.x, offset.y, -Debug.AIM_RANGE)
+			if not camera.is_position_behind(hit_world):
+				var hit: Vector2 = _to_canvas(camera.unproject_position(hit_world))
+				draw_line(centre, hit, MISS_COLOR, 2.0, true)
+				draw_arc(hit, 9.0, 0.0, TAU, 24, MISS_COLOR, 2.0, true)
+				draw_string(font, hit + Vector2(float(pt), -float(pt) * 0.5),
+						"%.1f cm @ %.0f m" % [offset.length() * 100.0, Debug.AIM_RANGE],
+						HORIZONTAL_ALIGNMENT_LEFT, -1.0, pt, MISS_COLOR)
+
+		# The reticle: the camera's own centre, then the canvas's. See the class
+		# comment for why both are on the page.
+		for arm: Vector2 in [Vector2.RIGHT, Vector2.LEFT, Vector2.UP, Vector2.DOWN]:
+			draw_line(centre + arm * 9.0, centre + arm * 30.0, RETICLE_COLOR, 2.0, true)
+		draw_arc(_screen_centre(), 36.0, 0.0, TAU, 40, CANVAS_COLOR, 1.5, true)
+
+		var lines: PackedStringArray = PackedStringArray([
+			caption,
+			"%dx%d  aspect %.3f  fov %.1f" % [window.x, window.y,
+				float(window.x) / maxf(float(window.y), 1.0), camera.fov],
+			"grip  %6.3f %6.3f %6.3f" % [grip.x, grip.y, grip.z],
+			"bore  %.2f deg   miss %.1f cm%s" % [
+				rad_to_deg(acos(clampf((muzzle - grip).normalized().dot(Vector3.FORWARD),
+						-1.0, 1.0))),
+				(offset.length() * 100.0) if not is_nan(offset.x) else -1.0,
+				# A tucked weapon is aimed at the floor ON PURPOSE. Said on the
+				# picture, or the next person reads a working wall-probe as a
+				# broken convergence — which is what happened here once already.
+				("   TUCK %.2f (aimed low on purpose)" % tuck) if tuck > 0.01 else ""],
+		])
+		var y: float = float(pt) * 1.6
+		for line: String in lines:
+			draw_string(font, _to_canvas(Vector2(float(pt) * 1.4, y)), line,
+					HORIZONTAL_ALIGNMENT_LEFT, -1.0, pt, RETICLE_COLOR)
+			y += float(pt) * 1.3

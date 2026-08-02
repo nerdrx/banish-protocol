@@ -241,7 +241,38 @@ AIM_PITCH, AIM_YAW, AIM_ROLL = -8.0, 7.0, 0.0
 # grip, which the finger solver then reports as every phalanx starting buried.
 # The fingers are closed onto the grip from there by `fit_fingers`.
 GRIP_ATTACH_R = Vector((0.0340, -0.025, -0.065))     # right face of the pistol grip
-FOREGRIP_LOCAL = Vector((-0.0460, 0.1258, -0.1201))  # left face of the foregrip
+# PT4 moved the left attach 6.5 cm UP, and the reason is that the old one was
+# not on the weapon.
+#
+# The live report was "the support hand drapes over the foregrip rather than
+# wrapping it — the fingers extend past the column's heel", and the finger
+# solver had been saying the same thing in numbers for two milestones:
+#
+#     IndexFinger1_L  gap 0.0208 m     (contact is FINGER_RADIUS, 0.0075)
+#     IndexFinger2_L  gap 0.0218 m     curl -72 deg  <- EXTENDED, not curled
+#     IndexFinger3_L  gap 0.0357 m     curl -33 deg
+#     PinkyFinger1_L  gap 0.0213 m
+#
+# A phalanx that ends at three times the contact radius, having run its joint
+# the WRONG WAY, has not found anything to hold. Slicing the Surge horizontally
+# says why (tools scratchpad probe, bands of 15 mm through the foregrip):
+#
+#     z -0.075 .. -0.045   255 verts   the handguard's own body, x +-0.027
+#     z -0.105 .. -0.090     8 verts   a strut
+#     z -0.150 .. -0.105     0 VERTS   <- the old attach sat HERE, at -0.1201
+#     z -0.180 .. -0.150     2 verts   the far side of the same strut
+#
+# The "column" the hand was gripping is a skeletonised open frame with a hole
+# through the middle of it, and the palm was parked in the hole. The fingers
+# closed on air, hit their joint stops, and stopped — which is exactly what a
+# drape is. No amount of orientation tuning fixes a hand that is not touching
+# the model, which is presumably why two passes at this failed.
+#
+# The attach is now on the HANDGUARD BODY: the widest, solidest part of the
+# weapon under the barrel, one palm thickness proud of its left face
+# (0.027 + 0.020). It also brings the hands 4 mm CLOSER together (0.175 from
+# 0.179), which the note above wants and the left arm's reach likes.
+FOREGRIP_LOCAL = Vector((-0.0390, 0.1300, -0.0550))  # left face of the handguard
 # hand attach point measured out from the wrist head, in the wrist bone's own
 # basis (local Y runs wrist -> knuckles).
 HAND_OFF = Vector((0.0, 0.100, -0.006))
@@ -252,7 +283,7 @@ HAND_OFF = Vector((0.0, 0.100, -0.006))
 #   left : knuckles run down the foregrip's rake, back of the hand outboard on
 #          the other side — a thumb-forward support hold on a vertical grip
 GRIP_HAND_R = (Vector((0.06, -0.50, -0.86)), Vector((0.97, 0.24, 0.0)))
-GRIP_HAND_L = (Vector((0.02, 0.29, -0.96)), Vector((-0.97, 0.10, -0.22)))
+GRIP_HAND_L = (Vector((0.00, 0.00, -1.00)), Vector((-0.98, 0.00, -0.20)))
 
 # --- finger fitting ---------------------------------------------------------
 #

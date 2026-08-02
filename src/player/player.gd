@@ -276,6 +276,10 @@ var _shake_noise: FastNoiseLite = null
 
 # --- landing / sprint / sway (local lens only) -------------------------------
 var _dip_pitch: float = 0.0
+## The walk cycle's own translation of the lens, this tick, in the head's frame.
+## Written by `_update_view` (physics) and read by both weapon rigs from the idle
+## callback, which is why it is a field and not a local.
+var _view_bob: Vector3 = Vector3.ZERO
 var _fov_kick: float = 0.0
 ## 0..1 how tucked the breaker is against a near wall. See WEAPON_CLEAR.
 var _tuck: float = 0.0
@@ -1180,6 +1184,36 @@ func teleport_to(where: Vector3, yaw: float, pitch: float = 0.0) -> void:
 	_reset_channel()
 
 
+## Point the lens, and nothing else. `Debug`'s aim instruments only.
+##
+## `teleport_to` was the only existing way for a probe to choose a look angle,
+## and it is the wrong tool for a MOTION test: it zeroes the velocity and resets
+## the channel, so a probe that re-aimed every frame would also stop the avatar
+## walking — and the walk cycle is half of what an aim trace is measuring.
+##
+## Writes exactly what the mouse path in `_unhandled_input` writes: the body yaw,
+## the head pitch, and the two replicated fields. Nothing here is a shortcut past
+## a system; a scripted look is indistinguishable downstream from a human one,
+## which is the only reason the trace is evidence about what the player sees.
+func debug_look(yaw: float, pitch: float) -> void:
+	rotation.y = yaw
+	_pitch = clampf(pitch, -PITCH_LIMIT, PITCH_LIMIT)
+	head.rotation.x = _pitch
+	sync_yaw = yaw
+	sync_pitch = _pitch
+
+
+## How tucked the breaker is against a near wall, 0..1. Instruments only.
+##
+## A tucked weapon is POINTED AT THE FLOOR on purpose (see
+## `CrewAvatar.TUCK_LENS_AIM`), so it is the one state in which "the barrel is
+## not on the reticle" is the correct answer. Any aim measurement that cannot see
+## this number will read a working wall-tuck as a broken convergence — which is
+## exactly what the first PT4 motion run did, at a confident 7.8 metres of miss.
+func weapon_tuck() -> float:
+	return _tuck
+
+
 ## Dead-reckon between packets, then exponentially smooth onto the result.
 ## Without the reckoning step a 20 Hz stream reads as a visible stutter.
 func _smooth_remote(delta: float) -> void:
@@ -1258,10 +1292,14 @@ func _update_view(delta: float) -> void:
 				_shake_noise.get_noise_2d(phase, 37.0),
 				_shake_noise.get_noise_2d(phase, 71.0)) * _shake
 
+	# Stashed rather than recomputed: the viewmodel wants it, and so does the
+	# embodied hold (`CrewAvatar.set_lens`), which is driven from the IDLE
+	# callback and so cannot see any of the locals in this physics-tick function.
+	_view_bob = Vector3(horizontal * BOB_HORIZONTAL * _bob_weight,
+			vertical * BOB_VERTICAL * _bob_weight, 0.0)
 	camera.position = Vector3(
-			horizontal * BOB_HORIZONTAL * _bob_weight + swing.x * SHAKE_TRANSLATION,
-			vertical * BOB_VERTICAL * _bob_weight + _dip_offset
-					+ swing.y * SHAKE_TRANSLATION,
+			_view_bob.x + swing.x * SHAKE_TRANSLATION,
+			_view_bob.y + _dip_offset + swing.y * SHAKE_TRANSLATION,
 			0.0)
 	# Breathing. Only while genuinely idle, cross-faded against the bob weight so
 	# the two can never both be on the lens at once.
@@ -1285,9 +1323,8 @@ func _update_view(delta: float) -> void:
 		# the avatar's own frame for the lean.
 		var strafe: float = transform.basis.x.dot(
 				Vector3(velocity.x, 0.0, velocity.z)) / SPRINT_SPEED
-		_view_model.drive(delta, Vector2(rotation.y, _pitch), clampf(strafe, -1.0, 1.0),
-				Vector3(horizontal * BOB_HORIZONTAL * _bob_weight,
-						vertical * BOB_VERTICAL * _bob_weight, 0.0))
+		_view_model.drive(delta, Vector2(rotation.y, _pitch),
+				clampf(strafe, -1.0, 1.0), _view_bob)
 
 	_update_collapse(delta)
 	_update_beam(delta, speed)
@@ -1513,7 +1550,16 @@ func _process(delta: float) -> void:
 		# lens the hold pivots about; it drops as a player collapses, and the hold
 		# has to pivot about wherever the eye actually is.
 		if _is_local:
-			_avatar.set_lens(Vector2(rotation.y, _pitch), head.position)
+			# The LENS, not an angle. `camera` carries the head's pitch, the walk
+			# bob, the landing dip, the breath and the hit shake — in translation
+			# and in rotation — and the hold has to ride all of it or it slides
+			# whenever the player is doing anything. Taken relative to the AVATAR
+			# rather than to this body, because that is the frame the hold's own
+			# arithmetic is expressed in, and the two are only identical until
+			# somebody offsets the mesh.
+			_avatar.set_lens(Vector2(rotation.y, _pitch),
+					_avatar.global_transform.affine_inverse() * camera.global_transform,
+					_view_bob)
 		_avatar.drive(delta, speed, Vector3(velocity.x, 0.0, velocity.z), _collapse)
 
 
