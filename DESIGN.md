@@ -63,6 +63,15 @@ Steal the data. Reach a backdoor. Exfiltrate before the system decompiles you.
    load) or a god-ray draft get true low-frequency sway; dead runs hang dead
    still. If you cannot name the cause, cut the effect. Placement is a graph
    (route, connect, motivate), not a scatter.
+7. **The safety law (non-negotiable).** The DEFAULT build must be seizure-safe:
+   no element flashes above 3 Hz (WCAG 2.3.1), no full-screen inversions or
+   strobes. Global always-on flash caps (the `A11y` autoload) bound every
+   effect — glitch, damage, decompile, flicker lights. A first-launch
+   photosensitivity warning + a Reduced Flashing tier ship on top. Colour is
+   never the only channel: per-player SHAPE tags (▲●■◆) and CVD-safe swatches
+   are mandatory; red=danger is always paired with icon + motion. Directional
+   sound captions carry the threat-telegraph for deaf/HoH players.
+   Accessibility is a ship gate, not a setting added later.
 
 ## Gameplay Loop — descent through the rings (one intrusion ≈ 15–30 min)
 
