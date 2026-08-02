@@ -182,8 +182,14 @@ gun is useless," only as "shooting is one of several competing options."
   the walls, conduit hum, siphon taps like breathing pressure valves; your own
   process-hum that strains as Cycles drop. Music: sparse dark synth pads,
   combat = driving low-BPM electronic pulse.
-- **HUD**: diegetic program-shell UI — shared Cycles ring, integrity as shell
-  glow, buffered-data readout, crewmate tags that fade with distance/darkness.
+- **HUD — cassette futurism (Alien: Isolation)**: the player is a human-built
+  program, so their interface is old HUMAN tech — a phosphor CRT instrument
+  (scanlines, slight curvature, phosphor ghost-persistence, amber-dominant)
+  deliberately contrasting MOTHER's sleek neon architecture and rhyming with
+  the Northcairn legacy remnants in deep layers. Analog glitch language: VHS
+  tracking tears and sync loss for damage/low-Cycles; pristine digital glitch
+  reserved for MOTHER's own acts (decompile). Restrained, instrument-like:
+  shared Cycles ring as analog gauge, dot-matrix readouts, quiet by default.
 
 ## Steam Integration
 
@@ -284,6 +290,14 @@ nullvoid/
   FBX→glTF via Blender 5.2 headless (pipeline verified).
 - **M4 — The long game**: Compilers + permanent module tracks, per-player save
   files, backdoor-injection lobby flow, archive economy, threat-curve balancing.
+- **M4.8 — Functional clutter**: the world gets dense and interactive.
+  Static clutter (cables, debris, dead maintenance drones, pipe runs) plus
+  props that DO things: rewire junctions (Alien: Isolation style — reroute
+  power between room lighting / door locks / vent fans), weldable vent covers
+  (Scrubber ingress points sealable with the breaker), lootable cabinets
+  (breaker-cut the lock, data inside), physics debris that makes noise when
+  kicked (antivirus hears it), sealable bulkhead doors (temporary barricade,
+  MOTHER re-opens them eventually). All deterministic placement.
 - **M5 — Expensive**: post/glitch polish, audio, screen shake, kill cams,
   low-Cycles presentation, menu/lobby polish, Linux + Windows export presets.
 - **M6 — The Haunting**: MOTHER becomes the horror director + hunter processes.
