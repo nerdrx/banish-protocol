@@ -305,6 +305,12 @@ nullvoid/
   return partially corrupted output. The crew's navigator ritual: one player
   heads-down typing while the others hold the dark. (Our muster-to-descend
   is already a GTFO bioscan cousin; alarm-scan events join in M6.)
+
+**The solo invariant (design law)**: everything above — and everything ever —
+must be fully doable solo. Co-op multiplies tension and comfort, never gates
+content: no mechanic may require a second pair of hands (terminals are usable
+solo, just tenser; scans scale to crew size; no two-person doors, ever).
+Solo NULLVOID is the scariest way to play, not a degraded mode.
 - **M5 — Expensive**: post/glitch polish, audio, screen shake, kill cams,
   low-Cycles presentation, menu/lobby polish, Linux + Windows export presets.
 - **M6 — The Haunting**: MOTHER becomes the horror director + hunter processes.
