@@ -20,7 +20,7 @@ extends CanvasLayer
 ## cognitive) is a later pass; this ships the audio + captions rows the sound
 ## milestone is responsible for.
 
-const TITLE: String = "AUDIO  ·  COMFORT"
+const TITLE: String = "DISPLAY  ·  AUDIO  ·  COMFORT"
 
 
 ## Build the panel over `host` and return it. One live at a time — a second call
@@ -61,16 +61,72 @@ func _build() -> void:
 	box.set_corner_radius_all(2)
 	box.set_content_margin_all(26)
 	plate.add_theme_stylebox_override("panel", box)
-	plate.custom_minimum_size = Vector2(560.0, 0.0)
+	plate.custom_minimum_size = Vector2(660.0, 0.0)
 	center.add_child(plate)
+
+	# PT2: the panel scrolls, and it has to, because PT2 is what made it able to
+	# outgrow the screen. UI SCALE shrinks the 2D canvas — at x1.45 the canvas is
+	# 496 rows tall and this panel is over 700 — so the very setting a player opens
+	# this to change is the one that can push CLOSE off the bottom edge. Capped at
+	# 82% of the viewport height rather than a fixed number, so it is the SCREEN
+	# that decides, at every aspect and every scale.
+	var scroll: ScrollContainer = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size = Vector2(660.0, 0.0)
+	scroll.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	plate.add_child(scroll)
 
 	var column: VBoxContainer = VBoxContainer.new()
 	column.add_theme_constant_override("separation", 14)
-	plate.add_child(column)
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(column)
+
+	# Deferred: the column has no height until it has been laid out once, and a
+	# cap applied before that is a cap applied to zero.
+	#
+	# And re-run on every viewport change, which is not belt-and-braces here: this
+	# panel OWNS the UI SCALE slider, so the single most likely resize in the game
+	# is the player dragging that slider with this panel open. Capping once on open
+	# meant the cap was computed for the canvas the panel was opened at, and
+	# dragging scale up grew the panel past the bottom of the screen — taking the
+	# slider that caused it with it.
+	var refit: Callable = func() -> void:
+		if not is_instance_valid(scroll):
+			return
+		var ceiling: float = get_viewport().get_visible_rect().size.y * 0.82
+		scroll.custom_minimum_size = Vector2(660.0,
+				minf(column.get_combined_minimum_size().y, ceiling))
+	refit.call_deferred()
+	get_viewport().size_changed.connect(refit)
 
 	_header(column, TITLE)
 	_rule(column)
 
+	# --- display (PT2) ---
+	#
+	# First, above the mixer, because these are the two rows the last two
+	# playtests asked for by name — "barely legible on ANY screen" and "the
+	# vignette is too much" — and a player who opened this panel to fix either of
+	# them should not have to scroll past four volume sliders to find it.
+	#
+	# Both write through `Screen`, which applies and persists on every drag, so
+	# the effect is live UNDER the panel: the plate you are reading gets bigger as
+	# you drag UI SCALE, and the corners of the frame come back as you drag
+	# VIGNETTE down. A display setting you have to close a menu to evaluate is a
+	# display setting nobody tunes correctly.
+	_section(column, "DISPLAY")
+	_ranged(column, "UI SCALE", Screen.ui_scale,
+			Screen.UI_SCALE_MIN, Screen.UI_SCALE_MAX, 0.05, "x%.2f",
+			func(v: float) -> void: Screen.set_ui_scale(v))
+	_gloss(column, "Size of every readout and menu. The world is untouched — this "
+			+ "resizes the interface's own coordinate space, so text stays sharp.")
+	_ranged(column, "VIGNETTE", Screen.vignette,
+			Screen.VIGNETTE_MIN, Screen.VIGNETTE_MAX, 0.05, "%d%%",
+			func(v: float) -> void: Screen.set_vignette(v))
+	_gloss(column, "Darkening at the corners of the frame. A lens effect only — "
+			+ "the dark of the game itself comes from the lighting and does not move.")
+
+	_rule(column)
 	# --- volumes ---
 	_section(column, "LEVELS")
 	_slider(column, "MASTER", Audio.vol_master,
@@ -127,7 +183,7 @@ func _header(parent: Control, text: String) -> void:
 	var label: Label = Label.new()
 	label.text = text
 	label.add_theme_font_override("font", _font())
-	label.add_theme_font_size_override("font_size", 22)
+	label.add_theme_font_size_override("font_size", 24)
 	label.add_theme_color_override("font_color", UiFx.SYSTEM)
 	parent.add_child(label)
 
@@ -136,8 +192,8 @@ func _section(parent: Control, text: String) -> void:
 	var label: Label = Label.new()
 	label.text = text
 	label.add_theme_font_override("font", _font())
-	label.add_theme_font_size_override("font_size", 13)
-	label.add_theme_color_override("font_color", UiFx.DIM)
+	label.add_theme_font_size_override("font_size", UiFx.FONT_SMALL)
+	label.add_theme_color_override("font_color", UiFx.CAPTION)
 	parent.add_child(label)
 
 
@@ -159,7 +215,7 @@ func _slider(parent: Control, name: String, value: float, apply: Callable) -> vo
 	label.text = name
 	label.custom_minimum_size = Vector2(120.0, 0.0)
 	label.add_theme_font_override("font", _font())
-	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_font_size_override("font_size", UiFx.FONT_HEAD)
 	label.add_theme_color_override("font_color", UiFx.TEXT)
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	row.add_child(label)
@@ -179,7 +235,7 @@ func _slider(parent: Control, name: String, value: float, apply: Callable) -> vo
 	readout.custom_minimum_size = Vector2(56.0, 0.0)
 	readout.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	readout.add_theme_font_override("font", _font())
-	readout.add_theme_font_size_override("font_size", 16)
+	readout.add_theme_font_size_override("font_size", UiFx.FONT_HEAD)
 	readout.add_theme_color_override("font_color", UiFx.SYSTEM)
 	readout.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	row.add_child(readout)
@@ -187,6 +243,65 @@ func _slider(parent: Control, name: String, value: float, apply: Callable) -> vo
 	slider.value_changed.connect(func(v: float) -> void:
 		readout.text = "%3d%%" % int(round(v * 100.0))
 		apply.call(v))
+
+
+## `_slider`'s general cousin: an arbitrary range with its own readout format.
+##
+## Kept separate rather than generalising `_slider` because the 0-100 % form is
+## the right one for four mixer rows and the wrong one for a scale factor — "UI
+## SCALE 62%" tells a player nothing, "UI SCALE x1.30" tells them exactly what
+## they have. `format` carries a float for a multiplier and an int percentage for
+## a weight; the call site picks.
+func _ranged(parent: Control, name: String, value: float, low: float, high: float,
+		step: float, format: String, apply: Callable) -> void:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	parent.add_child(row)
+
+	var label: Label = Label.new()
+	label.text = name
+	label.custom_minimum_size = Vector2(120.0, 0.0)
+	label.add_theme_font_override("font", _font())
+	label.add_theme_font_size_override("font_size", UiFx.FONT_HEAD)
+	label.add_theme_color_override("font_color", UiFx.TEXT)
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(label)
+
+	var slider: HSlider = HSlider.new()
+	slider.min_value = low
+	slider.max_value = high
+	slider.step = step
+	slider.value = value
+	slider.custom_minimum_size = Vector2(300.0, 0.0)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(slider)
+
+	var percent: bool = format.ends_with("%%")
+	var readout: Label = Label.new()
+	readout.text = format % (roundf(value * 100.0) if percent else value)
+	readout.custom_minimum_size = Vector2(84.0, 0.0)
+	readout.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	readout.add_theme_font_override("font", _font())
+	readout.add_theme_font_size_override("font_size", UiFx.FONT_HEAD)
+	readout.add_theme_color_override("font_color", UiFx.SYSTEM)
+	readout.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(readout)
+
+	slider.value_changed.connect(func(v: float) -> void:
+		readout.text = format % (roundf(v * 100.0) if percent else v)
+		apply.call(v))
+
+
+## A standalone gloss line, for the rows that are not toggles.
+func _gloss(parent: Control, text: String) -> void:
+	var note: Label = Label.new()
+	note.text = text
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_font_override("font", _font())
+	note.add_theme_font_size_override("font_size", UiFx.FONT_SMALL)
+	note.add_theme_color_override("font_color", UiFx.CAPTION)
+	parent.add_child(note)
 
 
 ## A labelled on/off with a one-line plain-language gloss under it.
@@ -199,7 +314,7 @@ func _toggle(parent: Control, name: String, on: bool, gloss: String, apply: Call
 	check.text = name
 	check.button_pressed = on
 	check.add_theme_font_override("font", _font())
-	check.add_theme_font_size_override("font_size", 16)
+	check.add_theme_font_size_override("font_size", UiFx.FONT_HEAD)
 	check.add_theme_color_override("font_color", UiFx.TEXT)
 	check.add_theme_color_override("font_pressed_color", UiFx.SYSTEM)
 	wrap.add_child(check)
@@ -208,8 +323,8 @@ func _toggle(parent: Control, name: String, on: bool, gloss: String, apply: Call
 	note.text = gloss
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	note.add_theme_font_override("font", _font())
-	note.add_theme_font_size_override("font_size", 12)
-	note.add_theme_color_override("font_color", UiFx.DIM)
+	note.add_theme_font_size_override("font_size", UiFx.FONT_SMALL)
+	note.add_theme_color_override("font_color", UiFx.CAPTION)
 	wrap.add_child(note)
 
 	check.toggled.connect(func(pressed: bool) -> void:
@@ -221,7 +336,7 @@ func _button(parent: Control, text: String) -> Button:
 	var button: Button = Button.new()
 	button.text = text
 	button.add_theme_font_override("font", _font())
-	button.add_theme_font_size_override("font_size", 16)
+	button.add_theme_font_size_override("font_size", UiFx.FONT_HEAD)
 	button.mouse_entered.connect(func() -> void: Audio.play_2d(&"ui_hover"))
 	parent.add_child(button)
 	return button

@@ -31,10 +31,17 @@ const ROOM_MAX: Vector2 = Vector2(96.0, 54.0)
 ## documentation of her, drifting past on a terminal that has been left on. Dimmer
 ## than M3.8's as well: this is background activity behind a console, and the
 ## brief it now answers to is "classified terminal", not "arcade attract mode".
-const ROOM_COLOUR: Color = Color(0.98, 0.68, 0.22, 0.085)
-const LINK_COLOUR: Color = Color(0.98, 0.68, 0.22, 0.045)
-const TRUNK_COLOUR: Color = Color(1.0, 0.80, 0.36, 0.135)
-const LABEL_COLOUR: Color = Color(0.98, 0.68, 0.22, 0.10)
+## PT2 halves all four. The schematic used to be drawn INSIDE the CRT tube, where
+## the shader's phosphor bias, its vignette and the menu's 1.05 post-vignette were
+## all quietly holding it down. It is now full-bleed dressing outside the glass
+## (see MainMenu._build_terminal) — which is what fills an ultrawide's wings — so
+## it is drawn at its true weight for the first time, and its true weight was
+## competing with the console. The brief for this drawing has not changed:
+## classified terminal, background activity, something you are overhearing.
+const ROOM_COLOUR: Color = Color(0.98, 0.68, 0.22, 0.042)
+const LINK_COLOUR: Color = Color(0.98, 0.68, 0.22, 0.024)
+const TRUNK_COLOUR: Color = Color(1.0, 0.80, 0.36, 0.068)
+const LABEL_COLOUR: Color = Color(0.98, 0.68, 0.22, 0.052)
 
 static var _font: Font = preload("res://assets/fonts/ui_font_wide.tres")
 

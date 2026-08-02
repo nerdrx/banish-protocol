@@ -203,18 +203,26 @@ func _build() -> void:
 	# capture — anchors resolved against a rect that did not exist yet. A
 	# CenterContainer knows the panel's minimum size and does the arithmetic
 	# after layout, which is the whole reason containers exist.
-	var centre: CenterContainer = CenterContainer.new()
-	centre.name = "Centre"
-	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
-	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	tube.add_child(centre)
-
-	var holder: Control = Control.new()
-	holder.name = "Panel"
-	holder.custom_minimum_size = Vector2(WIDTH,
-			ROW_HEIGHT * float(Balance.MODULE_TRACKS.size()) + 210.0)
-	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	centre.add_child(holder)
+	# PT2 (Screen & Nav): centred on the TUBE-SAFE BOX, not on the canvas, and
+	# capped to it.
+	#
+	# `--ui-audit` at 3440x1440 x1.0: `Shaker/Plate  OUTSIDE-SAFE  y=47..673`
+	# against a safe box of y=45..657. Two separate faults that happened to be
+	# small at the design resolution and are not small anywhere else:
+	#
+	#   * a CenterContainer on the full canvas centres on the CANVAS, and the safe
+	#     box is nudged upward (`UiFx.tube_safe_rect`'s `vignette_shift` bias), so
+	#     even a panel that fits sits low by that bias;
+	#   * the panel's height is `ROW_HEIGHT * tracks + 210` — 626 rows, which is
+	#     14 rows TALLER than the entire 612-row safe box at UI SCALE 1.0 and more
+	#     than half again the 382-row box at 1.6. Nothing about a fixed height in a
+	#     scaled canvas can be made to fit by moving it.
+	#
+	# So: a SafeArea to centre in, and the settings panel's cap-and-scroll idiom to
+	# fit in. A player who turns UI SCALE up to read the module names does not
+	# expect the panel that lists them to walk off the bottom of the tube.
+	var holder: Control = SafeArea.modal(tube, Vector2(WIDTH,
+			ROW_HEIGHT * float(Balance.MODULE_TRACKS.size()) + 210.0))
 
 	# The piece the refusal glitch shakes. Separate from `holder` because a
 	# container owns its child's position and would put it back every frame.

@@ -36,7 +36,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.5, 0.72, 0.88, 0.85)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 4
-theme_override_font_sizes/font_size = 16
+theme_override_font_sizes/font_size = 18
 text = "LAYER 01"
 horizontal_alignment = 1
 
@@ -80,7 +80,7 @@ theme_override_constants/separation = 5
 [node name="Header" type="Label" parent="Root/CrewCluster/CrewPanel/Column"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.36, 0.78, 1, 0.75)
-theme_override_font_sizes/font_size = 11
+theme_override_font_sizes/font_size = 13
 text = "CREW"
 
 [node name="CrewList" type="VBoxContainer" parent="Root/CrewCluster/CrewPanel/Column"]
@@ -184,7 +184,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.36, 0.5, 0.62, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 3
-theme_override_font_sizes/font_size = 12
+theme_override_font_sizes/font_size = 14
 text = "/ 100"
 horizontal_alignment = 1
 
@@ -200,7 +200,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.36, 0.78, 1, 0.75)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 3
-theme_override_font_sizes/font_size = 11
+theme_override_font_sizes/font_size = 13
 text = "SHARED CYCLES"
 horizontal_alignment = 1
 
@@ -216,7 +216,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.62, 0.42, 0.18, 0.85)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 3
-theme_override_font_sizes/font_size = 12
+theme_override_font_sizes/font_size = 14
 text = "L01"
 horizontal_alignment = 1
 
@@ -255,7 +255,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.34, 0.42, 0.5, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 3
-theme_override_font_sizes/font_size = 11
+theme_override_font_sizes/font_size = 13
 text = "INTEGRITY 100%"
 
 [node name="IntegrityTrack" type="ColorRect" parent="Root/IntegrityPanel"]
@@ -311,7 +311,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.34, 0.42, 0.5, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 3
-theme_override_font_sizes/font_size = 11
+theme_override_font_sizes/font_size = 13
 text = "BREAKER"
 
 [node name="HeatTrack" type="ColorRect" parent="Root/KitPanel"]
@@ -377,7 +377,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.34, 0.42, 0.5, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 3
-theme_override_font_sizes/font_size = 11
+theme_override_font_sizes/font_size = 13
 text = "BUFFERED DATA"
 
 [node name="DataValue" type="Label" parent="Root/DataPanel"]
@@ -391,7 +391,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.42, 0.95, 1, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 4
-theme_override_font_sizes/font_size = 19
+theme_override_font_sizes/font_size = 20
 text = "000"
 
 [node name="ExfilLabel" type="Label" parent="Root"]
@@ -428,7 +428,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(1, 0.42, 0.36, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 4
-theme_override_font_sizes/font_size = 14
+theme_override_font_sizes/font_size = 16
 text = ""
 horizontal_alignment = 1
 
@@ -450,7 +450,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.4, 0.5, 0.6, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 3
-theme_override_font_sizes/font_size = 12
+theme_override_font_sizes/font_size = 14
 text = "LINK"
 horizontal_alignment = 2
 
@@ -472,7 +472,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.62, 0.82, 1, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 4
-theme_override_font_sizes/font_size = 13
+theme_override_font_sizes/font_size = 15
 text = ""
 horizontal_alignment = 1
 
@@ -570,7 +570,7 @@ mouse_filter = 2
 theme_override_colors/font_color = Color(0.82, 0.92, 1, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 5
-theme_override_font_sizes/font_size = 14
+theme_override_font_sizes/font_size = 16
 text = ""
 horizontal_alignment = 1
 
@@ -593,7 +593,7 @@ theme_override_colors/font_color = Color(0.36, 0.86, 1, 1)
 theme_override_colors/font_outline_color = Color(0, 0.01, 0.02, 0.9)
 theme_override_constants/outline_size = 4
 theme_override_fonts/font = ExtResource("6_font")
-theme_override_font_sizes/font_size = 13
+theme_override_font_sizes/font_size = 15
 text = ""
 horizontal_alignment = 1
 
@@ -642,7 +642,7 @@ horizontal_alignment = 1
 [node name="Hint" type="Label" parent="Fixed/PauseOverlay/Center/Console/Column"]
 layout_mode = 2
 theme_override_colors/font_color = Color(0.34, 0.4, 0.5, 1)
-theme_override_font_sizes/font_size = 11
+theme_override_font_sizes/font_size = 13
 text = "WASD MOVE   ·   SHIFT SPRINT   ·   SPACE JUMP   ·   F LIGHT   ·   HOLD E CHANNEL"
 horizontal_alignment = 1
 autowrap_mode = 2
@@ -717,7 +717,7 @@ color = Color(0.36, 0.78, 1, 0.28)
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.34, 0.42, 0.5, 1)
-theme_override_font_sizes/font_size = 11
+theme_override_font_sizes/font_size = 13
 text = "ARCHIVE"
 horizontal_alignment = 1
 
@@ -735,7 +735,7 @@ horizontal_alignment = 1
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_colors/font_color = Color(0.66, 0.76, 0.86, 1)
-theme_override_font_sizes/font_size = 13
+theme_override_font_sizes/font_size = 15
 text = ""
 horizontal_alignment = 1
 

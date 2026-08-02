@@ -152,16 +152,9 @@ func _build() -> void:
 	shade.mouse_filter = Control.MOUSE_FILTER_STOP
 	tube.add_child(shade)
 
-	var centre: CenterContainer = CenterContainer.new()
-	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
-	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	tube.add_child(centre)
-
-	var holder: Control = Control.new()
-	holder.name = "Panel"
-	holder.custom_minimum_size = Vector2(WIDTH, HEIGHT)
-	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	centre.add_child(holder)
+	# PT2: centred on the tube-safe box and capped to it. See `SafeArea.modal` —
+	# `--ui-audit` had this plate at x=87..987 against a box of 197..877.
+	var holder: Control = SafeArea.modal(tube, Vector2(WIDTH, HEIGHT))
 
 	var back: ColorRect = ColorRect.new()
 	back.name = "Plate"

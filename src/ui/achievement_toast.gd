@@ -28,6 +28,23 @@ const SLAB: Color = Color(0.055, 0.040, 0.020, 0.93)
 
 func _ready() -> void:
 	Achievements.unlocked.connect(_on_unlocked)
+	# PT2 (Screen & Nav). The toast stack is anchored 28 px inside the CANVAS's
+	# right edge, and under `canvas_items` + `expand` that edge is 1280 px from
+	# the left at 16:9 and 2560 at 32:9 — so on an ultrawide the card announcing
+	# an achievement appeared a metre from where the player was looking, in the
+	# region the CRT tube's barrel warp has no picture for. Making `Root` the
+	# tube-safe box moves the whole stack with one line; every offset inside it is
+	# unchanged and now means what it always looked like it meant.
+	var root: Control = $Root
+	if root != null:
+		get_viewport().size_changed.connect(_fit_root)
+		_fit_root()
+
+
+func _fit_root() -> void:
+	var root: Control = get_node_or_null("Root") as Control
+	if root != null:
+		UiFx.fit_to_safe_area(root, get_viewport().get_visible_rect().size)
 
 
 func _on_unlocked(_id: String, definition: Dictionary) -> void:
@@ -69,7 +86,14 @@ func show_card(title: String, note: String) -> void:
 	# does. The overshoot is small (Godot's default BACK is ~10%) and it lands
 	# inside SLIDE_IN, so the card is readable within a third of a second either
 	# way — the difference is entirely in how it got there.
-	var tween: Tween = create_tween()
+	# Bound to the SLOT, not to this node. `show_card` evicts the oldest card once
+	# five are up (MAX_VISIBLE), and a tween owned by the toast layer keeps running
+	# against the freed card — `slot.size` on a dead object, once per frame, for the
+	# rest of the slide. Reachable for real (a big exfil unlocks several at once)
+	# and reproduced instantly by `--grant ALL`, which threw a wall of
+	# "Invalid access to property 'size' on a base object of type 'Nil'". A tween
+	# created BY the node it animates is killed when that node is freed.
+	var tween: Tween = slot.create_tween()
 	tween.set_parallel(true)
 	tween.tween_property(slot, "modulate:a", 1.0, SLIDE_IN * 0.6)
 	tween.tween_method(func(value: int) -> void:
@@ -86,6 +110,12 @@ func show_card(title: String, note: String) -> void:
 		slot.custom_minimum_size.y = full * value,
 		0.12, 1.0, UiFx.TOAST_REVEAL).set_trans(Tween.TRANS_LINEAR)
 	tween.set_parallel(false)
+	# Under `--ui-audit` the card is the thing being measured, so it does not leave.
+	# See UiAudit.armed: a 4.2 s card is not a card a capture can be aimed at, and
+	# that is why this surface sat in the wrong corner of a 32:9 panel for a whole
+	# milestone with every screenshot in the repo agreeing that the HUD was fine.
+	if UiAudit.armed:
+		return
 	tween.tween_interval(HOLD)
 	tween.tween_property(slot, "modulate:a", 0.0, FADE_OUT)
 	tween.tween_callback(slot.queue_free)

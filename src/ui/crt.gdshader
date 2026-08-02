@@ -59,7 +59,17 @@ uniform float roll_strength : hint_range(0.0, 0.4) = 0.045;
 
 // --- phosphor ------------------------------------------------------------
 // Horizontal smear: a phosphor dot does not stop when the beam moves on.
-uniform float smear : hint_range(0.0, 0.02) = 0.0016;
+//
+// PT2 — THIS WAS THE DOUBLE-STRIKE. The offset used to be a UV fraction, which
+// is a fraction of the SCREEN WIDTH, so the same 0.0016 was 2.0 px on the 1280
+// display it was tuned on and 5.5 px on a 3440 one. Five pixels is not a
+// phosphor bleed, it is a second copy of the glyph — which is exactly what the
+// playtest reported ("every character reads as stamped twice"). A phosphor dot
+// has a physical size; it does not get wider because you bought a bigger monitor.
+// So the smear is now specified in SCREEN PIXELS and converted through
+// TEXTURE_PIXEL_SIZE, and the default is ~1 px: present at a 30 cm reading
+// distance, invisible as a duplicate.
+uniform float smear_pixels : hint_range(0.0, 6.0) = 1.0;
 uniform vec3 phosphor : source_color = vec3(1.0, 0.72, 0.30);
 // How far the tube pulls everything toward its own phosphor. 1 = a genuinely
 // monochrome amber screen; below that, saturated state colours (the red danger
@@ -141,11 +151,17 @@ void fragment() {
 	// between frames and fading it (see Hud._build_tube). This is only the
 	// sideways bleed of a dot that is still lit when the beam has moved on, and
 	// it widens under damage because that is when the beam is moving fastest.
-	float bleed = smear * (1.0 + damage * 7.0);
+	// In screen pixels (see `smear_pixels`), so a 4K tube bleeds as far as a 720p
+	// one does — one dot — instead of five times as far.
+	float bleed = smear_pixels * TEXTURE_PIXEL_SIZE.x * (1.0 + damage * 7.0);
 	if (bleed > 0.00005) {
 		vec4 a = texture(TEXTURE, clamp(clamped - vec2(bleed, 0.0), vec2(0.0), vec2(1.0)));
 		vec4 b = texture(TEXTURE, clamp(clamped + vec2(bleed * 0.45, 0.0), vec2(0.0), vec2(1.0)));
-		src = max(src, max(a, b) * vec4(0.72, 0.72, 0.72, 0.72));
+		// 0.45, down from 0.72. The trailing copy is a decaying dot, not a second
+		// impression of the same glyph — at 0.72 the ghost was within a stop of
+		// the letter itself, which is what made the edge read as doubled rather
+		// than as soft.
+		src = max(src, max(a, b) * vec4(0.45, 0.45, 0.45, 0.45));
 	}
 
 	vec3 col = src.rgb;
@@ -160,10 +176,20 @@ void fragment() {
 	col *= gain;
 
 	// --- grille ------------------------------------------------------------
-	// In screen pixels, so a 1280-wide capture and a 4K one wear the same tube.
-	float scan = 0.5 + 0.5 * sin(FRAGCOORD.y * (6.2831853 / scanline_pitch));
+	// PT2: the grille is a CONTENT-SCALE artefact, not a device-pixel one.
+	//
+	// It used to run at a fixed 2.0 device pixels. On a 720p screen that is one
+	// dark line per 9 px cap height and reads as an aperture grille; at 1440p it
+	// is one per 19 px of the SAME glyph, i.e. twice as many lines across the same
+	// letterform, and a 2 px sine on a 1 px stem is a moiré fight rather than a
+	// scanline. `scale` is how many device pixels one design-space pixel occupies
+	// (the interface is authored 720 tall), so the tube now wears the same
+	// stripe-per-letter at every resolution — which is what "the same tube" was
+	// always supposed to mean.
+	float scale = max(1.0 / (TEXTURE_PIXEL_SIZE.y * 720.0), 1.0);
+	float scan = 0.5 + 0.5 * sin(FRAGCOORD.y * (6.2831853 / (scanline_pitch * scale)));
 	col *= 1.0 - scan * scanline_strength * amount;
-	float triad = 0.5 + 0.5 * sin(FRAGCOORD.x * 2.0943951);
+	float triad = 0.5 + 0.5 * sin(FRAGCOORD.x * (2.0943951 / scale));
 	col *= 1.0 - triad * grille_strength * amount;
 
 	// --- roll bar ----------------------------------------------------------

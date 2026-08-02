@@ -103,6 +103,8 @@ var _keep_out: Array[Dictionary] = []
 ## generation, and a claim about generation belongs in a log.
 var clutter_note: String = ""
 var _prop_note: String = ""
+## M6.6 census line: what vertical vocabulary this layer actually got.
+var _vertical_note: String = ""
 
 
 static func create(from_graph: LayerGraph) -> ProcLayerBuilder:
@@ -146,6 +148,10 @@ func _build_content() -> void:
 	# field can leave the aperture cell open — a shaft is a hole with a light behind
 	# it, and the hole is not optional (INTEGRATION2 §4).
 	_plan_shafts()
+	# M6.6: and the excavations, for the same reason and one step earlier — a
+	# sunken nest is a hole in the floor field and in the slab collider, and the
+	# generator has to know about it before it stamps either.
+	_plan_excavations()
 
 	_rects.resize(graph.rooms.size())
 	for room: Dictionary in graph.rooms:
@@ -161,6 +167,12 @@ func _build_content() -> void:
 	# be welded, because something the dressing had stood in front of them was
 	# breaking the breaker's line of sight to the grille, and decoration is not
 	# allowed to disable a mechanic.
+	# M6.6: the decks, their routes and the structure holding them up. Built
+	# straight after the shells and before anything is dressed, so the keep-out
+	# pass below can treat a plinth as a solid object and the archetype dressing
+	# never stands a rack inside one.
+	_build_verticality()
+
 	_resolve_prop_spots()
 	_build_keep_out()
 
@@ -170,6 +182,9 @@ func _build_content() -> void:
 		_dress_corridor_decals(corridor)
 
 	for room: Dictionary in graph.rooms:
+		# M6.6: a tall room gets its overhead structure before its lights, so a key
+		# aimed at the floor has girders and pipe racks to break on.
+		_technical_ceiling_for(room)
 		_light_room(room)
 		# M4.95: one box-projected interior ReflectionProbe per room — free light in
 		# a darkness-law game (a reflection adds apparent brightness without a lumen),
@@ -204,8 +219,8 @@ func _build_content() -> void:
 
 	var draws: int = _clutter.flush()
 	draws += _flush_trim()
-	clutter_note = " clutter=[%s] batched=%d shafts=%d%s" % [
-		_clutter.describe(), draws, _shaft_specs.size(), _prop_note]
+	clutter_note = " clutter=[%s] batched=%d shafts=%d%s%s" % [
+		_clutter.describe(), draws, _shaft_specs.size(), _prop_note, _vertical_note]
 
 
 ## The shell a room actually got, rather than the rect the generator asked for.
@@ -591,6 +606,173 @@ func _plan_shafts() -> void:
 			"pos": Vector3(cell.x, 0.0, cell.y),
 			"ceiling": _height_of(room),
 		}
+
+
+# ------------------------------------------------------- M6.6 verticality --
+
+## Excavations, from the graph's sunken decks. Runs before the shells so
+## `kit_room` can leave the hole out of the floor field and out of the slab.
+func _plan_excavations() -> void:
+	floor_cuts.clear()
+	for deck: Dictionary in graph.decks:
+		if not deck.has("cut"):
+			continue
+		var room: int = int(deck["room"])
+		if not floor_cuts.has(room):
+			floor_cuts[room] = [] as Array[Rect2]
+		(floor_cuts[room] as Array[Rect2]).append(deck["cut"] as Rect2)
+
+
+## Stands every deck, route and ledge the graph authored.
+##
+## Nothing here decides anything. Which rooms are tall, where a gallery hangs,
+## which wall a stair climbs and where a ledge opens are all resolved in
+## `LayerGraph._plan_decks` and printed by `--dumplayer`; this turns each
+## rectangle into metal, and records the solid ones in the keep-out list so no
+## later pass drops a crate inside a plinth.
+func _build_verticality() -> void:
+	var counts: Dictionary = {}
+	for deck: Dictionary in graph.decks:
+		var kind: String = String(deck["kind"])
+		counts[kind] = int(counts.get(kind, 0)) + 1
+		var rect: Rect2 = Rect2(Vector2(deck["min"]), Vector2(deck["max"]) - Vector2(deck["min"]))
+		var y: float = float(deck["y"])
+		var room: Dictionary = graph.rooms[int(deck["room"])]
+		var shell: Rect2 = _rect_of(room)
+
+		if deck.has("cut"):
+			deck_excavation(deck["cut"] as Rect2, y)
+			# A sunken deck needs no platform of its own — the excavation floor IS
+			# the deck — and no railing, because you are already at the bottom.
+			continue
+
+		# Which edges face the room rather than a wall. A gallery bolted to the west
+		# wall gets rails on the other three; a catwalk in mid-air gets all four.
+		var open: Array = []
+		for side: int in 4:
+			var edge: Dictionary = _edge_of(rect, side)
+			var from: Vector2 = edge["from"]
+			var to: Vector2 = edge["to"]
+			var at: Vector2 = (from + to) * 0.5
+			var against_wall: bool = absf(at.x - shell.position.x) < 0.3 \
+					or absf(at.x - shell.end.x) < 0.3 \
+					or absf(at.y - shell.position.y) < 0.3 \
+					or absf(at.y - shell.end.y) < 0.3
+			if not against_wall:
+				open.append(side)
+
+		var gaps: Array = []
+		for drop: Dictionary in graph.deck_drops:
+			if int(drop["deck"]) == int(deck["id"]):
+				gaps.append(drop["at"])
+
+		var grated: bool = kind == LayerGraph.DECK_MEZZANINE \
+				or kind == LayerGraph.DECK_CATWALK \
+				or kind == LayerGraph.DECK_CONTROL \
+				or kind == LayerGraph.DECK_GANTRY
+		deck_platform(rect, y, grated, open, gaps)
+
+		if bool(deck["solid"]):
+			# A plinth is an object on the floor. Everything that scatters furniture
+			# has to know that before it scatters any.
+			var mid: Vector2 = rect.position + rect.size * 0.5
+			_keep_out.append({"pos": Vector3(mid.x, 0.0, mid.y),
+					"radius": maxf(rect.size.x, rect.size.y) * 0.5 + 1.6})
+
+	for link: Dictionary in graph.deck_links:
+		# A catwalk link is a pure routing edge: the span itself is a DECK and was
+		# built above. Building it again here would double every catwalk on the
+		# layer and put two colliders in the same place.
+		if String(link["kind"]) == LayerGraph.LINK_CATWALK:
+			continue
+		var foot: Rect2 = Rect2(Vector2(link["min"]), Vector2(link["max"]) - Vector2(link["min"]))
+		deck_ramp(foot, String(link["axis"]), int(link["dir"]),
+				float(link["y0"]), float(link["y1"]),
+				String(link["kind"]) == LayerGraph.LINK_STAIR)
+		_keep_out.append({"pos": Vector3(foot.position.x + foot.size.x * 0.5, 0.0,
+				foot.position.y + foot.size.y * 0.5),
+				"radius": maxf(foot.size.x, foot.size.y) * 0.5 + 1.2})
+
+	for drop: Dictionary in graph.deck_drops:
+		_drop_marker(drop)
+
+	if not counts.is_empty():
+		var parts: PackedStringArray = PackedStringArray()
+		for kind: String in counts:
+			parts.append("%s %d" % [kind, int(counts[kind])])
+		parts.sort()
+		_vertical_note = " decks=[%s] routes=%d ledges=%d" % [
+			", ".join(parts), graph.deck_links.size(), graph.deck_drops.size()]
+
+
+## The hazard plate that says "you can step off here".
+##
+## Readability is the whole feature. A drop-down is a risk/reward decision and a
+## player cannot decide anything about a ledge they did not see: the railing is
+## already broken at this point (GeometryKit._railing leaves the gap), and this
+## adds the striped nosing and a downward-throwing practical so the break reads
+## as an opening rather than as a missing rail.
+func _drop_marker(drop: Dictionary) -> void:
+	var at: Vector3 = drop["at"]
+	var dir: Vector3 = drop["dir"]
+	var across: Vector3 = Vector3(dir.z, 0.0, -dir.x)
+	var stripe: StandardMaterial3D = _make_emissive(SYSTEM_AMBER, 0.55)
+	# Stripes ACROSS the lip, not tiles on it: long on the edge axis, thin on the
+	# axis you walk off. The first version was 0.4 m square and, seen from where a
+	# player actually stands (a metre back, looking down), read as three amber
+	# slabs lying on the deck rather than as a painted nosing.
+	# Length must stay well under the pitch below or the stripes merge into one
+	# continuous amber bar — which is what the first pass did, and a solid bar reads
+	# as a painted kerb rather than as hazard marking.
+	var long: float = 0.52
+	var thin: float = 0.16
+	var size: Vector3 = Vector3(
+			lerpf(thin, long, absf(across.x)), 0.045,
+			lerpf(thin, long, absf(across.z)))
+	for i: int in 5:
+		var offset: float = (float(i) - 2.0) * 0.78
+		_mesh_box(at + across * offset - dir * 0.30 + Vector3(0.0, 0.025, 0.0),
+				size, stripe)
+	# Aimed DOWN off the lip, so the thing the ledge is above is the thing that
+	# lights up — you should be able to see what you are about to land on.
+	LightRig.practical(_fixtures, at + dir * 0.5 + Vector3(0.0, -0.35, 0.0),
+			0.5 * light_scale, 6.0, LightRig.AMBER).name = "Practical_ledge_%d_%d" % [
+					int(at.x), int(at.z)]
+
+
+## Overhead structure for every room the generator built tall.
+##
+## The cable trays leave a wall riser and arrive at something that USES power —
+## the room's own conduit trunk, its drop shaft, its Compiler — which is the same
+## FROM-a-source-TO-a-load grammar the wall cables have followed since M4.8, moved
+## up to the girders. A tall room with nothing between the racks and the ceiling
+## is exactly the empty volume the intricacy law forbids.
+func _technical_ceiling_for(room: Dictionary) -> void:
+	var height: float = _height_of(room)
+	if height < STOREY * 1.5:
+		return
+	var rect: Rect2 = _rect_of(room)
+	var mid: Vector2 = rect.position + rect.size * 0.5
+	var index: int = int(room["index"])
+
+	var loads: Array = []
+	if index == graph.shaft_index:
+		loads.append(graph.shaft_point)
+	for i: int in graph.compiler_rooms.size():
+		if graph.compiler_rooms[i] == index:
+			loads.append(graph.compiler_points[i])
+	for i: int in graph.siphon_rooms.size():
+		if graph.siphon_rooms[i] == index:
+			loads.append(graph.siphon_points[i])
+	for i: int in graph.junction_rooms.size():
+		if graph.junction_rooms[i] == index:
+			loads.append(graph.junction_points[i])
+	if loads.is_empty():
+		# Every tall room has SOMETHING in the middle of it that the racks and the
+		# lighting hang off; if the generator gave this one no named load, the room's
+		# own centre column is the load.
+		loads.append(Vector3(mid.x, 2.4, mid.y))
+	technical_ceiling(rect, height, loads)
 
 
 ## One box-projected, interior ReflectionProbe per lit room (INTEGRATION2 §5). SSR

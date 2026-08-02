@@ -215,9 +215,47 @@ func _act(delta: float) -> void:
 
 ## A room-graph waypoint at hover height — the Moth paths between rooms like
 ## anything else, it just does it in the air.
+##
+## M6.6: and it is the one process that ignores the deck graph entirely, on
+## purpose. Ramps and stairs are for things with feet; a Moth that had to walk
+## round to a staircase to reach a crewmate stood on a gantry would be the least
+## frightening thing in the game. It takes the flat room-graph route and holds
+## whatever altitude the target is at, which means a player who climbs to get away
+## from the pack has climbed straight into the Moth's element.
 func _route_to_air(target: Vector3) -> Vector3:
-	var flat: Vector3 = _route_to(Vector3(target.x, 0.0, target.z))
+	var flat: Vector3 = _route_to_flat(Vector3(target.x, 0.0, target.z))
 	return Vector3(flat.x, maxf(target.y, HOVER_HEIGHT), flat.z)
+
+
+## The pre-M6.6 room-graph route: corridor mouths only, no deck steps. Bypasses
+## `_route_to` so a flying hunter is never sent to the foot of a stair.
+func _route_to_flat(target: Vector3) -> Vector3:
+	if graph == null:
+		return target
+	var here: int = current_room()
+	var there: int = graph.region_of(target)
+	if here < 0 or there < 0 or here == there:
+		return target
+	var hop: int = graph.next_room(here, there)
+	if hop < 0:
+		return target
+	var door: Vector3 = graph.link_point(here, hop)
+	if Vector2(door.x - global_position.x, door.z - global_position.z).length() \
+			< WAYPOINT_RADIUS:
+		return graph.centre_of(hop)
+	return door
+
+
+## How high this room lets it fly. A Moth in a 4 m bus hall has nowhere to go; a
+## Moth in the 12 m trunk room should be a shape crossing the light shaft above
+## you, and this is the number that lets it be one.
+func _ceiling_here() -> float:
+	if graph == null:
+		return HOVER_HEIGHT
+	var room: int = current_room()
+	if room < 0 or room >= graph.rooms.size():
+		return HOVER_HEIGHT
+	return maxf(float(graph.rooms[room].get("h", HOVER_HEIGHT)) - 1.2, HOVER_HEIGHT)
 
 
 ## Frictionless hover: seek the target in the plane and ease toward hover height.
@@ -253,12 +291,38 @@ func _do_strike() -> void:
 	_tell_crew(&"_strike_fx")
 
 
+## Where it drifts to next, and at what ALTITUDE.
+##
+## M6.6: the patrol used to be a flat circle at 1.7 m — a Moth in a three-storey
+## trunk room hovered at knee height in the corner of a twelve-metre volume, which
+## wasted the only creature in the game that can use one. Now the height is rolled
+## across the room's own headroom, biased upward, so it patrols the girders and the
+## light shaft as often as the floor: you hear it above you before you see it, and
+## looking up is how you find it. Deliberately quantised to nothing and rolled off
+## its own private generator, so a tall room reads as a volume it OWNS rather than
+## as a ceiling it occasionally bumps.
 func _wander_point() -> Vector3:
 	var base: Vector3 = home
 	if graph != null and home_room >= 0:
 		base = graph.centre_of(home_room)
-	return base + Vector3(_rng.randf_range(-5.0, 5.0), HOVER_HEIGHT,
-			_rng.randf_range(-5.0, 5.0))
+	var altitude: float = patrol_altitude(_rng.randf(), _ceiling_here())
+	return base + Vector3(_rng.randf_range(-7.0, 7.0), altitude,
+			_rng.randf_range(-7.0, 7.0))
+
+
+## Patrol altitude for a 0..1 roll in a room with `headroom` metres of usable
+## air. A pure function so the behaviour can be asserted headlessly — see
+## `Debug._vertical_selftest`. Catching a flying creature in the act is exactly
+## the kind of claim a screenshot cannot settle.
+##
+## Biased HIGH: squaring the roll and lerping down from the ceiling puts most
+## patrol points in the upper half of the volume, so a tall room is somewhere the
+## Moth lives rather than somewhere it passes through at knee height. It never
+## returns the ceiling itself (t=0 gives headroom, and `_ceiling_here` has already
+## taken 1.2 m off the actual roof) and never drops below the hover floor.
+static func patrol_altitude(t: float, headroom: float) -> float:
+	return lerpf(maxf(headroom, HOVER_HEIGHT), HOVER_HEIGHT,
+			clampf(t, 0.0, 1.0) * clampf(t, 0.0, 1.0))
 
 
 # --- light sensing ----------------------------------------------------------

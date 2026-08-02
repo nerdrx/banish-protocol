@@ -35,6 +35,18 @@ uniform sampler2D screen_texture : hint_screen_texture, repeat_disable, filter_l
 // depend on it.
 global uniform float a11y_flash;
 
+// PT2 (Screen & Nav): the player's VIGNETTE weight, 0..1.4, declared in
+// project.godot [shader_globals] and driven by the Screen autoload. It scales
+// `vignette_intensity` below and NOTHING else.
+//
+// The distinction matters and it is DESIGN.md pillar 2: "the dark is the enemy"
+// is a statement about LIGHTING, not about a lens effect. The first playtest read
+// the vignette as "too much" and it was — at 1.05 on the menu it stopped being a
+// lens and became structure, eating a whole ticker line and half a panel. Turning
+// this to zero gives back the corners of the frame; it does not make the game
+// bright, because the game was never bright.
+global uniform float ui_vignette;
+
 // Master. Gameplay can pull the whole grade down for cutscenes/menus.
 uniform float intensity : hint_range(0.0, 2.0) = 1.0;
 
@@ -197,6 +209,35 @@ void fragment() {
 	// inlays and nowhere else, so the frame stays clean.
 	float ab = aberration * intensity * (1.0 + stress * 3.0 + fail * 14.0 + alert * 1.5);
 	ab *= (0.35 + local_edge * aberration_edge);
+	// PT2 — RESOLUTION NORMALISATION, and it is a bug fix rather than a tweak.
+	//
+	// `offset` below is in UV, so a UV-space `aberration` is a fraction of the
+	// SCREEN WIDTH: the 0.0012 tuned against a 1280-wide frame is 0.77 px there
+	// and 2.1 px on a 3440 one. Every number in this shader was chosen by looking
+	// at the 720p design resolution, so all of them were understated by a factor
+	// of the player's monitor — which is why the interface came back from the
+	// playtest as "every character stamped twice with an offset" on an ultrawide
+	// and merely soft on the machine it was authored on.
+	//
+	// Pinning to the design height means the fringe is the same NUMBER OF PIXELS
+	// everywhere, which is what a lens does. A real lens's fringe is a property of
+	// the glass, not of the sensor you put behind it.
+	ab *= 720.0 * SCREEN_PIXEL_SIZE.y;
+	// --- PT2: keep the fringe OFF the letterforms ----------------------------
+	//
+	// The playtest's ruling was "crisp glyph first, CRT flavour as garnish around
+	// it", and this line is what makes that structural instead of a matter of
+	// getting every constant right.
+	//
+	// `local_edge` is the local luma gradient, and a phosphor glyph on a near-black
+	// plate is the steepest gradient anything in this game ever produces — far
+	// above the lit doorframe the edge weighting was actually tuned against. So the
+	// one thing the CA fires hardest on is TEXT, which is the one thing that must
+	// not fringe. Rather than dial the whole effect down until words survive (and
+	// lose the doorframe fringe the grade exists for), the split is simply CUT
+	// where the gradient is glyph-steep. Silhouettes keep their fringe; letters
+	// stop having two of themselves.
+	ab *= 1.0 - smoothstep(0.55, 0.90, local_edge);
 	// The flinch's split is not edge-weighted: a hit fringes the whole frame,
 	// which is exactly what makes it read as an impact rather than as a lens.
 	// SAFETY (a11y #10): brief and event-driven, a colour fringe not a luminance
@@ -249,7 +290,8 @@ void fragment() {
 	float outer = mix(vignette_outer, 0.30, fail);
 	float vt = clamp((vdist - inner) / max(outer - inner, 0.001), 0.0, 1.0);
 	float vig = 1.0 - pow(vt, vignette_falloff);
-	float amount = vignette_intensity * intensity * (1.0 + stress * 0.8 + fail * 0.6);
+	float amount = vignette_intensity * ui_vignette * intensity
+			* (1.0 + stress * 0.8 + fail * 0.6);
 	color *= mix(clamp(1.0 - amount, 0.0, 1.0), 1.0, vig);
 
 	float l = luma(color);

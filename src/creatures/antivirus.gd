@@ -134,6 +134,12 @@ func setup(index: int, where: Vector3, room: int, layer: int, layout: LayerGraph
 	sync_position = where
 	collision_layer = ANTIVIRUS_LAYER
 	collision_mask = WORLD_MASK
+	# M6.6: the layer has ramps and stairs in it now. Without a snap, a body
+	# walking down a slope leaves the surface every frame, never reports
+	# `is_on_floor`, and `_steer` puts it into a permanent fall — which reads as a
+	# Scrubber bouncing down a staircase. The angle is Godot's default 45 degrees
+	# and every authored slope is under 27, so nothing here can climb a wall.
+	floor_snap_length = 0.55
 	_assemble()
 	_build_sync()
 
@@ -312,27 +318,60 @@ func current_room() -> int:
 	return graph.region_of(global_position)
 
 
-## Waypoint on the way to `target`: straight at it while sharing a room, and at
-## the connecting corridor's centre otherwise. Recomputed as rooms change, so a
-## chase around a loop re-routes without any path bookkeeping.
+## Waypoint on the way to `target`: straight at it while sharing a room AND a
+## deck, at the connecting corridor's centre when the rooms differ, and at the
+## foot of a ramp, stair or catwalk when only the elevation does. Recomputed as
+## rooms and decks change, so a chase up onto a mezzanine and back down re-routes
+## without any path bookkeeping.
+##
+## M6.6: this is the whole of the antivirus's verticality. There is still no
+## navmesh — the floors are flat *within* a deck, the doorways are 3.2 m wide and
+## every route between decks is a 4 m wide walkable slope, so "steer at the bottom
+## of the stair, then at the top of it" gets a Sentinel onto a gallery exactly the
+## way "steer at the corridor mouth" gets it into the next room. The important
+## property is that the graph refuses to author a deck a route cannot reach
+## (`LayerGraph.unreachable_decks`), so there is no position a player can stand in
+## that this function cannot produce a path to.
 func _route_to(target: Vector3) -> Vector3:
 	if graph == null:
 		return target
 	var here: int = current_room()
 	var there: int = graph.region_of(target)
-	if here < 0 or there < 0 or here == there:
+	if here < 0 or there < 0:
 		return target
 
-	var hop: int = graph.next_room(here, there)
-	if hop < 0:
-		return target
-	var door: Vector3 = graph.link_point(here, hop)
-	# Once through the corridor mouth, aim at the room beyond it rather than
-	# standing in the doorway re-deciding.
-	if Vector2(door.x - global_position.x, door.z - global_position.z).length() \
-			< WAYPOINT_RADIUS:
-		return graph.centre_of(hop)
-	return door
+	if here != there:
+		var hop: int = graph.next_room(here, there)
+		if hop < 0:
+			return target
+		# Leaving the room means getting back to grade first: a corridor mouth is at
+		# floor level, and a creature on a gallery has to walk down before it can
+		# walk out.
+		var descend: Vector3 = _deck_step(here, -1)
+		if descend != Vector3.INF:
+			return descend
+		var door: Vector3 = graph.link_point(here, hop)
+		# Once through the corridor mouth, aim at the room beyond it rather than
+		# standing in the doorway re-deciding.
+		if Vector2(door.x - global_position.x, door.z - global_position.z).length() \
+				< WAYPOINT_RADIUS:
+			return graph.centre_of(hop)
+		return door
+
+	var want: int = graph.deck_at(target)
+	var step: Vector3 = _deck_step(here, want)
+	return step if step != Vector3.INF else target
+
+
+## The next deck-graph waypoint inside `room`, or INF when this creature is
+## already on the deck it wants. Once it is standing at the mouth of the route it
+## aims at the far end instead, which is what makes it commit to a flight of
+## stairs rather than loitering at the bottom re-deciding every tick.
+func _deck_step(room: int, want: int) -> Vector3:
+	var standing: int = graph.deck_at(global_position)
+	if standing == want:
+		return Vector3.INF
+	return graph.deck_waypoint(room, standing, want, global_position)
 
 
 # -------------------------------------------------------------------- senses --

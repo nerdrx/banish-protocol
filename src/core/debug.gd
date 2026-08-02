@@ -17,6 +17,23 @@ extends Node
 ##       Live for 12 seconds regardless. When paired with --screenshot it takes
 ##       over the process lifetime, which is how one instance stays up long
 ##       enough for a second instance to photograph it.
+##   ... -- --window-size 3440x1440
+##       Resize the OS window to exactly WxH before capturing, borderless and
+##       at the screen origin so the compositor cannot shave decoration height
+##       off the request.
+##
+##       PT2 EXISTS BECAUSE THIS DID NOT. Every ultrawide claim made before this
+##       flag was unverifiable: `--screenshot` photographs the root viewport,
+##       which under `canvas_items` stretch is exactly the WINDOW's pixel size —
+##       so a capture taken from the default 1280x720 window comes back 1280x720
+##       no matter what resolution the *desktop* is, and no matter what the game
+##       looks like when a human runs it fullscreen on a 32:9 panel. The engine's
+##       own `--resolution` gets closer but is clamped by window decorations
+##       (a 3440x1440 request landed a 3440x1412 window here), which silently
+##       changes the aspect ratio — the one number an aspect bug is measured in.
+##       `_capture` now prints the window size, the viewport size and the saved
+##       image size on every shot and shouts when they disagree, so a capture can
+##       no longer quietly lie about which aspect it is evidence for.
 ##
 ## M2 world selection (host-side; the host replicates the choice to clients):
 ##   --seed N        force the run seed instead of rolling one
@@ -256,6 +273,49 @@ var screenshot_path: String = ""
 var screenshot_frames: int = 120
 var auto_quit_after: float = 0.0
 
+## `--window-size WxH`. Zero means "leave the window alone". See the header: this
+## is the flag that makes an aspect-ratio claim checkable.
+var forced_window_size: Vector2i = Vector2i.ZERO
+
+## `--ui-scale F` / `--vignette F`: the two PT2 display settings, forced for this
+## SESSION ONLY.
+##
+## Same doctrine as `--captions` and `--modules` (see `_ready`): a dev flag is a
+## measuring instrument, never a setting that sticks. These write `Screen`'s
+## fields directly and deliberately do NOT go through `Screen.set_ui_scale` /
+## `set_vignette`, because those persist — and a capture run that photographed the
+## slider at 1.6 would leave the developer's real interface at 1.6 forever.
+## Negative means "leave the player's own value alone".
+var forced_ui_scale: float = -1.0
+var forced_vignette: float = -1.0
+
+## `--no-safe-area`: put the menu and the HUD back on the pre-PT2 geometry, where
+## every anchored element was pinned to the CANVAS edge instead of to the tube-safe
+## box (see `UiFx.tube_safe_rect`).
+##
+## This is a MEASURING INSTRUMENT, not a compatibility switch. The whole PT2 layout
+## claim is "these elements were in the wrong place at wide aspects", and a claim
+## like that is only checkable if the wrong place can still be photographed from
+## the same build — otherwise the before-picture and the after-picture differ by a
+## thousand other things too. Run the same command twice, once with this flag, and
+## the diff is the anchoring and nothing else.
+var no_safe_area: bool = false
+
+## `--tour [seconds]`: walk the local avatar through the layer's rooms, one every
+## `seconds`, forever.
+##
+## The PT2 minimap's whole claim is "rooms appear as you enter them", and there
+## was no way to photograph that: every existing probe teleports to ONE fixture
+## and stands there, so a capture could only ever show a map with one room on it
+## — which is indistinguishable from a map that is broken. This drives the same
+## `teleport_to` the `--goto` targets use, room by room along the graph, so the
+## discovery it produces goes through the real path (room containment, the host's
+## validation, the line-of-sight raycasts) rather than through a back door that
+## marks things discovered. It is a camera dolly, not a cheat.
+var tour_interval: float = 0.0
+var _tour_index: int = 0
+var _tour_clock: float = 0.0
+
 ## `--playtest`. Overrides `automated` back to false: this is the one mode that
 ## wants the pointer, because the six PT1 complaints are all things a human
 ## noticed with a mouse in their hand and no scripted probe ever will.
@@ -355,6 +415,16 @@ var _has_forced_color: bool = false
 
 var _dump_seed: int = 0
 var _dump_layer: int = 1
+## M6.6 `--dumplive PATH`: write the graph this peer ACTUALLY built to PATH the
+## moment the layer stands. `--dumplayer` proves the generator is a pure function
+## of (seed, layer) in a fresh process; this proves a HOST and a CLIENT in a live
+## ENet session ended up with the same layer, which is the cross-peer half of the
+## determinism contract and the half a standalone dump cannot speak to.
+var dump_live_path: String = ""
+## M6.6 `--pathwalk`: after the layer stands, sweep a player-sized capsule from
+## every injection point to the drop shaft and quit non-zero if any leg is
+## blocked. The solo invariant, checked against real colliders.
+var _pathwalk: bool = false
 ## `--tailprobe WHICH`. Which creature the spring-tail inspection stages.
 var _tail_which: String = "sentinel"
 var _last_probe_t: float = 0.0
@@ -448,6 +518,13 @@ var _burst_index: int = 0
 
 func _ready() -> void:
 	_parse_args(OS.get_cmdline_user_args())
+	# Before ANY Control is built: the menu and the HUD size themselves off the
+	# window, and a resize that lands after they have laid out is a resize half
+	# the tree only hears about via `size_changed`. Doing it first means an
+	# ultrawide capture exercises the same first-layout path a fullscreen player
+	# on a 32:9 panel does.
+	_apply_forced_window_size()
+	_apply_forced_display()
 	# Before anything reads a tier or a wallet: Net announces the program the
 	# instant it hosts or joins, and a forced build that arrives after that
 	# announcement is a build the host never hears about.
@@ -580,6 +657,44 @@ func _log_loadouts() -> void:
 ##
 ## Belt, braces, and a second pair of braces. The correct runtime cost of this is
 ## "one enum comparison per frame during automated runs only", which is nothing.
+## `--window-size WxH`. Borderless and parked at the screen origin on purpose:
+## a decorated window subtracts its title bar from the height the compositor
+## grants, so `--resolution 3440x1440` produced a 3440x1412 window — a different
+## aspect ratio than the one the capture was taken to prove. Borderless removes
+## the subtraction; the origin removes the "window is partly off-screen so the
+## WM shrank it" failure. The granted size is read back and printed, so a request
+## the compositor refused is visible in the log rather than in a wrong picture.
+func _apply_forced_window_size() -> void:
+	if forced_window_size == Vector2i.ZERO:
+		return
+	if DisplayServer.get_name() == "headless":
+		push_warning("[Debug] --window-size ignored: headless has no window")
+		forced_window_size = Vector2i.ZERO
+		return
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_BORDERLESS, true)
+	DisplayServer.window_set_size(forced_window_size)
+	DisplayServer.window_set_position(Vector2i.ZERO)
+	var granted: Vector2i = DisplayServer.window_get_size()
+	print("[Debug] --window-size %dx%d -> window %dx%d%s" % [
+		forced_window_size.x, forced_window_size.y, granted.x, granted.y,
+		"" if granted == forced_window_size else "  (COMPOSITOR REFUSED)"])
+
+
+## `--ui-scale` / `--vignette`. SESSION ONLY — see the fields for why nothing here
+## goes through the persisting setters.
+func _apply_forced_display() -> void:
+	if forced_ui_scale < 0.0 and forced_vignette < 0.0:
+		return
+	if forced_ui_scale >= 0.0:
+		Screen.ui_scale = clampf(forced_ui_scale, Screen.UI_SCALE_MIN, Screen.UI_SCALE_MAX)
+	if forced_vignette >= 0.0:
+		Screen.vignette = clampf(forced_vignette, Screen.VIGNETTE_MIN, Screen.VIGNETTE_MAX)
+	Screen.call("_apply")
+	print("[Debug] display forced: ui_scale=%.2f vignette=%.2f" % [
+		Screen.ui_scale, Screen.vignette])
+
+
 func _stay_out_of_the_way() -> void:
 	if DisplayServer.get_name() == "headless":
 		return
@@ -811,6 +926,12 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
 					i += 1
 					_flare_delay = args[i].to_float()
+			"--pathwalk":
+				_pathwalk = true
+			"--dumplive":
+				if i + 1 < args.size():
+					i += 1
+					dump_live_path = args[i]
 			"--selftest":
 				_mode = "selftest"
 			"--tailprobe":
@@ -896,6 +1017,33 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size():
 					i += 1
 					auto_quit_after = args[i].to_float()
+			"--window-size":
+				if i + 1 < args.size():
+					i += 1
+					var parts: PackedStringArray = args[i].to_lower().split("x")
+					if parts.size() == 2:
+						forced_window_size = Vector2i(
+								maxi(parts[0].to_int(), 1), maxi(parts[1].to_int(), 1))
+					else:
+						push_error("[Debug] --window-size wants WxH, got '%s'" % args[i])
+			"--no-safe-area":
+				no_safe_area = true
+			# Renamed from "--tour" at merge: that name already has an arm at the
+			# M4.8 prop tour above, and GDScript match takes the first — this one
+			# was unreachable dead code from the day it was written.
+			"--roomtour":
+				tour_interval = 2.0
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					tour_interval = maxf(args[i].to_float(), 0.25)
+			"--ui-scale":
+				if i + 1 < args.size():
+					i += 1
+					forced_ui_scale = args[i].to_float()
+			"--vignette":
+				if i + 1 < args.size():
+					i += 1
+					forced_vignette = args[i].to_float()
 			"--gunlog":
 				if i + 1 < args.size():
 					i += 1
@@ -942,7 +1090,8 @@ func _apply_hud_state() -> void:
 		"low":
 			start_cycles = 10.0
 		"boot", "damage", "debrief", "decompile", "refused", "compiling", \
-				"resting", "descent", "combat", "damaged", "a11ywarn":
+				"resting", "descent", "combat", "damaged", "a11ywarn", \
+				"settings", "map":
 			# M4.9 quiet-instrument capture states. The pool stays full — these are
 			# portraits of the resting HUD, the descent card and a hot breaker, not
 			# of a drained pool — and the surfacing pins in Hud._apply_surface_capture
@@ -1275,8 +1424,541 @@ func _balance_selftest() -> void:
 		printerr("[SelfTest] FAIL  descent refill: low=%.2f high=%.2f max=%.2f" % [
 			low_gain, high_gain, pool_max])
 
+	failures += _vertical_selftest()
+	failures += _cartography_selftest()
+
 	print("[SelfTest] %d check(s) failed" % failures)
 	get_tree().quit(1 if failures > 0 else 0)
+
+
+## Called by `Layer._rebuild` with the graph that peer just built. Writes it to
+## `--dumplive`'s path when the instrument is armed, and does nothing at all when
+## it is not — this is on the descent path, so it must cost a string compare.
+##
+## The file is written per layer with the layer number appended, so a soak that
+## rides 1 -> 2 -> 3 leaves one dump per ring on each peer and the whole descent
+## can be diffed rather than just its first room.
+## `--pathwalk`: sweep a player-sized capsule along the ground route from every
+## injection point to the drop shaft and report whether it gets there.
+##
+## The solo invariant says spawn -> drop shaft is walkable, alone, with no jump
+## and no climb, on every seed. `LayerGraph.vertical_violations` asserts that as a
+## property of the GRAPH; this asserts it against the COLLIDERS that were actually
+## built, which is a different and stronger claim — a graph can be right about
+## where a plinth is and the builder can still have put a stair collider across
+## the aisle.
+##
+## Uses `cast_motion` rather than moving a body: it is exact (it returns the
+## fraction of the sweep that was clear), it needs no physics ticks, and it cannot
+## be fooled by a capsule tunnelling. Run one process per (seed, layer) and loop
+## in a shell — the layer only builds once per process, by design.
+const PATHWALK_RADIUS: float = 0.34
+const PATHWALK_HEIGHT: float = 1.8
+## Grid pitch for the walkability fill. One metre resolves a 3.2 m doorway into
+## three clear cells and a 4 m corridor into four, which is plenty, and keeps a
+## whole layer at roughly twenty thousand cells — a couple of seconds headless.
+const PATHWALK_STEP: float = 1.0
+
+func _run_path_walk() -> void:
+	var layer: Node = get_tree().get_first_node_in_group("layer")
+	if layer == null:
+		printerr("[PathWalk] FAIL no layer")
+		get_tree().quit(1)
+		return
+	var graph: LayerGraph = layer.get("graph") as LayerGraph
+	if graph == null:
+		printerr("[PathWalk] FAIL no graph")
+		get_tree().quit(1)
+		return
+
+	var space: PhysicsDirectSpaceState3D = (layer as Node3D).get_world_3d().direct_space_state
+
+	# --- the grid ------------------------------------------------------------
+	var lo: Vector2 = Vector2(INF, INF)
+	var hi: Vector2 = Vector2(-INF, -INF)
+	for room: Dictionary in graph.rooms:
+		var shell: Rect2 = LayerGraph._kit_rect(room["min"], room["max"])
+		lo.x = minf(lo.x, shell.position.x)
+		lo.y = minf(lo.y, shell.position.y)
+		hi.x = maxf(hi.x, shell.end.x)
+		hi.y = maxf(hi.y, shell.end.y)
+	lo -= Vector2.ONE * PATHWALK_STEP * 2.0
+	hi += Vector2.ONE * PATHWALK_STEP * 2.0
+	var cols: int = int(ceil((hi.x - lo.x) / PATHWALK_STEP)) + 1
+	var rows: int = int(ceil((hi.y - lo.y) / PATHWALK_STEP)) + 1
+
+	var probe: CapsuleShape3D = CapsuleShape3D.new()
+	# A hair under the avatar: this is a clearance test, and a probe fatter than
+	# the body it stands for reports failures nobody can feel.
+	probe.radius = PATHWALK_RADIUS - 0.04
+	probe.height = PATHWALK_HEIGHT - 0.10
+	var centre_y: float = PATHWALK_HEIGHT * 0.5 + 0.04
+
+	var walkable: PackedByteArray = PackedByteArray()
+	walkable.resize(cols * rows)
+	var open_cells: int = 0
+	for cz: int in rows:
+		for cx: int in cols:
+			var at: Vector3 = Vector3(lo.x + float(cx) * PATHWALK_STEP, centre_y,
+					lo.y + float(cz) * PATHWALK_STEP)
+			# 1. Is there room for a body here?
+			var shape_query: PhysicsShapeQueryParameters3D = PhysicsShapeQueryParameters3D.new()
+			shape_query.shape = probe
+			shape_query.transform = Transform3D(Basis.IDENTITY, at)
+			shape_query.collision_mask = 1
+			if not space.intersect_shape(shape_query, 1).is_empty():
+				continue
+			# 2. Is there FLOOR under it, at grade? A ray that finds nothing is over
+			#    a sunken pit or off the map; a ramp's slab is already caught by the
+			#    capsule test above. So the fill is grade-only by construction, which
+			#    is exactly the claim: spawn to shaft with no climb and no descent.
+			var ray: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+					at + Vector3(0.0, 0.2, 0.0), at - Vector3(0.0, centre_y + 0.35, 0.0))
+			ray.collision_mask = 1
+			if space.intersect_ray(ray).is_empty():
+				continue
+			walkable[cz * cols + cx] = 1
+			open_cells += 1
+
+	# --- flood fill from the shaft ------------------------------------------
+	#
+	# Filled from the DESTINATION once, rather than searched from each of the four
+	# injection points in turn: one BFS answers all of them, and the distance field
+	# it leaves behind is the walk length for free.
+	var distance: PackedInt32Array = PackedInt32Array()
+	distance.resize(cols * rows)
+	distance.fill(-1)
+	var goal: int = _nearest_open(walkable, cols, rows, lo, graph.shaft_point)
+	if goal < 0:
+		printerr("[PathWalk] FAIL seed=%d layer=%d: the drop shaft pad itself is not walkable" % [
+			Rng.run_seed, graph.layer_number])
+		get_tree().quit(1)
+		return
+	distance[goal] = 0
+	var queue: PackedInt32Array = PackedInt32Array([goal])
+	var head: int = 0
+	while head < queue.size():
+		var cell: int = queue[head]
+		head += 1
+		var cx: int = cell % cols
+		var cz: int = cell / cols
+		for step: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var nx: int = cx + step.x
+			var nz: int = cz + step.y
+			if nx < 0 or nz < 0 or nx >= cols or nz >= rows:
+				continue
+			var next: int = nz * cols + nx
+			if walkable[next] == 0 or distance[next] >= 0:
+				continue
+			distance[next] = distance[cell] + 1
+			queue.append(next)
+
+	# --- every injection point has to reach it -------------------------------
+	var failures: int = 0
+	var longest: float = 0.0
+	for s: int in graph.spawns.size():
+		var start: int = _nearest_open(walkable, cols, rows, lo, graph.spawns[s])
+		if start < 0 or distance[start] < 0:
+			failures += 1
+			printerr("[PathWalk] FAIL seed=%d layer=%d spawn=%d at %s cannot reach the drop shaft at grade" % [
+				Rng.run_seed, graph.layer_number, s,
+				str(graph.spawns[s].snapped(Vector3.ONE * 0.1))])
+			continue
+		longest = maxf(longest, float(distance[start]) * PATHWALK_STEP)
+
+	if failures == 0:
+		print("[PathWalk] PASS seed=%d layer=%d: %d/%d injection points reach the shaft at grade, worst walk %.0f m (%.0f s), %d walkable cells, %d decks on the layer" % [
+			Rng.run_seed, graph.layer_number, graph.spawns.size(), graph.spawns.size(),
+			longest, longest / Player.WALK_SPEED, open_cells, graph.decks.size()])
+	get_tree().quit(1 if failures > 0 else 0)
+
+
+## Index of the nearest walkable cell to a world point, or -1 if nothing within a
+## few metres is open. Spawn pads and the shaft pad are clear ground by
+## construction, so the search radius only has to absorb grid phase.
+func _nearest_open(walkable: PackedByteArray, cols: int, rows: int, lo: Vector2,
+		point: Vector3) -> int:
+	var best: int = -1
+	var best_distance: float = INF
+	var cx: int = int(round((point.x - lo.x) / PATHWALK_STEP))
+	var cz: int = int(round((point.z - lo.y) / PATHWALK_STEP))
+	var reach: int = int(ceil(4.0 / PATHWALK_STEP))
+	for dz: int in range(-reach, reach + 1):
+		for dx: int in range(-reach, reach + 1):
+			var nx: int = cx + dx
+			var nz: int = cz + dz
+			if nx < 0 or nz < 0 or nx >= cols or nz >= rows:
+				continue
+			if walkable[nz * cols + nx] == 0:
+				continue
+			var to_cell: float = Vector2(float(dx), float(dz)).length()
+			if to_cell < best_distance:
+				best_distance = to_cell
+				best = nz * cols + nx
+	return best
+
+
+## Stands the local avatar on the layer's vertical geometry. Returns false when
+## this layer has nothing of the kind asked for, which is a legitimate roll rather
+## than an error — a layer of small rooms genuinely has no mezzanine.
+##
+##   deck     the highest LOOT deck, looking out over the room it overhangs
+##   perch    a perched data cache, looking down at it
+##   catwalk  the middle of a span, looking along it
+##   ledge    a drop-down lip, looking over the edge at what you would land on
+##   below    the floor UNDER the highest deck, looking up through the grating
+##   tall     the middle of the tallest room, looking up the hero shaft
+func _vertical_goto(avatar: Player, where: String, index: int) -> bool:
+	var layer: Node = get_tree().get_first_node_in_group("layer")
+	var graph: LayerGraph = layer.get("graph") as LayerGraph
+	if graph == null:
+		return false
+	var lateral: float = 0.0 if index == 0 else (1.4 if index % 2 == 1 else -1.4)
+
+	if where == "tall":
+		var best_room: int = -1
+		var best_height: float = 0.0
+		for room: Dictionary in graph.rooms:
+			if float(room["h"]) > best_height:
+				best_height = float(room["h"])
+				best_room = int(room["index"])
+		if best_room < 0:
+			return false
+		var mid: Vector3 = graph.centre_of(best_room)
+		# Backed off the middle rather than stood in it: the hero shaft drops on the
+		# room's centre cell, and you cannot photograph a light shaft from inside it.
+		avatar.teleport_to(mid + Vector3(lateral, 0.35, 7.0), 0.0, _pitch_for(0.62))
+		print("[Debug] teleported to tallest room %d (h=%.1f) %s" % [
+			best_room, best_height, str(mid)])
+		return true
+
+	if where == "pit":
+		# At the LIP of a sunken nest, looking down into it. The one deck kind that
+		# goes below grade, and the one whose whole point is what you cannot see
+		# until you commit: standing here your sightline stops at the near edge, and
+		# whatever lives in the sump is under it.
+		var sump: int = -1
+		for deck_any: Dictionary in graph.decks:
+			if String(deck_any["kind"]) == LayerGraph.DECK_PIT:
+				sump = int(deck_any["id"])
+				break
+		if sump < 0:
+			return false
+		var hole: Dictionary = graph.decks[sump]
+		var pit_lo: Vector2 = hole["min"]
+		var pit_hi: Vector2 = hole["max"]
+		var pit_mid: Vector2 = (pit_lo + pit_hi) * 0.5
+		var room_mid: Vector3 = graph.centre_of(int(hole["room"]))
+		var outward: Vector2 = Vector2(room_mid.x, room_mid.z) - pit_mid
+		if outward.length() < 0.5:
+			outward = Vector2(0.0, 1.0)
+		outward = outward.normalized()
+		# Just outside the near edge, on grade, facing back across the hole.
+		var half_span: float = maxf(absf(outward.x) * (pit_hi.x - pit_lo.x),
+				absf(outward.y) * (pit_hi.y - pit_lo.y)) * 0.5
+		var lip: Vector2 = pit_mid + outward * (half_span + 1.7)
+		avatar.teleport_to(Vector3(lip.x, 0.35, lip.y),
+				atan2(outward.x, outward.y), _pitch_for(-0.44))
+		print("[Debug] teleported to the lip of a %.1f m pit in room %d" % [
+			-float(hole["y"]), int(hole["room"])])
+		return true
+
+	if where == "stair":
+		# At the FOOT of the longest flight on the layer, looking up it.
+		#
+		# This is the framing the other probes could not get. NULLVOID is a
+		# near-black game: a wide shot of a gallery from across a machine hall is a
+		# shot of nothing, because the only light is the beam and the beam is a cone
+		# pointed where you look. Stood at the bottom of a stair, everything the
+		# milestone is about — the flight, its railing, the deck it lands on and the
+		# volume above — is inside that cone at once.
+		var best: int = -1
+		var best_rise: float = 0.0
+		for i: int in graph.deck_links.size():
+			var link: Dictionary = graph.deck_links[i]
+			var rise: float = absf(float(link["y1"]) - float(link["y0"]))
+			if rise > best_rise:
+				best_rise = rise
+				best = i
+		if best < 0:
+			return false
+		var flight: Dictionary = graph.deck_links[best]
+		var toe: Vector3 = flight["foot"]
+		var crown: Vector3 = flight["head"]
+		var up: Vector3 = crown - toe
+		up.y = 0.0
+		if up.length() < 0.5:
+			return false
+		up = up.normalized()
+		# Stood BESIDE the bottom of the flight, not below it, looking diagonally up
+		# the run.
+		#
+		# Two failed attempts got here. Backing straight off the foot walks through
+		# the wall, because a stair is built inside a wall band and starts flush
+		# against it. Clamping that back into the room is worse: it lands the camera
+		# ON the flight — at 4.5 m up an 8 m run the treads are already 0.8 m high,
+		# so the lens ends up inside the slab and photographs solid black. There is
+		# no room below a stair that begins at a wall, so the shot has to come from
+		# the side, which is the better three-quarter view anyway.
+		var room_mid: Vector3 = graph.centre_of(int(flight["room"]))
+		var flank: Vector3 = up.cross(Vector3.UP).normalized()
+		if flank.dot(room_mid - toe) < 0.0:
+			flank = -flank
+		# Purely perpendicular, and level with the foot: any component back along the
+		# run walks into the wall the flight starts at. Then clamped inside the
+		# room, because the offset itself can overshoot a shallow room.
+		var stand_at: Vector3 = toe + flank * 4.6
+		var shell: Rect2 = LayerGraph._kit_rect(
+				graph.rooms[int(flight["room"])]["min"],
+				graph.rooms[int(flight["room"])]["max"])
+		var inner: Rect2 = shell.grow(-2.0)
+		stand_at.x = clampf(stand_at.x, inner.position.x, inner.end.x)
+		stand_at.z = clampf(stand_at.z, inner.position.y, inner.end.y)
+		var aim: Vector3 = (toe + crown) * 0.5 - stand_at
+		avatar.teleport_to(Vector3(stand_at.x, 0.35, stand_at.z),
+				atan2(-aim.x, -aim.z), _pitch_for(0.10))
+		print("[Debug] teleported to the foot of a %.1f m %s in room %d" % [
+			best_rise, String(flight["kind"]), int(flight["room"])])
+		return true
+
+	if where == "perch":
+		if graph.perch_points.is_empty():
+			return false
+		var perch: Vector3 = graph.perch_points[index % graph.perch_points.size()]
+		var deck: Dictionary = graph.decks[graph.perch_decks[index % graph.perch_decks.size()]]
+		var toward: Vector2 = (Vector2(deck["min"]) + Vector2(deck["max"])) * 0.5 \
+				- Vector2(perch.x, perch.z)
+		var back: Vector2 = -toward.normalized() * 2.6 if toward.length() > 0.01 \
+				else Vector2(0.0, 2.6)
+		avatar.teleport_to(perch + Vector3(back.x, 0.35, back.y),
+				atan2(-(-back.x), -(-back.y)), _pitch_for(-0.34))
+		print("[Debug] teleported to perch %s on a %s deck" % [
+			str(perch), String(deck["kind"])])
+		return true
+
+	# The remaining three all want a particular deck, so pick one once.
+	var wanted: int = -1
+	var best_score: float = -1.0
+	for deck: Dictionary in graph.decks:
+		var kind: String = String(deck["kind"])
+		if where == "catwalk" and kind != LayerGraph.DECK_CATWALK:
+			continue
+		if where != "catwalk" and bool(deck["solid"]):
+			continue
+		var score: float = float(deck["y"])
+		if where == "deck" and bool(deck["loot"]):
+			score += 10.0
+		if score > best_score:
+			best_score = score
+			wanted = int(deck["id"])
+	if wanted < 0 and where != "ledge":
+		return false
+
+	if where == "ledge":
+		if graph.deck_drops.is_empty():
+			return false
+		var drop: Dictionary = graph.deck_drops[index % graph.deck_drops.size()]
+		var at: Vector3 = drop["at"]
+		var dir: Vector3 = drop["dir"]
+		# Stood one step back from the lip, facing out over it and looking down —
+		# the exact frame the player gets when they decide whether to take it.
+		avatar.teleport_to(at - dir * 1.5 + Vector3(0.0, 0.35, 0.0),
+				atan2(-dir.x, -dir.z), _pitch_for(-0.58))
+		print("[Debug] teleported to a %.1f m ledge %s" % [float(drop["height"]), str(at)])
+		return true
+
+	var deck: Dictionary = graph.decks[wanted]
+	var lo: Vector2 = deck["min"]
+	var hi: Vector2 = deck["max"]
+	var centre: Vector2 = (lo + hi) * 0.5
+	var y: float = float(deck["y"])
+	var long_x: bool = (hi.x - lo.x) >= (hi.y - lo.y)
+
+	if where == "below":
+		# On the GROUND FLOOR, backed off into the room and looking up at the deck.
+		#
+		# Not directly underneath it: standing under a gallery frames the underside
+		# of one slab, which is a dark rectangle and proves nothing. Stood back
+		# across the floor you get the shot that actually matters — the machine floor
+		# still running clear beneath a walkway at head height, which is the whole
+		# reason an elevated deck is allowed to ignore the doorway aisles.
+		var room_mid: Vector3 = graph.centre_of(int(deck["room"]))
+		var toward: Vector2 = Vector2(room_mid.x, room_mid.z) - centre
+		if toward.length() < 0.5:
+			toward = Vector2(0.0, 1.0)
+		var stand: Vector2 = centre + toward.normalized() * 7.0
+		avatar.teleport_to(Vector3(stand.x + lateral, 0.35, stand.y),
+				atan2(toward.normalized().x, toward.normalized().y), _pitch_for(0.30))
+		print("[Debug] teleported to the floor under the %s deck, looking back at it %s" % [
+			String(deck["kind"]), str(centre)])
+		return true
+
+	# `deck` and `catwalk`: stand on it, at one end, looking along its length.
+	var along: Vector2 = Vector2(1.0, 0.0) if long_x else Vector2(0.0, 1.0)
+	var start: Vector2 = centre - along * (((hi.x - lo.x) if long_x else (hi.y - lo.y)) * 0.5 - 1.6)
+	avatar.teleport_to(Vector3(start.x, y + 0.35, start.y),
+			atan2(-along.x, -along.y), _pitch_for(-0.08))
+	print("[Debug] teleported onto a %s deck at y=%.1f %s" % [
+		String(deck["kind"]), y, str(start)])
+	return true
+
+
+func note_built_layer(graph: LayerGraph) -> void:
+	if dump_live_path.is_empty() or graph == null:
+		return
+	var path: String = "%s.%d.txt" % [dump_live_path, graph.layer_number]
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		push_warning("[Debug] --dumplive could not write %s" % path)
+		return
+	file.store_string(graph.to_text())
+	file.close()
+	print("[Debug] --dumplive wrote %s" % path)
+
+
+## Arms the `--pathwalk` sweep. Deliberately on a timer rather than deferred: this
+## is called from inside `Layer._rebuild`, and the colliders it is about to test
+## do not exist until `add_child(_builder)` a few lines further down.
+func arm_path_walk() -> void:
+	if not _pathwalk:
+		return
+	await get_tree().create_timer(1.5).timeout
+	_run_path_walk()
+
+
+# --------------------------------------------------------- M6.6 verticality --
+
+## Seeds and depths the verticality checks are run over. Wide enough to hit
+## shallow, mid, deep and backdoor layers with several room-count and room-shape
+## draws each; small enough that `--selftest` still finishes in a couple of
+## seconds, because a gate nobody runs is not a gate.
+## Plain typed arrays, not Packed*Array: `PackedInt64Array(...)` is a constructor
+## CALL, and GDScript only accepts constant expressions in a `const` — declaring
+## them that way fails to parse the whole script, which takes the autoloads with
+## it and every other tool in the repo with them.
+const _VERT_SEEDS: Array[int] = [12345, 777, 4242, 99, 31337, 8675309]
+const _VERT_LAYERS: Array[int] = [1, 3, 5, 7, 10, 12, 15, 21]
+
+## The three verticality laws, asserted over that matrix. Returns the failure
+## count.
+##
+## This is the check the M6.6 pass exists to be gated on. It is a pure-data test —
+## no scene, no physics, no rendering — because every one of the laws is a
+## statement about the GRAPH, and a statement about the graph is exactly the thing
+## a headless CI job can hold on to.
+func _vertical_selftest() -> int:
+	var failures: int = 0
+	var layers: int = 0
+	var decks: int = 0
+	var perches: int = 0
+	var drops: int = 0
+	var flat_layers: int = 0
+	var worst: PackedStringArray = PackedStringArray()
+
+	for seed_value: int in _VERT_SEEDS:
+		for layer: int in _VERT_LAYERS:
+			var graph: LayerGraph = LayerGraph.generate(seed_value, layer)
+			layers += 1
+			decks += graph.decks.size()
+			perches += graph.perch_points.size()
+			drops += graph.deck_drops.size()
+			if graph.decks.is_empty():
+				flat_layers += 1
+			for problem: String in graph.vertical_violations():
+				if worst.size() < 6:
+					worst.append("seed %d layer %d: %s" % [seed_value, layer, problem])
+				failures += 1
+
+	if failures == 0:
+		print("[SelfTest] PASS  verticality: %d layers, %d decks, %d routes-to-grade all reachable, %d perches, %d ledges" % [
+			layers, decks, decks, perches, drops])
+	else:
+		for line: String in worst:
+			printerr("[SelfTest] FAIL  verticality %s" % line)
+
+	# Coverage, as a number rather than as an impression. "The layers read flat"
+	# was the complaint this pass answers, so "how many layers still read flat"
+	# has to be something the build can print about itself. A layer with no deck
+	# at all is allowed (a run of small rooms is a legitimate roll) but it must be
+	# the exception, not the shape of the game.
+	var flat_fraction: float = float(flat_layers) / float(maxi(layers, 1))
+	if flat_fraction <= 0.15:
+		print("[SelfTest] PASS  vertical coverage: %.1f%% of layers wholly flat (<= 15%%), %.1f decks/layer" % [
+			flat_fraction * 100.0, float(decks) / float(maxi(layers, 1))])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  vertical coverage: %.1f%% of layers have no elevation at all" % [
+			flat_fraction * 100.0])
+
+	# The landing ladder. These are movement-feel constants rather than balance
+	# ones, and the property that has to hold is that they stay ORDERED against
+	# the deck heights the generator actually authors: a one-storey drop must be
+	# loud and free, a two-storey drop must be loud and expensive, and neither may
+	# corrupt a healthy agent outright.
+	var gravity: float = 9.8
+	var one_storey: float = sqrt(2.0 * gravity * LayerGraph.Y_MEZZANINE)
+	var two_storey: float = sqrt(2.0 * gravity * LayerGraph.Y_MEZZANINE * 2.0)
+	var terrace: float = sqrt(2.0 * gravity * LayerGraph.Y_TERRACE)
+	var two_cost: float = Player.LAND_HURT_MIN \
+			+ (two_storey - Player.LAND_HURT_SPEED) * Player.LAND_HURT_PER_SPEED
+	if terrace < Player.LAND_NOISE_SPEED \
+			and one_storey >= Player.LAND_LOUD_SPEED \
+			and one_storey < Player.LAND_HURT_SPEED \
+			and two_storey >= Player.LAND_HURT_SPEED \
+			and two_cost < Balance.INTEGRITY_MAX * 0.5:
+		print("[SelfTest] PASS  drop ladder: %.1f m silent, %.1f m loud+free, %.1f m loud+%.0f integrity (< half a bar)" % [
+			LayerGraph.Y_TERRACE, LayerGraph.Y_MEZZANINE, LayerGraph.Y_MEZZANINE * 2.0,
+			two_cost])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  drop ladder out of order: terrace %.2f, storey %.2f, two %.2f m/s vs noise %.2f loud %.2f hurt %.2f" % [
+			terrace, one_storey, two_storey, Player.LAND_NOISE_SPEED,
+			Player.LAND_LOUD_SPEED, Player.LAND_HURT_SPEED])
+
+	# The Moth has to actually USE a tall room. It is the one process that can, and
+	# before M6.6 it hovered at a fixed 1.7 m — so a twelve-metre trunk room was a
+	# twelve-metre trunk room with a creature bumbling around its ankles. The patrol
+	# curve is a pure function precisely so this can be asserted rather than
+	# photographed: sample it densely in a deep room and a shallow one and check it
+	# fills the volume it is given, leans upward, and never exceeds its headroom.
+	var tall_room: float = LayerGraph.KIT_STOREY * 3.0 - 1.2   # the trunk room
+	var flat_room: float = LayerGraph.KIT_STOREY - 1.2         # an ordinary hall
+	var samples: int = 400
+	var tall_hi: float = 0.0
+	var tall_sum: float = 0.0
+	var flat_hi: float = 0.0
+	for i: int in samples:
+		var t: float = float(i) / float(samples - 1)
+		var tall_y: float = Moth.patrol_altitude(t, tall_room)
+		tall_hi = maxf(tall_hi, tall_y)
+		tall_sum += tall_y
+		flat_hi = maxf(flat_hi, Moth.patrol_altitude(t, flat_room))
+	var tall_mean: float = tall_sum / float(samples)
+	if tall_hi >= tall_room - 0.01 and tall_hi <= tall_room + 0.01 \
+			and flat_hi <= flat_room + 0.01 \
+			and tall_mean > tall_room * 0.5 \
+			and tall_mean > Moth.HOVER_HEIGHT * 2.0:
+		print("[SelfTest] PASS  moth altitude: %.1f m room -> patrols %.1f-%.1f m (mean %.1f, upper half); %.1f m room capped at %.1f" % [
+			tall_room, Moth.HOVER_HEIGHT, tall_hi, tall_mean, flat_room, flat_hi])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  moth altitude: tall max %.2f (want %.2f), mean %.2f, flat max %.2f (want <= %.2f)" % [
+			tall_hi, tall_room, tall_mean, flat_hi, flat_room])
+
+	# Every authored slope has to be walkable by the widest, heaviest thing in the
+	# game as well as by the player — the killability law says a perch a player can
+	# reach is a perch a Sentinel can reach, and a 27 degree ramp it cannot climb
+	# would break that quietly.
+	var steepest: float = rad_to_deg(atan2(LayerGraph.Y_MEZZANINE, LayerGraph.STAIR_RUN))
+	if steepest < 40.0 and LayerGraph.DECK_WIDTH >= 3.0:
+		print("[SelfTest] PASS  slope walkable: steepest authored run %.1f deg (< 40), %.1f m wide" % [
+			steepest, LayerGraph.DECK_WIDTH])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  slope %.1f deg / %.1f m wide is not walkable by every body" % [
+			steepest, LayerGraph.DECK_WIDTH])
+
+	return failures
 
 
 ## Densely samples a `FlickerLight` curve and reports the fastest flash rate in it
@@ -2189,6 +2871,33 @@ func _pitch_for(default_pitch: float) -> float:
 	return pitch_override if _has_pitch else default_pitch
 
 
+## `--tour`. One room every `tour_interval` seconds, wrapping. See the field.
+func _advance_tour(delta: float) -> void:
+	if tour_interval <= 0.0:
+		return
+	_tour_clock -= delta
+	if _tour_clock > 0.0:
+		return
+	_tour_clock = tour_interval
+	var layer: Node = get_tree().get_first_node_in_group("layer")
+	var player: Node = Net.get_player(Net.local_id())
+	if layer == null or player == null or not is_instance_valid(player):
+		return
+	var graph: LayerGraph = layer.get("graph") as LayerGraph
+	if graph == null or graph.rooms.is_empty():
+		return
+	var avatar: Player = player as Player
+	if avatar == null:
+		return
+	var room: Dictionary = graph.rooms[_tour_index % graph.rooms.size()]
+	_tour_index += 1
+	var centre: Vector2 = (Vector2(room["min"]) + Vector2(room["max"])) * 0.5
+	# Facing the middle of the room from a step off-centre, so the sight cone has
+	# something in it — a tour that always looked at a wall would discover rooms
+	# and never a single fixture.
+	avatar.teleport_to(Vector3(centre.x, 0.35, centre.y + 3.0), 0.0, _pitch_for(0.0))
+
+
 func _teleport_local(where: String) -> void:
 	var layer: Node = get_tree().get_first_node_in_group("layer")
 	var player: Node = Net.get_player(Net.local_id())
@@ -2199,6 +2908,19 @@ func _teleport_local(where: String) -> void:
 	var index: int = maxi(Net.crew.keys().find(Net.local_id()), 0)
 	var avatar: Player = player as Player
 	if avatar == null:
+		return
+
+	# --- M6.6 vertical probes ------------------------------------------------
+	#
+	# The layer has decks in it now, and none of the M2-M4 targets can frame one:
+	# they all put the lens at grade. These stand the avatar ON the geometry the
+	# verticality pass authored, which is both how the milestone gets photographed
+	# and how anybody tuning a ramp angle looks at one without playing to it.
+	if where == "deck" or where == "perch" or where == "catwalk" \
+			or where == "ledge" or where == "below" or where == "tall" \
+			or where == "stair" or where == "pit":
+		if not _vertical_goto(avatar, where, index):
+			push_warning("[Debug] no '%s' on this layer" % where)
 		return
 
 	if where == "shaft":
@@ -3089,6 +3811,7 @@ func _on_connect_failed(reason: String) -> void:
 
 func _process(delta: float) -> void:
 	_enforce_mouse()
+	_advance_tour(delta)
 	_sample_fps(delta)
 	_sample_gun(delta)
 	_advance_burst()
@@ -3206,13 +3929,31 @@ func _sample_gun(delta: float) -> void:
 		roll, rad_to_deg(acos(clampf(bore.dot(Vector3.FORWARD), -1.0, 1.0)))])
 
 
+## The saved PNG is the root viewport's own texture, which under `canvas_items`
+## stretch is the post-stretch window output at full window resolution — so the
+## file IS what the player sees, glow blur and all, not the 1280x720 design-space
+## the UI was authored in. That was never obvious from the old one-line log, so
+## all three sizes are printed together and compared: window, viewport, image.
+## They agree on a healthy capture; when they do not, the capture is evidence
+## about a resolution nobody asked for and the log says so out loud.
 func _capture() -> void:
 	await RenderingServer.frame_post_draw
 	var image: Image = get_viewport().get_texture().get_image()
 	var err: Error = image.save_png(screenshot_path)
 	if err == OK:
-		print("[Debug] screenshot saved: %s (%dx%d)" % [
-			screenshot_path, image.get_width(), image.get_height()])
+		var window: Vector2i = DisplayServer.window_get_size()
+		var shot: Vector2i = Vector2i(image.get_width(), image.get_height())
+		var view: Vector2i = get_viewport().get_visible_rect().size
+		print("[Debug] screenshot saved: %s  image=%dx%d (%.3f:1)  window=%dx%d  viewport=%dx%d" % [
+			screenshot_path, shot.x, shot.y, float(shot.x) / maxf(float(shot.y), 1.0),
+			window.x, window.y, view.x, view.y])
+		if shot != window:
+			push_warning(("[Debug] capture is %dx%d but the window is %dx%d — this shot is " +
+					"NOT evidence about the window's aspect ratio") % [
+					shot.x, shot.y, window.x, window.y])
+		if forced_window_size != Vector2i.ZERO and shot != forced_window_size:
+			push_warning("[Debug] --window-size asked for %dx%d, captured %dx%d" % [
+					forced_window_size.x, forced_window_size.y, shot.x, shot.y])
 	else:
 		push_error("[Debug] screenshot failed: %s" % error_string(err))
 	await get_tree().process_frame
@@ -3234,3 +3975,98 @@ func _quit_after(seconds: float) -> void:
 	await get_tree().create_timer(seconds).timeout
 	print("[Debug] --quit-in elapsed")
 	get_tree().quit()
+
+
+# ------------------------------------------------------------- PT2 cartography --
+
+## `--selftest`: the minimap can never draw a room nobody has been in.
+##
+## The PT2 minimap is a SHARED, HOST-VALIDATED memory of the layer — one crewmate
+## walking into a room reveals it for all four. That makes it a small authority
+## problem rather than a drawing problem, and the invariant underneath every claim
+## the feature makes is one sentence:
+##
+##     a room enters the discovery set only if somebody was standing in it.
+##
+## The host enforces that with `Cartography.room_contains`, and the whole enforcement
+## rests on those rectangles being DISJOINT once `ROOM_SLACK` is added. If two
+## rooms ever shared a point, a player standing in the overlap could authorise a
+## room they have never entered — and the failure would not look like a bug, it
+## would look like the map being generous, which is exactly the kind of thing that
+## ships. So the property is asserted over real generated graphs rather than
+## trusted: every room's centre must resolve to that room and to NO other, and no
+## two slack-expanded room boxes may intersect.
+##
+## Pure data — no scene, no physics, no networking — for the same reason
+## `_vertical_selftest` is: the claim is a statement about the graph.
+func _cartography_selftest() -> int:
+	var failures: int = 0
+	var rooms_checked: int = 0
+	var worst_gap: float = INF
+	var worst_where: String = ""
+
+	for seed_value: int in _VERT_SEEDS:
+		for layer: int in _VERT_LAYERS:
+			var graph: LayerGraph = LayerGraph.generate(seed_value, layer)
+			if graph == null:
+				continue
+			for i: int in graph.rooms.size():
+				var room: Dictionary = graph.rooms[i]
+				var low: Vector2 = Vector2(room["min"])
+				var high: Vector2 = Vector2(room["max"])
+				var centre: Vector3 = Vector3(
+						(low.x + high.x) * 0.5, 0.0, (low.y + high.y) * 0.5)
+				rooms_checked += 1
+
+				# 1. A player at the centre of a room is in THAT room...
+				if not Cartography.room_contains(graph, i, centre):
+					failures += 1
+					printerr("[SelfTest] FAIL  cartography: seed %d layer %d room %d "
+							% [seed_value, layer, i]
+							+ "does not contain its own centre")
+
+				# 2. ...and in no other. This is the claim that keeps an unvisited
+				#    room out of the set.
+				for j: int in graph.rooms.size():
+					if j == i:
+						continue
+					if Cartography.room_contains(graph, j, centre):
+						failures += 1
+						printerr("[SelfTest] FAIL  cartography: seed %d layer %d — "
+								% [seed_value, layer]
+								+ "standing in room %d authorises room %d" % [i, j])
+
+				# 3. And the margin by which that holds, so a future room-spacing
+				#    change that eats the slack shows up as a number before it shows
+				#    up as a bug.
+				for j: int in range(i + 1, graph.rooms.size()):
+					var other: Dictionary = graph.rooms[j]
+					var gap: float = _rect_gap(
+							low, high, Vector2(other["min"]), Vector2(other["max"]))
+					if gap < worst_gap:
+						worst_gap = gap
+						worst_where = "seed %d layer %d rooms %d/%d" % [
+								seed_value, layer, i, j]
+
+	var margin: float = worst_gap - Cartography.ROOM_SLACK * 2.0
+	if margin <= 0.0:
+		failures += 1
+		printerr("[SelfTest] FAIL  cartography: closest rooms are %.2f m apart and "
+				% worst_gap
+				+ "ROOM_SLACK %.2f m expands both — they overlap (%s)" % [
+					Cartography.ROOM_SLACK, worst_where])
+	else:
+		print("[SelfTest] PASS  cartography: %d rooms, none reachable from another; "
+				% rooms_checked
+				+ "tightest pair %.2f m apart, %.2f m clear of the slack (%s)" % [
+					worst_gap, margin, worst_where])
+	return failures
+
+
+## Axis-aligned gap between two rectangles, in metres. Zero when they touch or
+## overlap. Chebyshev-style on purpose: the containment test is per-axis, so the
+## axis with the most separation is the one keeping them apart.
+func _rect_gap(a_low: Vector2, a_high: Vector2, b_low: Vector2, b_high: Vector2) -> float:
+	var x_gap: float = maxf(b_low.x - a_high.x, a_low.x - b_high.x)
+	var y_gap: float = maxf(b_low.y - a_high.y, a_low.y - b_high.y)
+	return maxf(maxf(x_gap, y_gap), 0.0)

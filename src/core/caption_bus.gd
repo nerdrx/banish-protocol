@@ -307,6 +307,8 @@ func _process(delta: float) -> void:
 	for line: Line in _lines:
 		if line.sustained:
 			continue  # pinned; refreshed by _refresh_sustained.
+		if UiAudit.armed:
+			continue  # pinned for the layout audit — see UiAudit.armed.
 		line.life -= delta
 		if line.life <= 0.0:
 			dead.append(line)
@@ -387,6 +389,13 @@ func _ensure_built() -> void:
 	_layer.layer = 64
 	add_child(_layer)
 
+	# PT2 (Screen & Nav): captions live inside the TUBE-SAFE BOX, not across the
+	# canvas. Bottom-wide on a 32:9 panel is a 2560 px line of text under a
+	# 1088 px-wide instrument, with its ends out in the dark where the tube has no
+	# picture — and this is the deaf/HoH threat telegraph (pillar 7), so it is the
+	# last readout in the game that can afford to be somewhere the eye is not.
+	var safe: SafeArea = SafeArea.wrap(_layer)
+
 	var margin: MarginContainer = MarginContainer.new()
 	margin.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	margin.anchor_top = 1.0
@@ -395,7 +404,7 @@ func _ensure_built() -> void:
 	margin.add_theme_constant_override("margin_left", 40)
 	margin.add_theme_constant_override("margin_right", 40)
 	margin.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_layer.add_child(margin)
+	safe.add_child(margin)
 
 	_stack = VBoxContainer.new()
 	_stack.alignment = BoxContainer.ALIGNMENT_END

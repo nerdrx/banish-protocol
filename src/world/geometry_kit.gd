@@ -94,6 +94,11 @@ var _fixtures: Node3D
 ## (INTEGRATION2 §4). Keyed by room index -> aperture cell centre (Vector2 in XZ).
 ## ProcLayerBuilder fills this in `_plan_shafts` before the shells are built.
 var ceiling_apertures: Dictionary = {}
+## M6.6: floor cells to EXCAVATE, keyed by room index -> Array[Rect2] in world XZ.
+## A sunken deck is a hole, and a hole has to be missing from the floor field and
+## from the slab collider both — same contract as the ceiling apertures above, and
+## filled from the same place (ProcLayerBuilder, before the shells go up).
+var floor_cuts: Dictionary = {}
 var _gate_material: StandardMaterial3D
 var _trace_material: StandardMaterial3D
 var _grid_material: StandardMaterial3D
@@ -1144,12 +1149,17 @@ func _kit_wall_run(axis: String, fixed: float, from: float, to: float, y: float,
 ## Floor cells across a rectangle. `trace_axis` marks the spine that gets the
 ## inlaid trace plate: "x" runs the spine along X at the rect's middle row, "z"
 ## along Z at its middle column.
-func _kit_floor_field(rect: Rect2, trace_axis: String = "") -> void:
+func _kit_floor_field(rect: Rect2, trace_axis: String = "", cuts: Array = []) -> void:
 	var mid: Vector2 = rect.position + rect.size * 0.5
 	var x: float = rect.position.x + CELL * 0.5
 	while x < rect.end.x - 0.01:
 		var z: float = rect.position.y + CELL * 0.5
 		while z < rect.end.y - 0.01:
+			# M6.6: an excavated cell gets no plate — the sunken deck below is the
+			# floor there, and a plate over it would be a lid on the pit.
+			if _cell_cut(x, z, cuts):
+				z += CELL
+				continue
 			var on_spine: bool = (trace_axis == "z" and absf(x - snap_slot(mid.x)) < 0.01) \
 					or (trace_axis == "x" and absf(z - snap_slot(mid.y)) < 0.01)
 			if on_spine:
@@ -1250,7 +1260,8 @@ func kit_room(room: Dictionary) -> Rect2:
 	var west: Array = _kit_doors(doors, "w")
 	var east: Array = _kit_doors(doors, "e")
 
-	_kit_floor_field(rect, "z")
+	var cuts: Array = floor_cuts.get(int(room["index"]), []) as Array
+	_kit_floor_field(rect, "z", cuts)
 	_kit_ceiling_field(rect, height,
 			ceiling_apertures.get(int(room["index"]), Vector2(INF, INF)))
 
@@ -1274,7 +1285,7 @@ func kit_room(room: Dictionary) -> Rect2:
 	_kit_wall_colliders("x", rect.end.y, rect.position.x, rect.end.x, height, south)
 	_kit_wall_colliders("z", rect.position.x, rect.position.y, rect.end.y, height, west)
 	_kit_wall_colliders("z", rect.end.x, rect.position.y, rect.end.y, height, east)
-	_kit_shell_colliders(rect, height)
+	_kit_shell_colliders(rect, height, cuts)
 
 	# Rib columns just inside the corners, so a beam sweeping the room breaks on
 	# something with depth instead of running flat along a wall.
@@ -1291,14 +1302,50 @@ func kit_room(room: Dictionary) -> Rect2:
 ## Floor and ceiling proxies. One box each rather than one per cell: a hundred
 ## coplanar box shapes is a hundred broadphase pairs for a surface the player
 ## walks in a straight line across.
-func _kit_shell_colliders(rect: Rect2, height: float) -> void:
+##
+## M6.6: a room with a sunken deck in it has a genuine hole in its floor, so the
+## slab is emitted as up to four spans around the excavation instead of one box.
+## Four boxes for a room with a pit, one for every other room on the layer.
+func _kit_shell_colliders(rect: Rect2, height: float, cuts: Array = []) -> void:
 	var mid: Vector2 = rect.position + rect.size * 0.5
-	_collider_box(Vector3(mid.x, -SLAB_THICKNESS * 0.5, mid.y),
-			Vector3(rect.size.x + WALL_THICKNESS, SLAB_THICKNESS,
-					rect.size.y + WALL_THICKNESS))
+	var grown: Rect2 = Rect2(rect.position - Vector2.ONE * WALL_THICKNESS * 0.5,
+			rect.size + Vector2.ONE * WALL_THICKNESS)
+	for span: Rect2 in _floor_spans(grown, cuts):
+		var centre: Vector2 = span.position + span.size * 0.5
+		_collider_box(Vector3(centre.x, -SLAB_THICKNESS * 0.5, centre.y),
+				Vector3(span.size.x, SLAB_THICKNESS, span.size.y))
 	_collider_box(Vector3(mid.x, height + SLAB_THICKNESS * 0.5, mid.y),
 			Vector3(rect.size.x + WALL_THICKNESS, SLAB_THICKNESS,
 					rect.size.y + WALL_THICKNESS))
+
+
+## `outer` minus the cut rectangles, as axis-aligned spans. The cuts are always
+## wall bands (see LayerGraph's verticality section), so a guillotine split on
+## one axis then the other is exact rather than approximate.
+static func _floor_spans(outer: Rect2, cuts: Array) -> Array[Rect2]:
+	var spans: Array[Rect2] = [outer]
+	for cut_any: Variant in cuts:
+		var cut: Rect2 = cut_any
+		var next: Array[Rect2] = []
+		for span: Rect2 in spans:
+			if not span.intersects(cut):
+				next.append(span)
+				continue
+			var hit: Rect2 = span.intersection(cut)
+			if hit.position.y - span.position.y > 0.01:
+				next.append(Rect2(span.position,
+						Vector2(span.size.x, hit.position.y - span.position.y)))
+			if span.end.y - hit.end.y > 0.01:
+				next.append(Rect2(Vector2(span.position.x, hit.end.y),
+						Vector2(span.size.x, span.end.y - hit.end.y)))
+			if hit.position.x - span.position.x > 0.01:
+				next.append(Rect2(Vector2(span.position.x, hit.position.y),
+						Vector2(hit.position.x - span.position.x, hit.size.y)))
+			if span.end.x - hit.end.x > 0.01:
+				next.append(Rect2(Vector2(hit.end.x, hit.position.y),
+						Vector2(span.end.x - hit.end.x, hit.size.y)))
+		spans = next
+	return spans
 
 
 ## A corridor, built from kit modules. One cell wide and one storey tall, running
@@ -1373,6 +1420,445 @@ static func _kit_doors(doors: Array, wall: String) -> Array:
 		if String(door.get("wall", "")) == wall:
 			result.append(snap_slot(float(door.get("at", 0.0))))
 	return result
+
+
+# -------------------------------------------------- M6.6 vertical primitives --
+#
+# Decks, the routes between them and the structure that holds them up. Everything
+# in here is driven by LayerGraph's `decks` / `deck_links` / `deck_drops`, which
+# means the shapes are already in the determinism dump before a single node is
+# built — this file only turns a rectangle and a height into standing metal.
+#
+# Two rules govern the collision, and both of them are about the AI as much as
+# the player:
+#
+#   **Slopes are single boxes.** A stair is a smooth inclined box collider with
+#   decorative treads on top, never a staircase of steps. Godot's CharacterBody3D
+#   walks a 27 degree slope without a thought; a flight of 0.33 m steps makes the
+#   antivirus's `move_and_slide` snag on every nosing and turns a route into a
+#   wedge trap. The treads are what you see; the ramp is what you walk.
+#
+#   **Elevated decks are grating.** Catwalks, galleries and gantries are laid with
+#   the kit's FLOOR_2x2_GRATE — the one module with real holes in it. That is the
+#   structural half of the upcoming lighting pass: a gobo light above a grated
+#   mezzanine stripes the floor below it for free, and a beam swept up from
+#   underneath breaks into slats.
+
+## Deck slab thickness, and how far a railing stands from the open edge.
+const DECK_THICKNESS: float = 0.36
+const RAIL_INSET: float = 0.16
+const RAIL_HEIGHT: float = 1.06
+## Target riser. 4 m over twelve treads is 0.333 — steep enough to be compact,
+## shallow enough to read as a stair rather than as a ladder.
+const TREAD_RISE: float = 0.34
+## Height at which a deck earns a railing at all. A 0.8 m dais does not get one,
+## and should not: you step up onto it.
+const RAIL_MIN_HEIGHT: float = 2.0
+## How wide a gap a drop-down ledge opens in a railing.
+const DROP_GAP: float = 3.0
+
+
+static func _cell_cut(x: float, z: float, cuts: Array) -> bool:
+	for cut_any: Variant in cuts:
+		var cut: Rect2 = cut_any
+		if cut.grow(-0.05).has_point(Vector2(x, z)):
+			return true
+	return false
+
+
+## A decorative box that does NOT cast shadows or contribute to GI.
+##
+## M6.6 measurement: the verticality pass adds ~100 small boxes per layer
+## (railings, joists, stringers, treads, fascias) and a matched before/after
+## capture on the densest layer showed 277 -> 203 fps average, most of it spent
+## re-rasterising thin metal into nineteen shadow maps. A railing post's shadow is
+## worth almost nothing at the distances these are seen from, and the DECK SLAB —
+## the thing that actually casts a readable shadow, and the surface the coming
+## gobo pass will stripe light across — keeps its shadow. Same call the clutter
+## and trim passes already make, for the same reason.
+func _detail_box(center: Vector3, size: Vector3, material: Material) -> MeshInstance3D:
+	var mesh: MeshInstance3D = _mesh_box(center, size, material)
+	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mesh.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	return mesh
+
+
+## A box collider with an arbitrary orientation — the one shape `_collider_box`
+## cannot express, and the whole reason a ramp is walkable.
+func _collider_oriented(centre: Vector3, size: Vector3, basis: Basis) -> void:
+	var shape: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = size
+	shape.shape = box
+	shape.transform = Transform3D(basis, centre)
+	_colliders.add_child(shape)
+
+
+## Orthonormal basis whose local +X runs along `forward` and whose local +Y is the
+## surface normal. Used for every sloped plate on the layer.
+static func _slope_basis(forward: Vector3) -> Basis:
+	var along: Vector3 = forward.normalized()
+	var side: Vector3 = along.cross(Vector3.UP)
+	if side.length_squared() < 0.0001:
+		side = Vector3.RIGHT
+	side = side.normalized()
+	return Basis(along, side.cross(along).normalized(), side)
+
+
+## One walkable deck: grating or plate on top, a slab under it, an edge fascia,
+## columns where it is standing in mid-air, and a railing anywhere you could walk
+## off it that is not a marked ledge.
+##
+## `open` is the set of edges (0=north/-Z, 1=east/+X, 2=south/+Z, 3=west/-X) that
+## face the room rather than a wall; `gaps` are world-XZ points where a drop-down
+## ledge opens the railing.
+func deck_platform(rect: Rect2, y: float, grated: bool, open: Array,
+		gaps: Array = [], columns: bool = true) -> void:
+	var mid: Vector2 = rect.position + rect.size * 0.5
+
+	# Walking surface. Kit modules on the lattice, so a deck is made of the same
+	# floor the room is and reads as part of the building.
+	var x: float = rect.position.x + CELL * 0.5
+	while x < rect.end.x - 0.01:
+		var z: float = rect.position.y + CELL * 0.5
+		while z < rect.end.y - 0.01:
+			if grated:
+				for corner: Vector2 in [Vector2(-1.0, -1.0), Vector2(1.0, -1.0),
+						Vector2(-1.0, 1.0), Vector2(1.0, 1.0)]:
+					_put("FLOOR_2x2_GRATE", Vector3(x + corner.x, y, z + corner.y))
+			else:
+				_put("FLOOR_4x4_PLATE", Vector3(x, y, z))
+			z += CELL
+		x += CELL
+
+	# The slab it is laid on, and its collider. One box for the whole deck.
+	_mesh_box(Vector3(mid.x, y - DECK_THICKNESS * 0.5, mid.y),
+			Vector3(rect.size.x, DECK_THICKNESS, rect.size.y), MAT_MONOLITH)
+	_collider_box(Vector3(mid.x, y - DECK_THICKNESS * 0.5, mid.y),
+			Vector3(rect.size.x, DECK_THICKNESS, rect.size.y))
+
+	# Joists across the underside of anything you can stand beneath.
+	#
+	# Found by photographing the thing rather than by reasoning about it: a player
+	# on the machine floor looking up at a gallery had their beam land on a bare
+	# four-by-twelve-metre plate. That is exactly the surface the intricacy law
+	# says has to hold up at thirty centimetres, and it did not. It is also the
+	# surface the gobo pass will be striping light across, so it wants relief in it
+	# rather than a flat plane. Cheap, too: a joist every two metres on the short
+	# axis, which is a handful of boxes per deck.
+	if y >= RAIL_MIN_HEIGHT:
+		var short_x: bool = rect.size.x <= rect.size.y
+		var span: float = rect.size.x if short_x else rect.size.y
+		var march: float = rect.size.y if short_x else rect.size.x
+		var joist_y: float = y - DECK_THICKNESS - 0.16
+		var t: float = 1.0
+		while t < march - 0.01:
+			var at: Vector3 = Vector3(mid.x, joist_y, rect.position.y + t) if short_x \
+					else Vector3(rect.position.x + t, joist_y, mid.y)
+			_detail_box(at, Vector3(span, 0.3, 0.18) if short_x
+					else Vector3(0.18, 0.3, span), MAT_CONDUIT)
+			t += 2.0
+		# And a beam round the rim tying them together.
+		for edge_side: int in 4:
+			var rim: Dictionary = _edge_of(rect, edge_side)
+			var a: Vector2 = rim["from"]
+			var b: Vector2 = rim["to"]
+			var length: float = a.distance_to(b)
+			if length < 0.1:
+				continue
+			var rim_mid: Vector2 = (a + b) * 0.5
+			_detail_box(Vector3(rim_mid.x, joist_y, rim_mid.y),
+					Vector3(length, 0.34, 0.24) if edge_side % 2 == 0
+					else Vector3(0.24, 0.34, length), MAT_TRIM)
+
+	for side: int in open:
+		var edge: Dictionary = _edge_of(rect, int(side))
+		var from: Vector3 = Vector3(edge["from"].x, y - DECK_THICKNESS * 0.5, edge["from"].y)
+		var to: Vector3 = Vector3(edge["to"].x, y - DECK_THICKNESS * 0.5, edge["to"].y)
+		# Fascia: a deeper lip along the open edge, so the deck has a shadow line
+		# under it instead of a paper thickness.
+		var along: Vector3 = to - from
+		var length: float = along.length()
+		if length < 0.1:
+			continue
+		var centre: Vector3 = (from + to) * 0.5
+		var thick: Vector3 = Vector3(0.22, 0.44, length) if int(side) % 2 == 1 \
+				else Vector3(length, 0.44, 0.22)
+		_detail_box(centre + Vector3(0.0, -0.08, 0.0), thick, MAT_CONDUIT)
+		if columns and y >= RAIL_MIN_HEIGHT:
+			_deck_columns(from, to, y)
+		if y >= RAIL_MIN_HEIGHT:
+			_railing(from + Vector3(0.0, DECK_THICKNESS * 0.5, 0.0),
+					to + Vector3(0.0, DECK_THICKNESS * 0.5, 0.0), gaps)
+
+
+## The two ends of one edge of a rect, inset so a railing does not overhang the
+## corner it meets.
+static func _edge_of(rect: Rect2, side: int) -> Dictionary:
+	match side:
+		0:
+			return {"from": Vector2(rect.position.x, rect.position.y),
+					"to": Vector2(rect.end.x, rect.position.y)}
+		1:
+			return {"from": Vector2(rect.end.x, rect.position.y),
+					"to": Vector2(rect.end.x, rect.end.y)}
+		2:
+			return {"from": Vector2(rect.position.x, rect.end.y),
+					"to": Vector2(rect.end.x, rect.end.y)}
+		_:
+			return {"from": Vector2(rect.position.x, rect.position.y),
+					"to": Vector2(rect.position.x, rect.end.y)}
+
+
+## Support columns down to the floor, every two cells. The motivation law applied
+## to structure: a walkway eight metres in the air is held up by something, and
+## the something is what a beam breaks on when you sweep the room.
+func _deck_columns(from: Vector3, to: Vector3, y: float) -> void:
+	var along: Vector3 = to - from
+	var length: float = along.length()
+	if length < 0.1 or y < 1.0:
+		return
+	var step: Vector3 = along / length
+	var t: float = CELL * 0.5
+	while t < length - 0.01:
+		var at: Vector3 = from + step * t
+		_put("RIB_COLUMN", Vector3(at.x, 0.0, at.z), 0.0)
+		# The kit's rib column is one storey; anything taller gets a plain post
+		# under the rest of the drop rather than a stack of stubs.
+		if y > STOREY + 0.1:
+			_detail_box(Vector3(at.x, (STOREY + y) * 0.5, at.z),
+					Vector3(0.3, y - STOREY, 0.3), MAT_CONDUIT)
+		t += CELL * 2.0
+
+
+## Posts and two rails along an edge, with the railing left OPEN wherever a
+## drop-down ledge was authored. The gap is the tell: a readable break in a rail
+## is how a player learns there is a way down before they take it.
+func _railing(from: Vector3, to: Vector3, gaps: Array) -> void:
+	var along: Vector3 = to - from
+	var length: float = along.length()
+	if length < 0.6:
+		return
+	var step: Vector3 = along / length
+	var normal: Vector3 = Vector3(step.z, 0.0, -step.x)
+	var base: Vector3 = -normal * RAIL_INSET
+
+	# Rails, split around every gap. A run is emitted for each clear interval, so
+	# an eight-metre edge with one ledge in it becomes two rails, not one rail with
+	# a hole drawn on it.
+	var breaks: Array[Vector2] = []
+	for gap_any: Variant in gaps:
+		var gap: Vector3 = gap_any
+		var t: float = (gap - from).dot(step)
+		if t < -DROP_GAP or t > length + DROP_GAP:
+			continue
+		# Only a gap that is actually ON this edge, not one on the far side of the
+		# deck that happens to project onto it.
+		if absf((gap - from - step * t).dot(normal)) > 1.2:
+			continue
+		breaks.append(Vector2(maxf(t - DROP_GAP * 0.5, 0.0),
+				minf(t + DROP_GAP * 0.5, length)))
+
+	var cursor: float = 0.0
+	var runs: Array[Vector2] = []
+	breaks.sort_custom(func(a: Vector2, b: Vector2) -> bool: return a.x < b.x)
+	for gap: Vector2 in breaks:
+		if gap.x - cursor > 0.4:
+			runs.append(Vector2(cursor, gap.x))
+		cursor = maxf(cursor, gap.y)
+	if length - cursor > 0.4:
+		runs.append(Vector2(cursor, length))
+
+	for run: Vector2 in runs:
+		var run_length: float = run.y - run.x
+		var centre: Vector3 = from + step * ((run.x + run.y) * 0.5) + base
+		var size: Vector3 = Vector3(absf(step.x) * run_length + 0.08, 0.07,
+				absf(step.z) * run_length + 0.08)
+		for height: float in [RAIL_HEIGHT, RAIL_HEIGHT * 0.5]:
+			_detail_box(centre + Vector3(0.0, height, 0.0), size, MAT_CONDUIT)
+		var posts: int = maxi(int(run_length / 2.0), 1)
+		for i: int in posts + 1:
+			var at: Vector3 = from + step * lerpf(run.x, run.y, float(i) / float(posts)) + base
+			_detail_box(at + Vector3(0.0, RAIL_HEIGHT * 0.5, 0.0),
+					Vector3(0.09, RAIL_HEIGHT, 0.09), MAT_CONDUIT)
+	# Toe plate along the whole edge, gaps included: it is what stops the deck
+	# reading as a floating rectangle when the rail is broken for a ledge.
+	var kick_centre: Vector3 = (from + to) * 0.5 + base
+	_detail_box(kick_centre + Vector3(0.0, 0.09, 0.0),
+			Vector3(absf(step.x) * length + 0.06, 0.18, absf(step.z) * length + 0.06),
+			MAT_TRIM)
+
+
+## A walkable slope from `y0` to `y1` across `rect`, climbing along `axis` in the
+## direction `dir`. `treads` dresses it as a stair; otherwise it is a plain ramp
+## plate. Either way the collision is ONE inclined box — see the section header.
+func deck_ramp(rect: Rect2, axis: String, dir: int, y0: float, y1: float,
+		treads: bool) -> void:
+	var horizontal: bool = axis == "x"
+	var run: float = rect.size.x if horizontal else rect.size.y
+	var width: float = rect.size.y if horizontal else rect.size.x
+	if run < 0.5:
+		return
+	var mid: Vector2 = rect.position + rect.size * 0.5
+	var step: Vector3 = Vector3(float(dir), 0.0, 0.0) if horizontal \
+			else Vector3(0.0, 0.0, float(dir))
+	var low: Vector3 = Vector3(mid.x, y0, mid.y) - step * (run * 0.5)
+	var high: Vector3 = Vector3(mid.x, y1, mid.y) + step * (run * 0.5)
+	var forward: Vector3 = high - low
+	var basis: Basis = _slope_basis(forward)
+	var length: float = forward.length()
+	var centre: Vector3 = (low + high) * 0.5
+
+	# The collider, sunk half its thickness so its TOP face is the walking plane.
+	_collider_oriented(centre - basis.y * (DECK_THICKNESS * 0.5),
+			Vector3(length, DECK_THICKNESS, width), basis)
+
+	if not treads:
+		var plate: MeshInstance3D = _detail_box(
+				centre - basis.y * (DECK_THICKNESS * 0.5),
+				Vector3(length, DECK_THICKNESS, width), MAT_FLOOR)
+		plate.basis = basis
+		# Grip strips across the ramp, so a slope reads as a slope from above
+		# rather than as a wedge of the same plate the floor is made of.
+		var strips: int = maxi(int(length / 1.2), 1)
+		for i: int in strips:
+			var t: float = (float(i) + 0.5) / float(strips)
+			var at: Vector3 = low.lerp(high, t)
+			var strip: MeshInstance3D = _detail_box(at + basis.y * 0.03,
+					Vector3(0.16, 0.05, width - 0.3), MAT_CONDUIT)
+			strip.basis = basis
+	else:
+		var count: int = maxi(int(absf(y1 - y0) / TREAD_RISE), 1)
+		for i: int in count:
+			var t0: float = float(i) / float(count)
+			var t1: float = float(i + 1) / float(count)
+			var tread_mid: Vector3 = low.lerp(high, (t0 + t1) * 0.5)
+			var depth: float = run / float(count)
+			_detail_box(Vector3(tread_mid.x, tread_mid.y + 0.02, tread_mid.z),
+					Vector3(depth if horizontal else width, 0.09,
+							width if horizontal else depth), MAT_FLOOR)
+			# The riser, so the flight has a face and throws a shadow ladder when
+			# a beam rakes across it.
+			var riser_at: Vector3 = low.lerp(high, t1)
+			_detail_box(Vector3(riser_at.x, riser_at.y - TREAD_RISE * 0.5, riser_at.z)
+					- step * (depth * 0.5),
+					Vector3(0.07 if horizontal else width, absf(y1 - y0) / float(count),
+							width if horizontal else 0.07), MAT_TRIM)
+
+	# Stringers down both flanks: a ramp bolted to something, not a floating wedge.
+	var side: Vector3 = basis.z * (width * 0.5)
+	for sign_side: float in [1.0, -1.0]:
+		var stringer: MeshInstance3D = _detail_box(
+				centre + side * sign_side - basis.y * (DECK_THICKNESS * 0.5 + 0.12),
+				Vector3(length, 0.34, 0.16), MAT_CONDUIT)
+		stringer.basis = basis
+	# No skirt under the flight, deliberately. A box under a slope either pokes
+	# through the low end of it or leaves a gap at the high end, and closed risers
+	# plus stringers already stop you seeing through a stair — the space beneath is
+	# a real place a Scrubber can be, which is worth more than a solid wedge.
+
+
+## The pit shell: four retaining walls down to the sunken floor, plus the floor
+## itself. Called with the EXCAVATION rect (the sunken deck and its ramp merged),
+## so the ramp is inside the hole rather than a slope down to a wall.
+func deck_excavation(cut: Rect2, y: float) -> void:
+	var depth: float = -y
+	if depth <= 0.05:
+		return
+	var mid: Vector2 = cut.position + cut.size * 0.5
+	_slab(cut.position, cut.end, y - SLAB_THICKNESS * 0.5, MAT_FLOOR)
+	_collider_box(Vector3(mid.x, y - SLAB_THICKNESS * 0.5, mid.y),
+			Vector3(cut.size.x, SLAB_THICKNESS, cut.size.y))
+	for side: int in 4:
+		var edge: Dictionary = _edge_of(cut, side)
+		var from: Vector2 = edge["from"]
+		var to: Vector2 = edge["to"]
+		var centre: Vector2 = (from + to) * 0.5
+		var length: float = from.distance_to(to)
+		var horizontal: bool = side % 2 == 0
+		_box(Vector3(centre.x, y * 0.5, centre.y),
+				Vector3(length if horizontal else 0.3, depth,
+						0.3 if horizontal else length), MAT_MONOLITH)
+
+
+## Overhead structure for a tall room: a girder lattice, pipe racks and the cable
+## trays that run between them.
+##
+## The motivation law, at ceiling height. Nothing here is scattered: the girders
+## are the frame that carries the roof, the pipe runs sit ON the girders, and every
+## tray leaves a wall riser and arrives somewhere that needs it. It is also
+## deliberate preparation for the lighting pass — a gobo dropped through a girder
+## lattice onto a grated mezzanine is three layers of shadow for one light.
+func technical_ceiling(rect: Rect2, height: float, loads: Array) -> void:
+	if height < STOREY * 1.5:
+		return
+	var mid: Vector2 = rect.position + rect.size * 0.5
+	var girder_y: float = height - 0.55
+
+	# Primary girders on the long axis, every two cells; secondaries across them.
+	var long_x: bool = rect.size.x >= rect.size.y
+	var pitch: float = CELL * 2.0
+	var t: float = (rect.position.y if long_x else rect.position.x) + CELL
+	var limit: float = (rect.end.y if long_x else rect.end.x) - CELL * 0.5
+	while t < limit:
+		if long_x:
+			_mesh_box(Vector3(mid.x, girder_y, t), Vector3(rect.size.x, 0.42, 0.3),
+					MAT_CONDUIT)
+			_mesh_box(Vector3(mid.x, girder_y - 0.3, t), Vector3(rect.size.x, 0.1, 0.16),
+					MAT_TRIM)
+		else:
+			_mesh_box(Vector3(t, girder_y, mid.y), Vector3(0.3, 0.42, rect.size.y),
+					MAT_CONDUIT)
+			_mesh_box(Vector3(t, girder_y - 0.3, mid.y), Vector3(0.16, 0.1, rect.size.y),
+					MAT_TRIM)
+		t += pitch
+	# One cross-tie the other way, so the lattice reads as a frame rather than as
+	# a set of parallel beams.
+	if long_x:
+		_mesh_box(Vector3(mid.x, girder_y + 0.34, mid.y),
+				Vector3(rect.size.x, 0.24, 0.24), MAT_CONDUIT)
+	else:
+		_mesh_box(Vector3(mid.x, girder_y + 0.34, mid.y),
+				Vector3(0.24, 0.24, rect.size.y), MAT_CONDUIT)
+
+	# Pipe racks hung under the girders, on the kit's own pipe module.
+	var rack_y: float = girder_y - 1.05
+	var p: float = (rect.position.x if long_x else rect.position.y) + CELL * 0.5
+	var p_end: float = (rect.end.x if long_x else rect.end.y) - 0.01
+	var lane: float = (mid.y if long_x else mid.x) - CELL
+	while p < p_end:
+		if long_x:
+			_put("PIPE_RUN_4M", Vector3(p - CELL * 0.5, rack_y, lane), 0.0)
+		else:
+			_put("PIPE_RUN_4M", Vector3(lane, rack_y, p - CELL * 0.5), 90.0)
+		p += CELL
+
+	# Cable trays: FROM a wall riser TO each load. A tray that arrives nowhere is
+	# the failure mode this whole grammar exists to prevent.
+	# The trim kit's own cable tray, laid along the rack lane. Cheaper and better
+	# than boxes where it exists; the `_conduit_run` branches below still do the
+	# actual FROM-here-TO-there routing, because a tray is a channel and a channel
+	# with nothing running in it is scenery.
+	if KitLib.has("CEIL_CABLE_TRAY_4M"):
+		var q: float = (rect.position.x if long_x else rect.position.y) + CELL * 0.5
+		var lane_b: float = (mid.y if long_x else mid.x) + CELL
+		while q < p_end:
+			if long_x:
+				_put("CEIL_CABLE_TRAY_4M", Vector3(q - CELL * 0.5, rack_y + 0.25, lane_b), 0.0)
+			else:
+				_put("CEIL_CABLE_TRAY_4M", Vector3(lane_b, rack_y + 0.25, q - CELL * 0.5), 90.0)
+			q += CELL
+
+	var riser: Vector3 = Vector3(rect.position.x + 0.9, 0.0, mid.y)
+	for load_any: Variant in loads:
+		var load: Vector3 = load_any
+		_conduit_run(Vector3(riser.x, 1.4, riser.z), Vector3(riser.x, rack_y - 0.3, riser.z), 0.16)
+		_conduit_run(Vector3(riser.x, rack_y - 0.3, riser.z),
+				Vector3(load.x, rack_y - 0.3, riser.z), 0.13)
+		_conduit_run(Vector3(load.x, rack_y - 0.3, riser.z),
+				Vector3(load.x, rack_y - 0.3, load.z), 0.13)
+		_conduit_run(Vector3(load.x, rack_y - 0.3, load.z),
+				Vector3(load.x, maxf(load.y, 1.6), load.z), 0.13)
 
 
 # ------------------------------------------------------------------- spawns --

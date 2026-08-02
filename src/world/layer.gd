@@ -42,6 +42,11 @@ var compiler_positions: Array[Vector3] = []
 ## nest, for `--goto nest` — the two rooms M3's verification runs care about.
 var vault_position: Vector3 = Vector3.ZERO
 var nest_position: Vector3 = Vector3.ZERO
+## M6.6: the graph this layer was built from, kept so anything that needs to ask
+## a question about the LAYOUT rather than about a single fixture — the vertical
+## `--goto` probes, and the vertical-aware minimap when it lands — has one place
+## to ask it. Null on the hand-authored test layer, which has no graph.
+var graph: LayerGraph = null
 ## One end of the layer's longest corridor, and the yaw that looks down it.
 ## M3.7 added this because a corridor is the shot that judges the architecture
 ## kit — it is the only place the player sees a wall from three metres, and it is
@@ -125,13 +130,22 @@ func _rebuild() -> void:
 	_clear_dynamic()
 
 	if Run.use_test_layer:
+		graph = null
 		var authored: LayerBuilder = LayerBuilder.new()
 		authored.name = "LayerBuilder"
 		_builder = authored
 		_adopt_test_layer_furniture()
 	else:
 		_build_started_usec = Time.get_ticks_usec()
-		var graph: LayerGraph = LayerGraph.generate(Rng.run_seed, Run.layer_number)
+		# Assigned straight to the member rather than to a local of the same name:
+		# a shadowing local here would be a warning today and a very confusing bug
+		# the first time somebody edited one of the two.
+		graph = LayerGraph.generate(Rng.run_seed, Run.layer_number)
+		# M6.6: hand the graph this peer ACTUALLY built to the `--dumplive`
+		# instrument, if one is armed. `--dumplayer` proves the generator is a pure
+		# function of (seed, layer) in a fresh process; this is what proves a HOST
+		# and a CLIENT in a live session ended up with the same one.
+		Debug.note_built_layer(graph)
 		var procedural: ProcLayerBuilder = ProcLayerBuilder.create(graph)
 		_builder = procedural
 		shaft_position = graph.shaft_point
@@ -144,6 +158,8 @@ func _rebuild() -> void:
 		nest_position = graph.centre_of(
 				graph.nest_rooms[0] if not graph.nest_rooms.is_empty() else -1)
 		_find_hero_corridor(graph)
+		# M6.6 `--pathwalk`: armed here, fired on a timer once the colliders exist.
+		Debug.arm_path_walk()
 
 	add_child(_builder)  # GeometryKit._ready() runs build() synchronously.
 	_apply_environment()

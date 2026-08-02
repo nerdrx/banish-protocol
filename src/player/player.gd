@@ -18,6 +18,47 @@ const JUMP_VELOCITY: float = 3.9
 const MOUSE_SENSITIVITY: float = 0.0022
 const PITCH_LIMIT: float = 1.45
 
+# --- M6.6 verticality ---------------------------------------------------------
+#
+# The layer has ramps, stairs and gantries in it now, so the avatar has to be
+# told two things it never needed while every floor was flat.
+
+## Floor snapping. Without it, walking DOWN a 27 degree stair at sprint speed
+## launches the body off every tread and the descent reads as a series of small
+## falls — which, since a landing now makes a NOISE, would have the crew pinging
+## the Hound every time they used a staircase. Godot disables the snap
+## automatically while `velocity.y > 0`, so a jump is unaffected.
+const FLOOR_SNAP: float = 0.55
+
+## Landing thresholds, in impact speed (m/s downward at the moment of contact).
+##
+## Deliberately NOT in Balance: those constants were retuned by the Cycles pass
+## and are not to be touched, and these are movement feel rather than economy.
+## The numbers are chosen against the deck heights the generator authors:
+##
+##   0.8 m dais / 1.6 m terrace  ~4.0 / 5.6 m/s  — silent, free. A step down is
+##                                                 a step down.
+##   2.4 m plinth                ~6.9 m/s        — heard in this room only.
+##   4.0 m gallery, gantry       ~8.9 m/s        — heard a room away. This is the
+##                                                 drop-down shortcut, and its
+##                                                 whole cost is the noise.
+##   8.0 m trunk gantry to grade ~12.5 m/s       — heard, AND it costs integrity.
+##
+## So the readable rule for a player is: one storey is loud but free, two storeys
+## hurts. Which is exactly the risk/reward shape a shortcut should have.
+const LAND_NOISE_SPEED: float = 6.2
+const LAND_LOUD_SPEED: float = 8.2
+const LAND_HURT_SPEED: float = 11.5
+## Integrity per m/s over the hurt threshold. A two-storey drop (12.5 m/s) costs
+## about 5; a fall from anything the generator builds cannot corrupt a healthy
+## agent on its own, which is the mercy half of DESIGN.md's not-hardcore rule.
+const LAND_HURT_PER_SPEED: float = 5.0
+## And a floor, so the first metre over the line is not free.
+const LAND_HURT_MIN: float = 3.0
+## Landings are their own noise source; this is how long one holds a listener's
+## attention. Shorter than a cabinet cut — a thump is an event, not a signature.
+const LAND_NOISE_HOLD: float = 5.0
+
 const BASE_FOV: float = 74.0
 const SPRINT_FOV: float = 81.0
 const FOV_LERP: float = 6.0
@@ -285,6 +326,8 @@ func _ready() -> void:
 	_shake_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX
 	_shake_noise.frequency = 1.0
 	_shake_noise.seed = peer_id
+	# M6.6: stick to slopes. See FLOOR_SNAP.
+	floor_snap_length = FLOOR_SNAP
 	_apply_identity()
 	_build_avatar()
 	_build_kit()
@@ -1476,10 +1519,61 @@ func _process(delta: float) -> void:
 
 # ------------------------------------------------------------------- events --
 
+## One landing. M6.6 gives it consequences: a drop-down is a shortcut you pay for
+## in noise, and a long one in integrity too.
+##
+## Detected on the peer that OWNS this body, because movement is client-
+## authoritative and the faller is the only one who knows it happened — but
+## RESOLVED on the host, always. Both consequences travel in one packet, because
+## they are one event: it was loud, and it may have hurt.
+##
+## The routing matters and is easy to get wrong. `NoiseBus.ping` emits on whatever
+## peer called it, and every listener that changes the world checks `is_server`
+## for itself — so a client pinging its own bus is a sound with nothing on the
+## other end of it. Ping locally and a crewmate's drop-down is silent to the
+## Hound, which would make the shortcut free for everyone except the host and
+## quietly delete the entire cost of the mechanic in co-op.
 func _land(impact_speed: float) -> void:
 	var strength: float = clampf(absf(impact_speed) * DIP_SCALE, 0.0, DIP_MAX)
 	_dip_offset -= strength
 	on_landed(strength)
+	if not _is_local:
+		return
+
+	var speed: float = absf(impact_speed)
+	if speed < LAND_NOISE_SPEED:
+		return
+	if multiplayer.has_multiplayer_peer() and not multiplayer.is_server():
+		_report_fall.rpc_id(1, speed)
+		return
+	_resolve_landing(Net.local_id(), speed, global_position)
+
+
+## Host-side (or solo). Where a landing becomes a noise in the world and, if it
+## was far enough, a wound. `Run.damage_player` is the single door integrity
+## leaves by, so a fall is not a special case — it is a noise and a wound.
+func _resolve_landing(peer: int, speed: float, where: Vector3) -> void:
+	# Reach in ROOMS, the unit the antivirus thinks in. A step off a plinth is
+	# heard by whatever is in here with you; a storey is heard next door.
+	NoiseBus.ping(where, 1 if speed >= LAND_LOUD_SPEED else 0, "land", LAND_NOISE_HOLD)
+	if speed < LAND_HURT_SPEED:
+		return
+	Run.damage_player(peer,
+			LAND_HURT_MIN + (speed - LAND_HURT_SPEED) * LAND_HURT_PER_SPEED, where)
+
+
+## A client reporting its own landing. Carries the SPEED rather than a damage
+## figure, so the host applies its own curve and a client cannot invent a number.
+## Clamped as well: movement is client-authoritative for responsiveness (DESIGN.md
+## "v1 pragmatism"), so a client can claim a fall — it just cannot claim an
+## arbitrarily large one, and the worst a lie achieves is what the tallest gantry
+## the generator builds would have cost it anyway.
+@rpc("any_peer", "call_remote", "reliable")
+func _report_fall(speed: float) -> void:
+	if not multiplayer.is_server():
+		return
+	_resolve_landing(multiplayer.get_remote_sender_id(),
+			clampf(speed, 0.0, LAND_HURT_SPEED * 1.6), global_position)
 
 
 ## Hooks for M4 audio. Deliberately empty for now.

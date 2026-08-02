@@ -221,6 +221,9 @@ var _tube: SubViewport = null
 var _screen: SubViewportContainer = null
 var _crt: ShaderMaterial = null
 var _fixed: Control = null
+## PT2's minimap, and its inset from the tube-safe box's bottom-right corner.
+var _minimap: Minimap = null
+const MINIMAP_MARGIN: float = 22.0
 ## 0..1 how far the tube has warmed up. Cold on injection.
 var _warmup: float = 0.0
 
@@ -319,6 +322,7 @@ func _ready() -> void:
 	Haunt.mother_spoke.connect(_on_mother_spoke)
 	_build_crosshair()
 	_build_gate_panel()
+	_build_minimap()
 	_begin_boot()
 	Run.local_shot.connect(_on_local_shot)
 	# Everything above snapshots laid-out geometry — the clusters' home positions,
@@ -330,6 +334,22 @@ func _ready() -> void:
 	# coordinates back over them — a 720p -> 1080p change snapped all four
 	# clusters ~360 px and left them there.
 	_root.resized.connect(_recapture_layout)
+	# PT2 (Screen & Nav). `Root` carries every anchored cluster in the interface,
+	# and it was PRESET_FULL_RECT — so "24 px in from the left edge" meant 24 px
+	# from the edge of the CANVAS, which under `canvas_items` + `expand` is 1720 px
+	# wide at 21:9 and 2560 at 32:9, not 1280. The four corner clusters obediently
+	# went to the four corners of a 32:9 panel: over a metre apart, two of them
+	# outside the player's field of attention entirely, and all four sitting in the
+	# region the CRT tube's barrel warp has no picture for. Same class of bug as
+	# the menu's ghost program panel, same fix — `Root` now IS the tube-safe box.
+	#
+	# `Fixed` deliberately does NOT move. The crosshair, the interact prompt, the
+	# damage arc and the pause/summary plates want the TRUE centre of the screen
+	# and the true full frame; a reticle inset into a 16:9 box on an ultrawide
+	# would not be where the gun is pointing. Aim is full-bleed, instruments are
+	# safe-area, and that split is the whole rule.
+	get_viewport().size_changed.connect(_fit_safe_area)
+	_fit_safe_area()
 
 	# The host already has a player when the HUD loads; clients get the signal.
 	var existing: Node = Net.get_player(Net.local_id())
@@ -447,9 +467,19 @@ func _build_tube() -> void:
 	# The grille costs real contrast — it is a multiply, and it is multiplying
 	# text that was already authored dim. The gain buys that back so the tube is
 	# a texture over the readouts rather than a filter dimming them.
-	_crt.set_shader_parameter("gain", 1.28)
-	_crt.set_shader_parameter("scanline_strength", 0.16)
-	_crt.set_shader_parameter("vignette", 0.26)
+	_crt.set_shader_parameter("gain", 1.34)
+	# PT2, same argument as the menu's (see MainMenu._build_terminal): the stripe
+	# runs at content scale now so it needs less amplitude to read, the smear is
+	# one SCREEN PIXEL rather than 0.16% of the screen width (which was five pixels
+	# of ghost on an ultrawide — the reported double-strike), and the phosphor bias
+	# stops dragging readouts down to the luminance of the player's marker colour.
+	_crt.set_shader_parameter("phosphor_bias", 0.24)
+	_crt.set_shader_parameter("smear_pixels", 1.0)
+	_crt.set_shader_parameter("scanline_strength", 0.10)
+	# PT2: the tube's own edge falloff follows the player's VIGNETTE slider, like
+	# the menu's. It stacks on the world post grade's vignette, and two vignettes
+	# multiplying is how a readout 24 px inside the frame stopped being readable.
+	_crt.set_shader_parameter("vignette", 0.26 * Screen.vignette)
 	_crt.set_shader_parameter("phosphor", Vector3(
 			UiFx.SYSTEM.r, UiFx.SYSTEM.g * 1.05, UiFx.SYSTEM.b * 1.3))
 	_screen.material = _crt
@@ -1099,6 +1129,46 @@ func _capture_cluster_homes() -> void:
 ## Skipped mid-flinch would be fine too, but the jump is 0.2 s and a resize is
 ## not something to be clever about: re-home first, and let the current flinch
 ## finish against the new coordinates.
+## Park the instrument cluster root on the tube-safe rect. See
+## `UiFx.tube_safe_rect` for the rule and the measurements behind it.
+##
+## The parallax rig writes `_root.position` every frame, which on a Control with
+## anchors is a write to its offsets — so this deliberately re-solves the anchors
+## rather than trusting them to have survived. It runs on every viewport change,
+## which includes the UI-scale slider moving (a scale change resizes the 2D
+## canvas) and the window being dragged to another monitor.
+func _fit_safe_area() -> void:
+	if _root == null or not is_instance_valid(_root):
+		return
+	# Off the ROOT viewport, not `_root`'s own: after `_build_tube` the cluster
+	# root lives inside the tube's SubViewport, and asking that for its size would
+	# be asking the thing being sized how big it is.
+	UiFx.fit_to_safe_area(_root, get_viewport().get_visible_rect().size)
+	# `_root.resized` fires from this and re-snapshots every cluster's home
+	# position, which is exactly what has to happen: those homes are what the
+	# flinch and the parallax spring return to.
+	_fit_mother_line()
+
+
+## MOTHER's line is the one readout in the HUD with a HARD WIDTH — 760 px, so her
+## sentences break where they were written to break. `--ui-audit` at UI SCALE 1.6:
+## `Root/MotherLine OUTSIDE-SAFE x=197..957` against a 680 px safe box, because a
+## fixed pixel width in a canvas that SHRINKS with the scale factor eventually
+## exceeds any box you put it in. The label already autowraps, so the answer is to
+## let it: authored width where there is room for it, the safe box's own width
+## where there is not, and one more line of dialogue instead of two words in the
+## curve of the glass.
+func _fit_mother_line() -> void:
+	if _mother_label == null or not is_instance_valid(_mother_label):
+		return
+	var box: float = UiFx.tube_safe_rect(get_viewport().get_visible_rect().size).size.x
+	if Debug.no_safe_area:
+		box = get_viewport().get_visible_rect().size.x
+	var width: float = minf(MOTHER_LINE_WIDTH, box * MOTHER_LINE_FRACTION)
+	_mother_label.custom_minimum_size = Vector2(width, 0.0)
+	_mother_label.pivot_offset = Vector2(width * 0.5, 20.0)
+
+
 func _recapture_layout() -> void:
 	if _clusters.is_empty():
 		return
@@ -1270,6 +1340,13 @@ func _scan_nearest_hunter() -> float:
 ## MOTHER's glyph panel: a centred red line above the amber readouts, distinct
 ## from the crew's instrument because it is HER channel. Built in code beside the
 ## other overlays.
+## The width MOTHER's line is authored at, and the most of the tube-safe box it is
+## ever allowed to take. The fraction leaves her line clear of the box's own edge
+## so she never reads as part of the frame.
+const MOTHER_LINE_WIDTH: float = 760.0
+const MOTHER_LINE_FRACTION: float = 0.92
+
+
 func _build_mother_surface() -> void:
 	_mother_label = Label.new()
 	_mother_label.name = "MotherLine"
@@ -1281,8 +1358,10 @@ func _build_mother_surface() -> void:
 	_mother_label.anchor_right = 0.5
 	_mother_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_mother_label.position = Vector2(0.0, 96.0)
-	_mother_label.custom_minimum_size = Vector2(760.0, 0.0)
-	_mother_label.pivot_offset = Vector2(380.0, 20.0)
+	# Both re-solved by `_fit_mother_line` against the live safe box; these are the
+	# authored values it treats as the maximum.
+	_mother_label.custom_minimum_size = Vector2(MOTHER_LINE_WIDTH, 0.0)
+	_mother_label.pivot_offset = Vector2(MOTHER_LINE_WIDTH * 0.5, 20.0)
 	_mother_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_mother_label.add_theme_font_override("font", load("res://assets/fonts/ui_font.tres") as Font)
 	_mother_label.add_theme_font_size_override("font_size", 22)
@@ -1600,7 +1679,7 @@ func _crew_row(id: int) -> Control:
 
 	var label: Label = Label.new()
 	label.text = Net.crew_name(id)
-	label.add_theme_font_size_override("font_size", 13)
+	label.add_theme_font_size_override("font_size", UiFx.FONT_BODY)
 	var is_self: bool = id == Net.local_id()
 	label.add_theme_color_override("font_color",
 			UiFx.TEXT if is_self else UiFx.DIM)
@@ -1623,7 +1702,7 @@ func _crew_row(id: int) -> Control:
 	tag.name = "Latency"
 	tag.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tag.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	tag.add_theme_font_size_override("font_size", 11)
+	tag.add_theme_font_size_override("font_size", UiFx.FONT_SMALL)
 	tag.add_theme_color_override("font_color", COLOUR_DIM)
 	tag.text = "HOST" if id == 1 else ""
 	row.add_child(tag)
@@ -1710,6 +1789,28 @@ func _refresh_link() -> void:
 # **which crew member is missing which backdoor** — otherwise a crew spends the
 # evening guessing why their fourth cannot get in.
 
+## PT2's minimap, built in code and parented to the SAFE-AREA root rather than to
+## `Fixed`, because it is an INSTRUMENT: it belongs in the cluster with the Cycles
+## gauge, inside the tube, subject to the same phosphor and the same 16:9 box.
+## (`Fixed` is for things that must sit at the true centre of the frame — the
+## reticle, the prompt, the pause plate.)
+##
+## Bottom-right, which is the one corner the M4.9 quiet-instrument pass left
+## empty, and anchored so it stays in the corner of the SAFE BOX at every aspect.
+## The widget resizes itself as it expands (see Minimap._process), so the anchors
+## are bottom-right with offsets driven off its own size.
+func _build_minimap() -> void:
+	_minimap = Minimap.new()
+	_minimap.name = "Minimap"
+	_root.add_child(_minimap)
+	_minimap.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_minimap.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_minimap.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	# The widget re-solves its own offsets every frame as it morphs between the
+	# corner and the expanded read; all it needs from here is where the corner is.
+	_minimap.margin = MINIMAP_MARGIN
+
+
 func _build_gate_panel() -> void:
 	_gate_panel = Control.new()
 	_gate_panel.name = "InjectionGate"
@@ -1744,13 +1845,13 @@ func _build_gate_panel() -> void:
 	plate.add_child(column)
 
 	_gate_title = Label.new()
-	_gate_title.add_theme_font_size_override("font_size", 15)
+	_gate_title.add_theme_font_size_override("font_size", UiFx.FONT_HEAD)
 	_gate_title.add_theme_color_override("font_color", COLOUR_WARNING)
 	_gate_title.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(_gate_title)
 
 	_gate_body = Label.new()
-	_gate_body.add_theme_font_size_override("font_size", 13)
+	_gate_body.add_theme_font_size_override("font_size", UiFx.FONT_BODY)
 	_gate_body.add_theme_color_override("font_color", COLOUR_TEXT)
 	_gate_body.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	column.add_child(_gate_body)

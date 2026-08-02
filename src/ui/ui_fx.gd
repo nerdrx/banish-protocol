@@ -68,7 +68,15 @@ static var SYSTEM_HOT: Color = Color(1.0, 0.87, 0.58)
 ## instrument; an evenly lit one reads as a menu.
 static var DIM: Color = Color(0.62, 0.42, 0.18)
 ## Body text. Warm off-white, not white: nothing on a phosphor screen is neutral.
-static var TEXT: Color = Color(0.93, 0.82, 0.60)
+##
+## PT2 pushes it much closer to white than M4.7 left it. The phosphor's HUE is
+## the identity; its VALUE was never carrying meaning, and a deep-violet player
+## colour (the shell markers people actually pick) has a luminance around 0.15,
+## so "body text at the phosphor's own value" meant body text a fifth as bright as
+## the plate it needed to beat. The hue survives at low saturation — a lit dot on
+## a real tube is brighter AND less saturated than the phosphor's resting colour,
+## which is physics, not a compromise.
+static var TEXT: Color = Color(0.98, 0.93, 0.84)
 
 ## Under half a pool. Not an emergency, but stop wandering. NEVER re-tinted.
 const WARNING: Color = Color(1.0, 0.47, 0.11)
@@ -130,9 +138,20 @@ static func clamp_phosphor(colour: Color) -> Color:
 static func set_phosphor(colour: Color) -> void:
 	var base: Color = clamp_phosphor(colour)
 	SYSTEM = base
-	SYSTEM_HOT = Color.from_hsv(base.h, base.s * 0.42, minf(base.v * 1.05 + 0.12, 1.0))
+	SYSTEM_HOT = Color.from_hsv(base.h, base.s * 0.34, 1.0)
 	DIM = Color.from_hsv(base.h, minf(base.s * 1.05, 1.0), base.v * 0.52)
-	TEXT = Color.from_hsv(base.h, base.s * 0.32, minf(base.v * 1.02 + 0.06, 1.0))
+	# PT2: TEXT is now derived at a FIXED high value rather than at the player's
+	# own. `base.v` is 0.70..1.0 by `clamp_phosphor`, and at the bottom of that
+	# band the old `base.v * 1.02 + 0.06` produced body copy at 0.77 value in a
+	# saturated hue — under a grille, a phosphor bias and two vignettes, that is
+	# roughly the luminance of the panel behind it. Value is not where the phosphor
+	# identity lives; hue is. See the TEXT constant.
+	TEXT = Color.from_hsv(base.h, base.s * 0.20, 1.0)
+	# Between DIM and TEXT, and the reason it exists is that there was nothing
+	# there. Everything that had to be READ but was not body copy — field labels,
+	# panel captions, the ticker — was reading DIM at 0.52 value through a scanline
+	# grille, which is a rule colour doing a word's job.
+	CAPTION = Color.from_hsv(base.h, base.s * 0.48, minf(base.v * 0.30 + 0.70, 1.0))
 
 
 # --- the tube ---------------------------------------------------------------
@@ -157,6 +176,151 @@ const TUBE_WARMUP: float = 0.9
 ## single most likely thing to go wrong with this look is that it wins: a tube
 ## you notice is a tube you are reading instead of the game.
 const TUBE_AMOUNT: float = 0.85
+
+# --- THE TUBE-SAFE AREA (PT2) -----------------------------------------------
+#
+# The rule this file exists to state, because before PT2 nothing did and every
+# ultrawide layout bug in the game was a different symptom of the same omission.
+#
+# ## The problem, precisely
+#
+# The project is `window/stretch/mode="canvas_items"` with `aspect="expand"`. That
+# means the 2D coordinate space is NOT 1280x720. It is 720 tall (or 1280 wide,
+# whichever the window's aspect makes it) and the OTHER axis grows to match the
+# window: 1280x720 at 16:9, 1280x800 at 16:10, **1720x720 at 21:9, 2560x720 at
+# 32:9**. Measured, not assumed — `--window-size 5120x1440` prints
+# `viewport=2560x720`.
+#
+# So a Control anchored to the canvas's right edge is 1280 px from the left edge
+# on the machine the UI was authored on and 2560 px from it on the user's monitor,
+# while anything positioned by a build-time absolute number stays where 1280-space
+# put it. Panels that were adjacent at 16:9 drift a screen apart at 32:9, and
+# panels that were 22 px inside the frame end up 22 px inside a frame nobody can
+# see the far side of. Layered, misplaced, unreadable — the live complaint.
+#
+# ## The second problem: the glass is smaller than the canvas
+#
+# The interface renders into a SubViewport and comes back through `crt.gdshader`,
+# which applies a genuine barrel warp before it samples. At the middle of a
+# horizontal edge the warp reads from `1 + curvature * amount` beyond the texture,
+# so that outer band has no picture at all; `bezel_falloff` takes another slice;
+# and the tube vignette plus the post grade's vignette crush what survives.
+# **The usable region of a CRT is smaller than the rectangle you rendered into**,
+# and it shrinks toward the corners because that is what glass does.
+#
+# ## The rule
+#
+# Critical UI — anything a player must READ or CLICK — lives inside
+# `tube_safe_rect()`: the largest centred box of at most SAFE_ASPECT, inset by
+# TUBE_EDGE on every side. Ambient CRT dressing (the schematic, the scanlines,
+# the tube mask itself, the backdrop gradient) is full-bleed and always was; it
+# has nothing to lose at the edge because it is texture, not information.
+#
+# At 16:9 the safe box is the frame minus a 6% border, which is where a broadcast
+# title-safe area has been for seventy years. At 32:9 it is a 16:9 box in the
+# middle of the panel and the extra 1280 px of canvas either side carry dressing
+# and nothing else — which is the correct answer for a game whose HUD is a
+# physical instrument bolted in front of one pair of eyes.
+
+## The widest a block of critical UI is ever allowed to get, whatever the window
+## does. 16:9 is not nostalgia: it is roughly the angle a seated player can read
+## without moving their head, and every element inside the box keeps the spatial
+## relationships it was composed with.
+const SAFE_ASPECT: float = 16.0 / 9.0
+## And the tallest, for the 4:3 / 16:10 direction. A 5:4 monitor expands the
+## canvas vertically instead, and a HUD cluster pinned to the true bottom of that
+## canvas is a cluster below the player's field of attention.
+const SAFE_ASPECT_MIN: float = 4.0 / 3.0
+## Fraction of the safe box lost to the glass on each side. Derived rather than
+## eyeballed: the barrel warp at a horizontal mid-edge samples
+## `curvature * TUBE_AMOUNT` past the texture (0.064 at the menu's 0.075 tube),
+## `bezel_falloff` takes 0.045 more, and the vignette ramp needs headroom above
+## that before text stops being crushed. 0.075 clears all three with margin at the
+## deepest tube in the game, so one number can serve every screen.
+const TUBE_EDGE: float = 0.075
+
+## The usable region of the tube, in canvas coordinates, for a viewport of `view`.
+##
+## Centred horizontally; centred vertically with a slight upward bias, because the
+## post grade's own vignette centre is nudged DOWN (`vignette_shift`) the way an
+## operator frames a subject, so the darkest part of the frame is the bottom edge.
+static func tube_safe_rect(view: Vector2) -> Rect2:
+	if view.x <= 0.0 or view.y <= 0.0:
+		return Rect2(Vector2.ZERO, Vector2.ZERO)
+	var box: Vector2 = view
+	# Clamp the aspect from both directions: an ultrawide window loses width, a
+	# tall one loses height. Whichever axis is in excess is the one that shrinks —
+	# the box is never grown past the window it has to fit inside.
+	if box.x / box.y > SAFE_ASPECT:
+		box.x = box.y * SAFE_ASPECT
+	elif box.x / box.y < SAFE_ASPECT_MIN:
+		box.y = box.x / SAFE_ASPECT_MIN
+	var inset: Vector2 = box * TUBE_EDGE
+	var size: Vector2 = box - inset * 2.0
+	var at: Vector2 = Vector2(
+			(view.x - size.x) * 0.5,
+			(view.y - size.y) * 0.5 - view.y * 0.012)
+	return Rect2(at, size)
+
+
+## Park `control` on the tube-safe rect of the viewport it is in.
+##
+## Written as anchors + offsets rather than `position`/`size` on purpose. That
+## distinction IS the PT2 bug: `set_anchors_preset(...)` followed by
+## `control.position = ...` looks like it places a panel and actually writes an
+## OFFSET from a moving anchor, so the panel tracks an edge the author never
+## looked at. A Control given anchors in 0..1 and offsets in pixels re-solves
+## itself on every `size_changed` for free, forever, at any aspect.
+static func fit_to_safe_area(control: Control, view: Vector2) -> void:
+	# `--no-safe-area` restores the pre-PT2 geometry so the bug can still be
+	# photographed from this build. See Debug.no_safe_area.
+	if Debug.no_safe_area:
+		control.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		return
+	var rect: Rect2 = tube_safe_rect(view)
+	control.set_anchors_preset(Control.PRESET_FULL_RECT)
+	control.offset_left = rect.position.x
+	control.offset_top = rect.position.y
+	control.offset_right = rect.position.x + rect.size.x - view.x
+	control.offset_bottom = rect.position.y + rect.size.y - view.y
+
+
+# --- legibility (PT2) --------------------------------------------------------
+#
+# "Barely legible on ANY screen" (friend playtest 1). Three separate causes, and
+# only the third one is a setting:
+#
+#   SIZE      the console was authored at 11-15 px in a 720-tall design space,
+#             i.e. 1.5-2% of screen height. Broadcast minimum for body text is
+#             about 2.5%, and this game asks you to read amber-on-black through a
+#             scanline grille. Every base size below is up, and the ratios between
+#             them are preserved so the typographic hierarchy is unchanged.
+#   CONTRAST  `DIM` sat at 0.52 value — legible as a rule or a tick mark, not as
+#             a word. It stays the structure colour; the labels that were using it
+#             move up to CAPTION, which is a new token rather than a re-tint of an
+#             old one, so nothing that was deliberately faint got brightened.
+#   SCALE     the player's own multiplier (Screen.ui_scale). See screen_settings.gd.
+
+## Body copy, and the floor: nothing readable is ever smaller than this. A 13 px
+## glyph at 720 design-height is ~1.8% of screen height, which is the point at
+## which the tube's grille starts eating the counters of letterforms.
+const FONT_BODY: int = 14
+## Field labels ("CALLSIGN", "INJECTION POINT") and panel captions.
+const FONT_LABEL: int = 14
+## Small print: the version stamp, the ticker, gloss lines under a toggle.
+const FONT_SMALL: int = 13
+## Panel headings.
+const FONT_HEAD: int = 17
+## Readouts and numerals that carry state.
+const FONT_READOUT: int = 15
+
+## Captions and secondary labels — the token that used to be DIM.
+##
+## Derived from the phosphor like the rest, but at a value that survives a
+## scanline grille and a vignette. DIM stays exactly where it was and keeps its
+## job: rules, tick marks, and text that is deliberately not being said yet.
+static var CAPTION: Color = Color(0.80, 0.60, 0.30)
+
 
 # --- boot sequence ----------------------------------------------------------
 

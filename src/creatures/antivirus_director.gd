@@ -477,7 +477,26 @@ func _process(delta: float) -> void:
 		if creature.sync_integrity < 0.999:
 			wounded.append("%d:%d%%" % [creature.slot_index,
 					int(round(creature.sync_integrity * 100.0))])
-	print("[AI] %s layer %d processes=%d %s%s" % [
+	# M6.6: ALTITUDE, for anything that flies. "The Moth exploits tall rooms" is a
+	# claim about behaviour, and a claim about behaviour should be a number in a
+	# log rather than an impression from a screenshot — a still frame cannot show
+	# that a creature is USING a volume, only that it was somewhere once. Printed
+	# as height / room headroom, so a Moth patrolling the girders of a twelve-metre
+	# trunk room and one bumping around a four-metre bus hall are told apart at a
+	# glance.
+	var flight: PackedStringArray = PackedStringArray()
+	for creature: Antivirus in _creatures():
+		if creature is not Moth:
+			continue
+		var head: float = 0.0
+		if graph != null:
+			var room: int = creature.current_room()
+			if room >= 0 and room < graph.rooms.size():
+				head = float(graph.rooms[room]["h"])
+		flight.append("%d:%.1f/%.0fm" % [
+			creature.slot_index, creature.global_position.y, head])
+	print("[AI] %s layer %d processes=%d %s%s%s" % [
 		"HOST " if multiplayer.is_server() else "CLIENT",
 		_layer_number, total, " ".join(parts),
-		"  integrity[" + " ".join(wounded) + "]" if wounded.size() > 0 else ""])
+		"  integrity[" + " ".join(wounded) + "]" if wounded.size() > 0 else "",
+		"  altitude[" + " ".join(flight) + "]" if flight.size() > 0 else ""])
