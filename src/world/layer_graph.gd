@@ -152,6 +152,18 @@ const DECK_FIXTURE_CLEAR: float = 3.2
 ## rather than a shortcut and no marker is emitted.
 const DROP_MIN_HEIGHT: float = 2.0
 
+## Clear grade reserved in front of the first tread of every ground route.
+##
+## A live playtest found flights whose bottom step was jammed into the wall that
+## closes the band they sit in — you could see the stair but not walk onto it
+## without sidling along the wall first. The band is cut end to end along a wall,
+## so without a reserve the route can start exactly in a room corner.
+##
+## 2 m rather than the 1.5 m the audit demands, because `_add_link` already pushes
+## the `foot` waypoint 1 m up-slope: the reserve has to cover the clearance AND
+## that offset, with something left over.
+const ROUTE_APPROACH: float = 2.0
+
 ## Clearance a doorway needs from a room corner: half a door plus a margin so the
 ## opening never eats the wall's end.
 const DOOR_MARGIN: float = 2.4
@@ -1756,19 +1768,24 @@ func _split_band(rect: Rect2, side: int, depth: float, run: float,
 	if band.size.x < KIT_CELL or band.size.y < KIT_CELL:
 		return {"ok": false}
 	var along: float = band.size.x if horizontal else band.size.y
-	if along < run + KIT_CELL:
+	# The reserve is spent at whichever end the ROUTE lands on; the deck may still
+	# run flush to the far end, because nobody has to walk onto a deck from outside
+	# the room.
+	if along < run + KIT_CELL + ROUTE_APPROACH:
 		return {"ok": false}
 	# Deck length snapped DOWN to the lattice, so its far edge lands on a cell
 	# boundary and the floor modules stamped on it are whole.
-	var used: float = floorf(minf(deck_len, along - run) / KIT_CELL) * KIT_CELL
+	var used: float = floorf(
+			minf(deck_len, along - run - ROUTE_APPROACH) / KIT_CELL) * KIT_CELL
 	if used < KIT_CELL:
 		return {"ok": false}
 
 	var lo: float = band.position.x if horizontal else band.position.y
 	var hi: float = lo + along
 	var route_first: bool = _roll(band.position.x, band.position.y, salt) < 0.5
-	var route_lo: float = lo if route_first else hi - run
-	var deck_lo: float = lo + run if route_first else hi - run - used
+	var route_lo: float = lo + ROUTE_APPROACH if route_first else hi - ROUTE_APPROACH - run
+	var deck_lo: float = lo + ROUTE_APPROACH + run if route_first \
+			else hi - ROUTE_APPROACH - run - used
 	var axis: String = "x" if horizontal else "z"
 
 	var deck: Rect2
@@ -2067,9 +2084,40 @@ func _lift_loot() -> void:
 			if siphon_rooms[i] != room:
 				continue
 			var flat: Vector2 = Vector2(siphon_points[i].x, siphon_points[i].z)
-			if not foot.grow(-1.0).has_point(flat):
+			# Adopt any tap the terrace REACHES, not just one already comfortably
+			# inside it. The first version only lifted taps within the shrunk
+			# footprint, which left a tap sitting at the rim standing at grade with
+			# the slab built straight through it — the audit's last surviving
+			# clipping class. A terrace may not be laid over a tap it declines to
+			# adopt.
+			# ADOPT OR KEEP CLEAR — never graze. A tap just outside the slab still
+			# clipped the edge fascia, because a tap housing is over a metre wide and
+			# the fascia stands 0.11 m proud of the deck. Adopting anything within a
+			# full fixture clearance closes the annulus where that can happen: either
+			# the plant is on the terrace, or it is far enough away to be unrelated
+			# to it. Half-measures here are what the audit kept finding.
+			if not foot.grow(DECK_FIXTURE_CLEAR).has_point(flat):
 				continue
-			siphon_points[i] = Vector3(siphon_points[i].x, y, siphon_points[i].z)
+			# Pulled clear of the terrace edge before it is raised. The audit found
+			# tap housings clipping the deck's own fascia lip: the tap only had to be
+			# inside the footprint to be lifted, so one that rolled near the rim ended
+			# up half inside the edge trim. Standing plant belongs in the middle of
+			# its plinth anyway.
+			# Adaptive: on a one-cell-deep terrace a fixed 1.6 m inset still left the
+			# tap housing grazing the edge fascia. Take half the narrow axis less a
+			# margin instead, so a shallow deck simply centres its plant.
+			var margin: float = minf(1.9,
+					minf(foot.size.x, foot.size.y) * 0.5 - 0.3)
+			var inset: Rect2 = foot.grow(-maxf(margin, 0.2))
+			var placed: Vector2 = Vector2(
+					clampf(flat.x, inset.position.x, inset.end.x),
+					clampf(flat.y, inset.position.y, inset.end.y))
+			siphon_points[i] = Vector3(placed.x, y, placed.y)
+			# The approach follows the tap, or an automated `--goto siphon` walks to
+			# where the tap used to be.
+			# Stand where the plant is reachable from: the middle of its own deck.
+			var deck_mid: Vector2 = foot.position + foot.size * 0.5
+			siphon_approaches[i] = Vector3(deck_mid.x, y, deck_mid.y)
 			perch_points.append(siphon_points[i])
 			perch_decks.append(int(deck["id"]))
 

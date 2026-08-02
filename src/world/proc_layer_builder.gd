@@ -672,12 +672,6 @@ func _build_verticality() -> void:
 				or kind == LayerGraph.DECK_GANTRY
 		deck_platform(rect, y, grated, open, gaps)
 
-		if bool(deck["solid"]):
-			# A plinth is an object on the floor. Everything that scatters furniture
-			# has to know that before it scatters any.
-			var mid: Vector2 = rect.position + rect.size * 0.5
-			_keep_out.append({"pos": Vector3(mid.x, 0.0, mid.y),
-					"radius": maxf(rect.size.x, rect.size.y) * 0.5 + 1.6})
 
 	for link: Dictionary in graph.deck_links:
 		# A catwalk link is a pure routing edge: the span itself is a DECK and was
@@ -689,9 +683,6 @@ func _build_verticality() -> void:
 		deck_ramp(foot, String(link["axis"]), int(link["dir"]),
 				float(link["y0"]), float(link["y1"]),
 				String(link["kind"]) == LayerGraph.LINK_STAIR)
-		_keep_out.append({"pos": Vector3(foot.position.x + foot.size.x * 0.5, 0.0,
-				foot.position.y + foot.size.y * 0.5),
-				"radius": maxf(foot.size.x, foot.size.y) * 0.5 + 1.2})
 
 	for drop: Dictionary in graph.deck_drops:
 		_drop_marker(drop)
@@ -1492,6 +1483,29 @@ func _blocks_a_prop(at: Vector3, _room_index: int = -1) -> bool:
 ## few dozen candidate placements) and worth every comparison.
 func _build_keep_out() -> void:
 	_keep_out.clear()
+	# M6.6 verticality, FIRST — and registered here rather than in
+	# `_build_verticality` where it belongs conceptually. It used to live there,
+	# and this function's `clear()` above silently wiped every deck and route
+	# circle before the dressing ever consulted the list, so racks, loose blocks
+	# and crate stacks were free to spawn inside plinths, terraces and pits and on
+	# stair footprints. That was the clipping the playtest reported. A keep-out has
+	# to be added where the list is assembled, not before it.
+	for deck: Dictionary in graph.decks:
+		if not bool(deck["solid"]):
+			continue
+		var lo: Vector2 = deck["min"]
+		var hi: Vector2 = deck["max"]
+		var mid: Vector2 = (lo + hi) * 0.5
+		_keep_out.append({"pos": Vector3(mid.x, 0.0, mid.y),
+				"radius": maxf(hi.x - lo.x, hi.y - lo.y) * 0.5 + 1.6})
+	for link: Dictionary in graph.deck_links:
+		if String(link["kind"]) == LayerGraph.LINK_CATWALK:
+			continue
+		var rlo: Vector2 = link["min"]
+		var rhi: Vector2 = link["max"]
+		var rmid: Vector2 = (rlo + rhi) * 0.5
+		_keep_out.append({"pos": Vector3(rmid.x, 0.0, rmid.y),
+				"radius": maxf(rhi.x - rlo.x, rhi.y - rlo.y) * 0.5 + 1.2})
 	for spot: Dictionary in _prop_spots:
 		_keep_out.append({"pos": spot["pos"], "radius": CRATE_PROP_CLEAR})
 	# The muster radius, plus a body's width. This is the one that matters most:

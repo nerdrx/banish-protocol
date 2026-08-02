@@ -1458,6 +1458,19 @@ const RAIL_MIN_HEIGHT: float = 2.0
 const DROP_GAP: float = 3.0
 
 
+## Tags a mesh so the placement audit can find it.
+##
+## The audit works off the SCENE rather than off a parallel list of rectangles,
+## which is the only way it can be trusted: a list says where the generator MEANT
+## to put something, and the whole class of bug being hunted is geometry that
+## ended up somewhere else. Names are prefixes because Godot uniquifies duplicates
+## (`Vert_rail`, `Vert_rail@2`, ...), so `--auditvert` matches on `begins_with`.
+func _named(mesh: MeshInstance3D, tag: String) -> MeshInstance3D:
+	if mesh != null:
+		mesh.name = tag
+	return mesh
+
+
 static func _cell_cut(x: float, z: float, cuts: Array) -> bool:
 	for cut_any: Variant in cuts:
 		var cut: Rect2 = cut_any
@@ -1532,8 +1545,8 @@ func deck_platform(rect: Rect2, y: float, grated: bool, open: Array,
 		x += CELL
 
 	# The slab it is laid on, and its collider. One box for the whole deck.
-	_mesh_box(Vector3(mid.x, y - DECK_THICKNESS * 0.5, mid.y),
-			Vector3(rect.size.x, DECK_THICKNESS, rect.size.y), MAT_MONOLITH)
+	_named(_mesh_box(Vector3(mid.x, y - DECK_THICKNESS * 0.5, mid.y),
+			Vector3(rect.size.x, DECK_THICKNESS, rect.size.y), MAT_MONOLITH), "Vert_deck")
 	_collider_box(Vector3(mid.x, y - DECK_THICKNESS * 0.5, mid.y),
 			Vector3(rect.size.x, DECK_THICKNESS, rect.size.y))
 
@@ -1550,13 +1563,20 @@ func deck_platform(rect: Rect2, y: float, grated: bool, open: Array,
 		var short_x: bool = rect.size.x <= rect.size.y
 		var span: float = rect.size.x if short_x else rect.size.y
 		var march: float = rect.size.y if short_x else rect.size.x
-		var joist_y: float = y - DECK_THICKNESS - 0.16
+		# Tucked hard under the slab, and deliberately shallow.
+		#
+		# The placement audit found joists driven through the tops of bus-hall
+		# server racks: the deck underside sits at 3.64 m, a processing rack stands
+		# 3.2 m, and joists hanging 0.31 m below the slab ate most of that 0.44 m
+		# budget. A gallery OVER the racks is the whole motif, so the racks are not
+		# the thing to move — the joists are.
+		var joist_y: float = y - DECK_THICKNESS - 0.12
 		var t: float = 1.0
 		while t < march - 0.01:
 			var at: Vector3 = Vector3(mid.x, joist_y, rect.position.y + t) if short_x \
 					else Vector3(rect.position.x + t, joist_y, mid.y)
-			_detail_box(at, Vector3(span, 0.3, 0.18) if short_x
-					else Vector3(0.18, 0.3, span), MAT_CONDUIT)
+			_named(_detail_box(at, Vector3(span, 0.24, 0.18) if short_x
+					else Vector3(0.18, 0.24, span), MAT_CONDUIT), "Vert_joist")
 			t += 2.0
 		# And a beam round the rim tying them together.
 		for edge_side: int in 4:
@@ -1567,9 +1587,9 @@ func deck_platform(rect: Rect2, y: float, grated: bool, open: Array,
 			if length < 0.1:
 				continue
 			var rim_mid: Vector2 = (a + b) * 0.5
-			_detail_box(Vector3(rim_mid.x, joist_y, rim_mid.y),
-					Vector3(length, 0.34, 0.24) if edge_side % 2 == 0
-					else Vector3(0.24, 0.34, length), MAT_TRIM)
+			_named(_detail_box(Vector3(rim_mid.x, joist_y, rim_mid.y),
+					Vector3(length, 0.26, 0.24) if edge_side % 2 == 0
+					else Vector3(0.24, 0.26, length), MAT_TRIM), "Vert_joist")
 
 	for side: int in open:
 		var edge: Dictionary = _edge_of(rect, int(side))
@@ -1584,7 +1604,7 @@ func deck_platform(rect: Rect2, y: float, grated: bool, open: Array,
 		var centre: Vector3 = (from + to) * 0.5
 		var thick: Vector3 = Vector3(0.22, 0.44, length) if int(side) % 2 == 1 \
 				else Vector3(length, 0.44, 0.22)
-		_detail_box(centre + Vector3(0.0, -0.08, 0.0), thick, MAT_CONDUIT)
+		_named(_detail_box(centre + Vector3(0.0, -0.08, 0.0), thick, MAT_CONDUIT), "Vert_fascia")
 		if columns and y >= RAIL_MIN_HEIGHT:
 			_deck_columns(from, to, y)
 		if y >= RAIL_MIN_HEIGHT:
@@ -1675,12 +1695,13 @@ func _railing(from: Vector3, to: Vector3, gaps: Array) -> void:
 		var size: Vector3 = Vector3(absf(step.x) * run_length + 0.08, 0.07,
 				absf(step.z) * run_length + 0.08)
 		for height: float in [RAIL_HEIGHT, RAIL_HEIGHT * 0.5]:
-			_detail_box(centre + Vector3(0.0, height, 0.0), size, MAT_CONDUIT)
+			_named(_detail_box(centre + Vector3(0.0, height, 0.0), size, MAT_CONDUIT),
+					"Vert_rail")
 		var posts: int = maxi(int(run_length / 2.0), 1)
 		for i: int in posts + 1:
 			var at: Vector3 = from + step * lerpf(run.x, run.y, float(i) / float(posts)) + base
-			_detail_box(at + Vector3(0.0, RAIL_HEIGHT * 0.5, 0.0),
-					Vector3(0.09, RAIL_HEIGHT, 0.09), MAT_CONDUIT)
+			_named(_detail_box(at + Vector3(0.0, RAIL_HEIGHT * 0.5, 0.0),
+					Vector3(0.09, RAIL_HEIGHT, 0.09), MAT_CONDUIT), "Vert_rail")
 	# Toe plate along the whole edge, gaps included: it is what stops the deck
 	# reading as a floating rectangle when the rail is broken for a ledge.
 	var kick_centre: Vector3 = (from + to) * 0.5 + base
@@ -1714,9 +1735,9 @@ func deck_ramp(rect: Rect2, axis: String, dir: int, y0: float, y1: float,
 			Vector3(length, DECK_THICKNESS, width), basis)
 
 	if not treads:
-		var plate: MeshInstance3D = _detail_box(
+		var plate: MeshInstance3D = _named(_detail_box(
 				centre - basis.y * (DECK_THICKNESS * 0.5),
-				Vector3(length, DECK_THICKNESS, width), MAT_FLOOR)
+				Vector3(length, DECK_THICKNESS, width), MAT_FLOOR), "Vert_flight")
 		plate.basis = basis
 		# Grip strips across the ramp, so a slope reads as a slope from above
 		# rather than as a wedge of the same plate the floor is made of.
@@ -1734,9 +1755,9 @@ func deck_ramp(rect: Rect2, axis: String, dir: int, y0: float, y1: float,
 			var t1: float = float(i + 1) / float(count)
 			var tread_mid: Vector3 = low.lerp(high, (t0 + t1) * 0.5)
 			var depth: float = run / float(count)
-			_detail_box(Vector3(tread_mid.x, tread_mid.y + 0.02, tread_mid.z),
+			_named(_detail_box(Vector3(tread_mid.x, tread_mid.y + 0.02, tread_mid.z),
 					Vector3(depth if horizontal else width, 0.09,
-							width if horizontal else depth), MAT_FLOOR)
+							width if horizontal else depth), MAT_FLOOR), "Vert_flight")
 			# The riser, so the flight has a face and throws a shadow ladder when
 			# a beam rakes across it.
 			var riser_at: Vector3 = low.lerp(high, t1)
