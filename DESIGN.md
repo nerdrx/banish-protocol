@@ -237,7 +237,7 @@ gun is useless," only as "shooting is one of several competing options."
   everything retro-syncs on first boot. Cloud saves via Steam Auto-Cloud
   (config-only) at ship time.
 
-### Achievement list (v1)
+### Achievement list (v1 — wired)
 
 | ID | Name | Trigger |
 |---|---|---|
@@ -253,6 +253,58 @@ gun is useless," only as "shooting is one of several competing options."
 | `KERNEL_PANIC` | Kernel Panic | Reach layer 25 |
 | `HOARDER_BUFFER` | Buffer Overflow | Exfiltrate carrying 100+ data in one run |
 | `MOTHERS_FAVORITE` | Mother's Favorite | Get restored 3 times in one intrusion |
+
+### Achievement catalog v2 (target ~40 — implement in M4.9)
+
+Progression:
+| `FIRST_STEPS` | Hello World | Complete your first descent to layer 2 |
+| `ROOTED_DEEP` | Persistent Threat | Root the layer-10 backdoor |
+| `DEEP_STATE_2` | Deeper State | Root the layer-20 backdoor |
+| `RING_RUNNER` | Ring Runner | Reach layer 30 |
+| `FULLY_COMPILED` | Fully Compiled | Max one module track |
+| `OVERENGINEERED` | Overengineered | Max every module track |
+| `MILLIONAIRE` | Data Baron | Bank 10,000 lifetime data |
+
+Combat & survival:
+| `PEST_CONTROL` | Pest Control | Delete 100 Scrubbers lifetime |
+| `EXTERMINATOR` | Exterminator | Delete 500 processes lifetime |
+| `CORE_BREACH` | Core Breach | Kill a Sentinel with core hits only |
+| `DAVID` | David | Kill a Sentinel with tier-0 Breaker |
+| `UNTOUCHED` | Checksum Intact | Exfiltrate a 5+ layer run at 100% integrity |
+| `PHOTOPHOBIA` | Photophobia | Rout 10 Scrubbers with one flare |
+| `CLUTCH_RESTORE` | Garbage Collected | Restore a crewmate with <5s left on their decay timer |
+| `NO_BREATH` | Held Process | Exfiltrate with the pool under 5 Cycles |
+
+The world fights back (M4.8 props):
+| `WELDER` | Certified Welder | Weld 25 vents lifetime |
+| `LOCKSMITH` | Quiet Entry | Open 10 cabinets via rewire without ever cutting one |
+| `SLAMMED` | Access Denied | Seal a bulkhead within 2s of a Scrubber entering its corridor |
+| `KICKED_IT` | Who Did That | Attract 3+ processes with one kicked debris |
+| `POWER_USER` | Load Balancer | Use all three junction loads in one layer |
+| `TYPIST` | Terminal Velocity | Run 50 terminal queries lifetime |
+| `WARDRIVER` | Indexed | LIST DATA on every layer of a 10+ layer run |
+
+Greed & style:
+| `LOOT_GOBLIN` | Defragmented | Collect every chip on a layer, 3 layers in a row |
+| `SPEEDRUN` | Hot Path | Arrival to drop shaft in under 90 seconds |
+| `PACIFIST_DEEP` | Ghost Process | Reach layer 10 with zero deletions in the run |
+| `HIGH_ROLLER` | Leverage | Spend 2,000+ data at a single Compiler visit |
+| `WINDOW_SHOPPER` | Just Browsing | Open and close a Compiler 5 times in one run buying nothing |
+| `PHOTOSENSITIVE` | Moth Math | Exfiltrate without ever toggling your beam off (post-M6 riff) |
+
+Hidden / lore (unlock text stays cryptic):
+| `NAMED_HER` | She Answers | Type MOTHER at a terminal |
+| `WRONG_DOOR` | Think Carefully | Answer the door question (egg.open) |
+| `ARCHAEOLOGIST` | Shift Log | Read 10 Northcairn fragments lifetime |
+| `THE_COAT` | Unclaimed Item | Find all three coat fragments |
+| `UPWARD` | Let Nothing Pass | Stand at a layer-13+ doctrine plate for 30s |
+| `RELIEVED` | Relief Shift | (M7+: reach the Kernel — reserved) |
+
+Co-op (all solo-achievable variants exist per the solo invariant, except the explicitly-social):
+| `FULL_STACK` | Full Stack | Exfiltrate with a full 4-crew, everyone alive |
+| `SHARED_BURDEN` | Load Bearing | Carry 60%+ of the crew's banked data in one exfil |
+| `MEDIC_MAIN` | Restore Point | 25 lifetime restores |
+| `LIGHTHOUSE` | Lighthouse | Rout a Scrubber off a crewmate with YOUR beam 10 times |
 
 ## Tech Stack
 
