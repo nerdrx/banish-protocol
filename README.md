@@ -4,12 +4,16 @@
 
 **A 1–4 player co-op first-person roguelite.**
 You are an invading program. The dungeon is a rogue AI. Its antivirus is hunting you.
+*Nothing in her stays dead — least of all you.*
+
+![gameplay reel](.github/assets/reel.gif)
 
 [![Godot](https://img.shields.io/badge/Godot-4.7-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org)
 [![Language](https://img.shields.io/badge/GDScript-static%20typed-355570)](#architecture)
 [![Multiplayer](https://img.shields.io/badge/multiplayer-Steam%20%C2%B7%20ENet%20%C2%B7%201–4%20players-1de9b6)](#multiplayer)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows-2e4f63)](#getting-started)
-[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M3.7%20complete-ff2d78)](#roadmap)
+[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M4.8%20in%20development-ff2d78)](#roadmap)
+[![Interface](https://img.shields.io/badge/interface-CRT%20cassette%20futurism-ffb454)](#features)
 
 [The Pitch](#the-pitch) · [Features](#features) · [The Loop](#the-loop) ·
 [Progression](#progression) · [Bestiary](#bestiary) · [Getting Started](#getting-started) ·
@@ -59,6 +63,17 @@ something you can see. And the data only counts if you make it out.
 | ⌨️ **Terminals you actually type at** | GTFO-style CRT consoles wired into MOTHER's own indices. `LIST DATA`. `LOCATE COMPILER`. `QUERY VAULT-7C`. Every query is loud, takes a couple of seconds to process, and comes back with more of its glyphs missing the deeper you are. |
 | 👥 **1–4 player co-op** | Host-authoritative multiplayer over Steam lobbies *or* direct ENet. One player hosts, the crew joins by invite or IP. Solo diving is fully supported (and terrifying) — **no mechanic in this game ever needs a second pair of hands**. |
 | 🎛️ **Expensive feel** | Volumetric haze, real-time shadows, bloom/grain/glitch post stack, positional audio, screen shake. Pre-alpha, but the mood ships first. |
+
+## The Laws
+
+Four rules govern every design decision in this game. They are invariants, not guidelines:
+
+| | |
+|---|---|
+| ⚖️ **Killability** | Every monster dies to the breaker. You delete *instances*, never *processes* — persistence comes from respawn and behavior, not immunity. Your gun is never useless. |
+| 🧍 **The solo invariant** | Everything is fully doable alone. Co-op multiplies tension — it never gates content. Solo is the scariest mode, not a degraded one. |
+| 🌑 **Darkness** | Expensive never means lit. Structure is revealed by your beam, not by the room. |
+| 📺 **Glitch authorship** | Analog failure (tracking tears, sync loss) is *your* aging hardware. Pristine digital glitch is *MOTHER* acting on you. The failure mode tells you who is speaking. |
 
 ## The Loop
 

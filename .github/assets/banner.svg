@@ -17,49 +17,56 @@
 
   <!-- circuit traces -->
   <g stroke="#0d3a4a" stroke-width="1.5" fill="none" opacity="0.9">
-    <path d="M40 60 H210 L250 100 H340"/>
-    <path d="M40 260 H160 L200 220 H300 L330 250 H420"/>
-    <path d="M1160 70 H1000 L960 110 H870"/>
-    <path d="M1160 250 H1030 L990 210 H900 L870 240 H780"/>
-    <path d="M600 20 V50"/>
-    <path d="M520 300 V270"/>
-    <path d="M690 300 V262"/>
+    <path d="M40 60 H190 L230 100 H320"/>
+    <path d="M40 260 H150 L190 220 H290 L320 250 H410"/>
+    <path d="M1160 70 H1010 L970 110 H880"/>
+    <path d="M1160 250 H1040 L1000 210 H910 L880 240 H790"/>
+    <path d="M600 18 V44"/>
+    <path d="M520 302 V276"/>
+    <path d="M690 302 V270"/>
   </g>
   <g fill="#0d3a4a">
-    <circle cx="340" cy="100" r="4"/>
-    <circle cx="420" cy="250" r="4"/>
-    <circle cx="870" cy="110" r="4"/>
-    <circle cx="780" cy="240" r="4"/>
-    <circle cx="600" cy="50" r="4"/>
-    <circle cx="520" cy="270" r="4"/>
-    <circle cx="690" cy="262" r="4"/>
+    <circle cx="320" cy="100" r="4"/>
+    <circle cx="410" cy="250" r="4"/>
+    <circle cx="880" cy="110" r="4"/>
+    <circle cx="790" cy="240" r="4"/>
+    <circle cx="600" cy="44" r="4"/>
+    <circle cx="520" cy="276" r="4"/>
+    <circle cx="690" cy="270" r="4"/>
   </g>
   <g fill="#1de9b6" opacity="0.85">
-    <circle cx="250" cy="100" r="2.5"/>
-    <circle cx="200" cy="220" r="2.5"/>
-    <circle cx="960" cy="110" r="2.5"/>
-    <circle cx="990" cy="210" r="2.5"/>
+    <circle cx="230" cy="100" r="2.5"/>
+    <circle cx="190" cy="220" r="2.5"/>
+    <circle cx="970" cy="110" r="2.5"/>
+    <circle cx="1000" cy="210" r="2.5"/>
   </g>
 
-  <!-- glitch title: offset ghost copies then main -->
-  <g font-family="'Courier New', Courier, monospace" font-weight="bold" font-size="72" letter-spacing="8" text-anchor="middle">
-    <text x="597" y="172" fill="#ff2d78" opacity="0.55">LIMBO PROTOCOL</text>
-    <text x="605" y="178" fill="#00e5ff" opacity="0.55">LIMBO PROTOCOL</text>
-    <text x="601" y="175" fill="#e8f4ff">LIMBO PROTOCOL</text>
+  <!-- glitch title: LIMBO large with ghost copies -->
+  <g font-family="'Courier New', Courier, monospace" font-weight="bold" font-size="104" letter-spacing="26" text-anchor="middle">
+    <text x="596" y="150" fill="#ff2d78" opacity="0.5">LIMBO</text>
+    <text x="606" y="156" fill="#00e5ff" opacity="0.5">LIMBO</text>
+    <text x="601" y="153" fill="#e8f4ff">LIMBO</text>
+  </g>
+  <!-- PROTOCOL beneath, wide-tracked -->
+  <g font-family="'Courier New', Courier, monospace" font-weight="bold" font-size="42" letter-spacing="28" text-anchor="middle">
+    <text x="598" y="211" fill="#ff2d78" opacity="0.45">PROTOCOL</text>
+    <text x="605" y="214" fill="#00e5ff" opacity="0.45">PROTOCOL</text>
+    <text x="601" y="212" fill="#9fdcff">PROTOCOL</text>
   </g>
 
   <!-- glitch slice bars through the title -->
-  <rect x="330" y="130" width="540" height="6" fill="#03050a" opacity="0.85"/>
-  <rect x="410" y="131" width="380" height="3" fill="#ff2d78" opacity="0.35"/>
-  <rect x="300" y="152" width="600" height="3" fill="#03050a" opacity="0.7"/>
+  <rect x="360" y="112" width="480" height="6" fill="#03050a" opacity="0.85"/>
+  <rect x="430" y="113" width="340" height="3" fill="#ff2d78" opacity="0.35"/>
+  <rect x="330" y="136" width="540" height="3" fill="#03050a" opacity="0.7"/>
+  <rect x="380" y="197" width="440" height="3" fill="#03050a" opacity="0.7"/>
 
   <!-- scanline wash -->
   <rect width="1200" height="320" rx="12" fill="url(#scan)"/>
 
-  <g font-family="'Courier New', Courier, monospace" font-size="20" letter-spacing="6" text-anchor="middle">
-    <text x="600" y="232" fill="#5f7f93">DESCEND · DECRYPT · EXFILTRATE</text>
+  <g font-family="'Courier New', Courier, monospace" font-size="19" letter-spacing="6" text-anchor="middle">
+    <text x="600" y="258" fill="#5f7f93">DESCEND · DECRYPT · EXFILTRATE</text>
   </g>
   <g font-family="'Courier New', Courier, monospace" font-size="14" letter-spacing="2" text-anchor="middle">
-    <text x="600" y="286" fill="#2e4f63">[ limbo protocol v0.1 — MOTHER is listening ]</text>
+    <text x="600" y="292" fill="#2e4f63">[ nothing in her stays dead — MOTHER is listening ]</text>
   </g>
 </svg>
