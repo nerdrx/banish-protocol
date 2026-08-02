@@ -1,6 +1,6 @@
 <div align="center">
 
-![LIMBO PROTOCOL](.github/assets/banner.svg)
+![BANISH PROTOCOL](.github/assets/banner.svg)
 
 **A 1–4 player co-op first-person roguelite.**
 You are an invading program. The dungeon is a rogue AI. Its antivirus is hunting you.
@@ -46,16 +46,16 @@ deeper is older, stranger, more hostile: corrupted geometry, dead sectors,
 architecture that repeats *wrong*. At the bottom waits the **Kernel**.
 
 Your crew shares **one pool of stolen compute Cycles** — the oxygen of
-cyberspace. Your decryption beam is the only thing that renders the dark into
-something you can see. And the data only counts if you make it out.
+cyberspace. Your beam is the only light you have, and the dark is nearly
+total. And the data only counts if you make it out.
 
-**Light is decryption. Greed kills. Exfiltrate or be deleted.**
+**Greed kills. Exfiltrate or be deleted.**
 
 ## Features
 
 | | |
 |---|---|
-| 🔦 **Light is decryption** | Unrendered space is near-black encrypted geometry. Your beam resolves it — and the antivirus avoids it, hunting from the dark. You cannot see behind you. |
+| 🔦 **Your beam is the only light** | The dark is near-total, and your beam is the one thing that cuts it. The antivirus avoids the light and hunts from the black — and you cannot see behind you. |
 | 🫁 **Shared Cycles** | One compute pool for the whole crew. Existing drains it; sprinting, damage, and flares spike it; siphon taps refill it — loudly. The clock, the economy, and the argument, all in one resource. |
 | 🕳️ **Descent with teeth** | Layer number *is* the enemy level. Deeper rings: more antivirus, faster, tougher — and exponentially richer data. |
 | 🚪 **Backdoors, not checkpoints** | Every 5th layer hides a dormant maintenance node. Root it and you've *permanently compromised* MOTHER — future runs inject straight to it. Facing layer-16 security the second you spawn is the price. |
@@ -154,7 +154,7 @@ useless."* What you cannot delete is the **process** — she recompiles it.
 **Requirements:** [Godot 4.7+](https://godotengine.org/download) · Linux or Windows
 
 ```bash
-git clone https://github.com/nerdrx/limbo-protocol.git
+git clone https://github.com/nerdrx/banish-protocol.git
 cd nullvoid
 godot --path .
 ```
@@ -220,8 +220,8 @@ DIRECT and the game plays exactly as it did before M3.5.
   mirrored to Steam and the whole set is retro-synced at boot when the API is
   live. An in-game toast fires either way.
 - **Dev app ID: 480** (Valve's Spacewar). Lobbies, P2P sockets, presence and the
-  stats pipe all work on it; LIMBO PROTOCOL's *achievement IDs* do not exist in Valve's
-  test app, so `SetAchievement` is refused server-side until LIMBO PROTOCOL has its own
+  stats pipe all work on it; BANISH PROTOCOL's *achievement IDs* do not exist in Valve's
+  test app, so `SetAchievement` is refused server-side until BANISH PROTOCOL has its own
   Steam Direct page. That is expected, logged, and harmless — the local file
   already holds the truth, and uploading the definitions makes it all catch up.
   `steam_appid.txt` is dev-only and git-ignored; the game passes its app ID to

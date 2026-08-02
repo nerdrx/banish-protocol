@@ -1,4 +1,4 @@
-# LIMBO PROTOCOL — Design Document
+# BANISH PROTOCOL — Design Document
 
 > 1–4 player co-op first-person roguelite. You are an invading program descending
 > through the security layers of a rogue AI to steal its data. Its antivirus is
@@ -39,9 +39,9 @@ Steal the data. Reach a backdoor. Exfiltrate before the system decompiles you.
    the oxygen of cyberspace. Passive drain while you exist; sprinting, taking
    damage, and burning flares spike it. Siphon taps refill it — loudly. Cycles
    are the clock, the economy, and the argument the crew has over voice chat.
-2. **Light is decryption.** Unrendered space is near-black — encrypted geometry
-   your beam resolves into visibility. Antivirus processes avoid decryption
-   beams (exposure) and hunt in the dark. You cannot see behind you.
+2. **The dark is the enemy.** Space is near-black; your beam is the only thing
+   that reveals it. Antivirus processes avoid the light and hunt in the dark.
+   You cannot see behind you.
 3. **Greed kills.** Data banks only on exfiltration. Every layer deeper
    multiplies the haul. The game constantly asks: *one more ring?*
 4. **Expensive feel.** Dynamic light and shadow, volumetric haze, bloom/grain/
