@@ -157,6 +157,11 @@ gun is useless," only as "shooting is one of several competing options."
 - **View**: first-person. Your decryption beam is your world; you cannot see
   behind you. Crewmates are humanoid program avatars — sleek dark shells with
   emissive circuit seams in their player color, visible beams in the haze.
+- **The Slime slot (avatar + Sentinel)**: the rig's organic sections render as
+  translucent gel — glassy transmission, wet specular, an internal emissive
+  glow bleeding through (crew: the player's phosphor color inside their shell;
+  Sentinel: deep red). Dark-first: glossy-wet darkness with light circulating
+  under glass, never bright jelly. Adds literal depth to both factions.
 - **Rendering**: Forward+. Near-black ambient, volumetric haze (beams read as
   shafts), per-player SpotLight beams with shadows, flares as flickering
   OmniLights, emissive circuit traces on architecture (dim, pulsing — data
