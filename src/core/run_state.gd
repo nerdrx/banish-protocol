@@ -114,6 +114,9 @@ var exfil_remaining: float = 0.0
 
 ## Deepest layer the crew stood in this run, for the summary overlay.
 var deepest_layer: int = 1
+## And the one it started at — 1 for a surface run, 6/11/16 for a backdoor
+## injection. Both halves of "descended N -> M" have to be real numbers.
+var start_layer: int = 1
 var siphons_drained: int = 0
 var _run_started_msec: int = 0
 
@@ -144,6 +147,7 @@ func _ready() -> void:
 func begin(layer: int, test_layer: bool) -> void:
 	layer_number = maxi(layer, 1)
 	deepest_layer = layer_number
+	start_layer = layer_number
 	use_test_layer = test_layer
 	spent_siphons.clear()
 	taken_shards.clear()
@@ -172,20 +176,63 @@ func begin(layer: int, test_layer: bool) -> void:
 	cycles_changed.emit(cycles)
 
 
+## Everything the crew has already done to the layer a joiner is about to walk
+## into. Seeded content (taps, shards, the node, the uplink) exists identically
+## on every peer, so what has to travel is not the objects — it is which of them
+## are already spent.
+##
+## Sent once, inside the join handshake. It is deliberately a dictionary rather
+## than more positional arguments: this list has grown twice already, and the
+## audit's "the handshake should be one state packet" is the shape that stops it
+## growing into a fifteen-argument RPC.
+func layer_state() -> Dictionary:
+	return {
+		"siphons": spent_siphons.keys(),
+		"shards": taken_shards.keys(),
+		"rooted": backdoor_rooted,
+		"exfil": exfil_calling,
+		"exfil_left": exfil_remaining,
+	}
+
+
 ## Client: adopt the host's world configuration. Arrives before the spawn packet
 ## (both reliable on the same channel), so geometry exists before the player does.
-func adopt(layer: int, test_layer: bool, pool: float, maximum: float) -> void:
+##
+## `state` is applied BEFORE `config_changed` fires, because that signal is what
+## makes the Layer build its geometry — and a fresh siphon tap asks Run whether
+## it is already spent as it enters the tree, exactly the way it does on a
+## descent (see `finish_descent`).
+func adopt(layer: int, test_layer: bool, pool: float, maximum: float,
+		state: Dictionary = {}) -> void:
 	layer_number = maxi(layer, 1)
 	deepest_layer = maxi(deepest_layer, layer_number)
+	# A joiner's own run starts wherever they walked in, which is what their
+	# debrief is about — the host's summary is the one that speaks for the crew.
+	start_layer = layer_number
 	use_test_layer = test_layer
 	cycles = pool
 	cycles_max = maximum
 	_display_cycles = pool
 	descending = false
 	run_over = false
+	_adopt_layer_state(state)
 	configured = true
 	config_changed.emit()
 	cycles_changed.emit(cycles)
+	backdoor_rooted_changed.emit()
+	exfil_changed.emit()
+
+
+func _adopt_layer_state(state: Dictionary) -> void:
+	spent_siphons.clear()
+	taken_shards.clear()
+	for index: Variant in state.get("siphons", []):
+		spent_siphons[int(index)] = true
+	for index: Variant in state.get("shards", []):
+		taken_shards[int(index)] = true
+	backdoor_rooted = bool(state.get("rooted", false))
+	exfil_calling = bool(state.get("exfil", false))
+	exfil_remaining = maxf(float(state.get("exfil_left", 0.0)), 0.0)
 
 
 ## Solo / editor runs: no host to ask, so configure from whatever seed Rng has.
@@ -267,6 +314,7 @@ func reset() -> void:
 	muster_inside = 0
 	muster_total = 0
 	deepest_layer = 1
+	start_layer = 1
 	siphons_drained = 0
 	backdoor_rooted = false
 	exfil_calling = false
@@ -524,6 +572,8 @@ func _drain(delta: float) -> void:
 ## Integrity falls only while the pool is empty, and creeps back once it is not.
 ## Hitting zero corrupts the process — the same door antivirus damage opens.
 func _degrade(delta: float) -> void:
+	if descending:
+		return  # the layer is being rewritten; nobody is running.
 	var empty: bool = starved()
 
 	for id: int in Net.crew.keys():
@@ -552,6 +602,8 @@ func _degrade(delta: float) -> void:
 ## Personal decay timers. Running out is deletion — DESIGN.md's "solo corruption
 ## = countdown to deletion", generalised to anyone the crew could not reach.
 func _decay_corrupted(delta: float) -> void:
+	if descending:
+		return  # the layer is being rewritten; nobody is running.
 	if corrupted.is_empty():
 		return
 	var expired: Array[int] = []
@@ -787,10 +839,56 @@ func _flare_granted(count: int) -> void:
 
 
 ## Host-side, called by a bundle a player has walked over.
+##
+## The amount and the worth are read off the host's own node here and put IN the
+## packet. They used to be re-derived on each peer by searching the
+## `data_bundles` group — which a peer that joined after `_spawn_bundle` was
+## broadcast has no member of, so it silently added zero while the host added the
+## real value, and nothing corrected it.
 func take_bundle(bundle_id: int, peer_id: int) -> void:
 	if not multiplayer.is_server() or not is_running(peer_id):
 		return
-	_apply_bundle.rpc(bundle_id, peer_id)
+	var bundle: DataBundle = _find_bundle(bundle_id)
+	if bundle == null:
+		return
+	_apply_bundle.rpc(bundle_id, peer_id, bundle.amount, bundle.worth)
+
+
+## Host: re-send the layer's live, un-seeded objects to one joining peer.
+##
+## Bundles and flares are broadcast at spawn time and never again, so a peer that
+## joined afterwards has none of them: already-banked haul lay on the floor and
+## could be walked over with no effect, because the node it would have collided
+## with does not exist on that machine. Sent `rpc_id`, so the peers that already
+## have them are not asked to build a second copy.
+##
+## Flares resume from where they are rather than from where they were thrown, and
+## their 20 s burn restarts — a joiner sees a flare that will outlast everyone
+## else's by a few seconds. That is the cheap answer and the right one: the
+## alternative is putting a lifetime on the wire for a cosmetic light.
+func replay_dynamics(peer_id: int) -> void:
+	if not multiplayer.has_multiplayer_peer() or not multiplayer.is_server():
+		return
+	for node: Node in get_tree().get_nodes_in_group("data_bundles"):
+		var bundle: DataBundle = node as DataBundle
+		if bundle == null or not is_instance_valid(bundle):
+			continue
+		_spawn_bundle.rpc_id(peer_id, bundle.bundle_id, bundle.global_position,
+				bundle.amount, bundle.worth)
+	for node: Node in get_tree().get_nodes_in_group("flares"):
+		var flare: Flare = node as Flare
+		if flare == null or not is_instance_valid(flare):
+			continue
+		_spawn_flare.rpc_id(peer_id, flare.flare_id, flare.thrower,
+				flare.global_position, Vector3.ZERO)
+
+
+func _find_bundle(bundle_id: int) -> DataBundle:
+	for node: Node in get_tree().get_nodes_in_group("data_bundles"):
+		var bundle: DataBundle = node as DataBundle
+		if bundle != null and is_instance_valid(bundle) and bundle.bundle_id == bundle_id:
+			return bundle
+	return null
 
 
 # ------------------------------------------------------------------ requests --
@@ -862,10 +960,10 @@ func _siphon_request(index: int) -> void:
 	# one place that can tell "stood at the tap for 2.5 s" from "sent a packet".
 	var sender: int = _sender()
 	var tap: Node = _find_tap(index)
-	var player: Node = Net.get_player(sender)
+	var player: Node3D = _requesting_body()
 	if tap == null or player == null:
 		return
-	if (tap as Node3D).global_position.distance_to((player as Node3D).global_position) > 6.0:
+	if not ((tap as Node3D).global_position.distance_to(player.global_position) <= USE_REACH):
 		push_warning("[Run] siphon %d refused: peer %d is too far away" % [index, sender])
 		return
 
@@ -902,12 +1000,12 @@ func _restore_request(peer_id: int) -> void:
 	if sender == peer_id or not is_running(sender):
 		return
 
-	var rescuer: Node = Net.get_player(sender)
+	var rescuer: Node3D = _requesting_body()
 	var casualty: Node = Net.get_player(peer_id)
-	if rescuer == null or casualty == null:
+	if rescuer == null or casualty == null or not is_instance_valid(casualty):
 		return
-	if (rescuer as Node3D).global_position.distance_to(
-			(casualty as Node3D).global_position) > Balance.RESTORE_REACH:
+	if not (rescuer.global_position.distance_to(
+			(casualty as Node3D).global_position) <= Balance.RESTORE_REACH):
 		push_warning("[Run] restore refused: peer %d is not stood over %d" % [sender, peer_id])
 		return
 
@@ -931,6 +1029,16 @@ func _breaker_request(origin: Vector3, direction: Vector3) -> void:
 	var sender: int = _sender()
 	if not is_running(sender):
 		return
+	# Before anything else, because everything below uses these two: a NaN origin
+	# used to pass the proximity guard below (it was spelled `> 3.0`, and every
+	# comparison against NaN is false), `direction.normalized()` then returned
+	# zero with an engine error, and the resulting NaN endpoint was broadcast into
+	# every peer's `Breaker.show_lash`.
+	if not origin.is_finite() or not direction.is_finite():
+		push_warning("[Run] breaker shot refused: peer %d sent a non-finite shot" % sender)
+		return
+	if direction.length_squared() <= 0.000001:
+		return
 
 	# Rate limit and a sanity check on where the shot came from. Neither is a
 	# full anti-cheat pass (M4 tightens movement authority); both stop a broken
@@ -940,10 +1048,10 @@ func _breaker_request(origin: Vector3, direction: Vector3) -> void:
 		return
 	_last_shot[sender] = now
 
-	var player: Node = Net.get_player(sender)
-	if player == null or not is_instance_valid(player):
+	var player: Node3D = _requesting_body()
+	if player == null:
 		return
-	if (player as Node3D).global_position.distance_to(origin) > 3.0:
+	if not (player.global_position.distance_to(origin) <= ORIGIN_REACH):
 		push_warning("[Run] breaker shot refused: peer %d fired from %s" % [sender, str(origin)])
 		return
 
@@ -981,6 +1089,13 @@ func _layer_space() -> PhysicsDirectSpaceState3D:
 	return (layer as Node3D).get_world_3d().direct_space_state
 
 
+## Both vectors here are client-authored and both are consumed by **every peer**
+## for the flare's whole 20 s life: it integrates its velocity through a raycast
+## each physics frame and carries a shadow-casting light. So both are checked.
+## An unvalidated origin was free room lighting — and free Scrubber repulsion,
+## since `Antivirus._in_player_light` treats any burning flare as exposure —
+## dropped anywhere on the layer; a non-finite one poisoned every peer's physics
+## query and renderer for 20 s on a node nothing could clear.
 @rpc("any_peer", "call_local", "reliable")
 func _flare_request(origin: Vector3, velocity: Vector3) -> void:
 	if not multiplayer.is_server() or run_over:
@@ -988,6 +1103,17 @@ func _flare_request(origin: Vector3, velocity: Vector3) -> void:
 	var sender: int = _sender()
 	if not is_running(sender) or flares_of(sender) <= 0:
 		return
+	if not origin.is_finite() or not velocity.is_finite():
+		push_warning("[Run] flare refused: peer %d sent a non-finite throw" % sender)
+		return
+	var body: Node3D = _requesting_body()
+	if body == null:
+		return
+	if not (body.global_position.distance_to(origin) <= ORIGIN_REACH):
+		push_warning("[Run] flare refused: peer %d threw from %s" % [sender, str(origin)])
+		return
+	var throw: Vector3 = velocity.limit_length(
+			Balance.FLARE_THROW_SPEED * THROW_SPEED_LIMIT)
 
 	flares[sender] = flares_of(sender) - 1
 	_dirty_buffers = true
@@ -998,19 +1124,53 @@ func _flare_request(origin: Vector3, velocity: Vector3) -> void:
 
 	var id: int = _next_flare_id
 	_next_flare_id += 1
-	_spawn_flare.rpc(id, sender, origin, velocity)
+	_spawn_flare.rpc(id, sender, origin, throw)
 
 
+## The most heavily validated request in the game, because it is the only one
+## whose effect is written to **every peer's save file**: a rooted backdoor is
+## permanent progression for everybody present. Until M4.8.1 it validated nothing
+## at all — not position, not layer, not liveness — so a modified client could
+## sit on layer 1 and permanently rewrite four other people's programs, or fire
+## it at layer 24 and hand the whole crew injection at 25. The documented threat
+## model accepts a player editing *their own* save; this was a different thing.
 @rpc("any_peer", "call_local", "reliable")
 func _root_request() -> void:
-	if not multiplayer.is_server() or run_over or backdoor_rooted:
+	if not multiplayer.is_server() or run_over or descending or backdoor_rooted:
+		return
+	# Question 0, which only this request has: does the layer even have a node?
+	if not bool(LayerParams.of(layer_number).get("has_backdoor", false)):
+		push_warning("[Run] root refused: layer %d has no maintenance node" % layer_number)
+		return
+	var body: Node3D = _requesting_body()
+	if body == null:
+		return
+	var node: Node3D = _find_backdoor_node()
+	if node == null:
+		push_warning("[Run] root refused: no maintenance node is standing")
+		return
+	if not (node.global_position.distance_to(body.global_position) <= USE_REACH):
+		push_warning("[Run] root refused: peer %d is not at the node" % _sender())
 		return
 	_apply_root.rpc(layer_number)
 
 
+## Ends the run for the whole crew on a 20 s fuse, so it gets the same preamble.
+## A spectating or modified client used to be able to start it from anywhere on
+## the layer, and everyone not on the pad when it fired lost their entire buffer.
 @rpc("any_peer", "call_local", "reliable")
 func _exfil_request() -> void:
 	if not multiplayer.is_server() or run_over or exfil_calling or not backdoor_rooted:
+		return
+	var body: Node3D = _requesting_body()
+	if body == null:
+		return
+	# The host already resolves the uplink out of its own seeded layer 25 lines
+	# below, for `_fire_exfil`. Same lookup, same node, one frame earlier.
+	var pad: Vector3 = _uplink_position()
+	if not (pad.distance_to(body.global_position)
+			<= Balance.EXFIL_PAD_RADIUS + UPLINK_CALL_SLACK):
+		push_warning("[Run] exfil refused: peer %d is not at the uplink" % _sender())
 		return
 	_begin_exfil.rpc(Balance.EXFIL_COUNTDOWN)
 
@@ -1069,6 +1229,13 @@ func request_debug_decompile() -> void:
 func _debug_decompile() -> void:
 	if not multiplayer.is_server():
 		return
+	# The only build guard on the wire protocol. It harms nobody but the sender,
+	# but a live dev entry point in a shipped build is still a live dev entry
+	# point. Automated runs are exempt so `--decompile-at` keeps working in an
+	# exported capture, which is the one release-build caller there is.
+	if not OS.is_debug_build() and not Debug.automated:
+		push_warning("[Run] debug decompile refused: release build")
+		return
 	var sender: int = _sender()
 	var player: Node = Net.get_player(sender)
 	var from: Vector3 = Vector3.ZERO
@@ -1077,9 +1244,89 @@ func _debug_decompile() -> void:
 	damage_player(sender, Balance.INTEGRITY_MAX * 2.0, from)
 
 
+# ------------------------------------------------ validating client requests --
+#
+# One preamble, applied to every `any_peer` handler in this file. The M4.8 audit
+# found the validation was per-author rather than per-project — `_siphon_request`
+# asked all three questions, `_breaker_request` asked two, `_root_request` and
+# `_exfil_request` asked none — and every handler that skipped a question turned
+# out to be a cheat. The three questions are:
+#
+#   1. who sent this?                      `_sender()`
+#   2. are they actually running?          `is_running(sender)`
+#   3. are they standing at the thing?     a distance check against the HOST's
+#                                          own copy of the seeded node
+#
+# Two writing conventions go with it, both learned from the same audit:
+#
+#   * Every vector that arrives off the wire is `is_finite()`-tested before it
+#     is used for anything. A NaN is not a large number; it is a value that
+#     compares false against everything, which is how it walks through guards.
+#   * Every distance guard is spelled `if not (dist <= limit): return`, never
+#     `if dist > limit: return`. **[verified 4.7.1]**
+#     `Vector3(NAN,NAN,NAN).distance_to(p) > 3.0` evaluates to **false**, so the
+#     second spelling fails *open* on exactly the input an attacker controls.
+#     The first fails closed on it.
+
+## Host-side proximity limit for the two channels that shipped without one.
+## Deliberately generous — the job is to tell "stood at the machine" from "sent
+## a packet from across the layer", not to punish standing at the edge of the
+## probe. The node's own interact probe is 2.6 m across and the player's reach is
+## 3.4 m, so this is the geometry plus room to breathe.
+const USE_REACH: float = 6.0
+## The uplink's console sits on the *edge* of the pad, so the call has to be
+## allowed from a pad radius further out than the node's.
+const UPLINK_CALL_SLACK: float = 4.0
+## How far from a player's own avatar a thrown flare or a fired shot may claim to
+## have originated. Same number the breaker has used since M3.
+const ORIGIN_REACH: float = 3.0
+## Ceiling on a thrown flare's speed, as a multiple of the authored throw. Some
+## slack for a client whose own sprint speed is added on top, none for a client
+## that would like to put a flare through the far wall of the layer.
+const THROW_SPEED_LIMIT: float = 1.6
+
+
 func _sender() -> int:
 	var sender: int = multiplayer.get_remote_sender_id()
 	return 1 if sender == 0 else sender
+
+
+## True when the packet we are handling came from the host — either over the
+## wire from peer 1, or from a `call_local` on the host itself (sender 0).
+func _from_host() -> bool:
+	var sender: int = multiplayer.get_remote_sender_id()
+	return sender == 0 or sender == 1
+
+
+## The avatar of the peer whose request we are handling, or null if there is no
+## reason to honour it at all: not the host, run finished, sender not running,
+## no spawned avatar, or an avatar whose replicated position is not a number.
+## Callers still do their own proximity check — this is questions 1 and 2.
+func _requesting_body() -> Node3D:
+	if not multiplayer.is_server() or run_over:
+		return null
+	if not is_running(_sender()):
+		return null
+	var player: Node = Net.get_player(_sender())
+	if player == null or not is_instance_valid(player):
+		return null
+	var body: Node3D = player as Node3D
+	# `sync_position` is client-authoritative by design (DESIGN.md), so this is
+	# the boundary where a client-owned number becomes a host-side decision.
+	if body == null or not body.global_position.is_finite():
+		return null
+	return body
+
+
+## The host's own copy of the layer's maintenance node. The `backdoor_nodes`
+## group has existed since M3 with no consumers at all; this is the lookup the
+## root validation always needed.
+func _find_backdoor_node() -> Node3D:
+	for node: Node in get_tree().get_nodes_in_group("backdoor_nodes"):
+		var target: Node3D = node as Node3D
+		if target != null and is_instance_valid(target):
+			return target
+	return null
 
 
 func _find_tap(index: int) -> Node:
@@ -1152,19 +1399,13 @@ func _apply_shard(index: int, peer_id: int, worth: int) -> void:
 
 
 @rpc("authority", "call_local", "reliable")
-func _apply_bundle(bundle_id: int, peer_id: int) -> void:
-	# The bundle knows its own size; the host reads it back off the node so the
-	# amount never has to be trusted from anywhere else.
-	var amount: int = 0
-	var worth: int = 0
-	for node: Node in get_tree().get_nodes_in_group("data_bundles"):
-		var bundle: DataBundle = node as DataBundle
-		if bundle != null and is_instance_valid(bundle) and bundle.bundle_id == bundle_id:
-			amount = bundle.amount
-			worth = bundle.worth
-			break
+func _apply_bundle(bundle_id: int, peer_id: int, amount: int, worth: int) -> void:
 	buffered[peer_id] = buffered_of(peer_id) + amount
 	buffered_value[peer_id] = buffered_value_of(peer_id) + worth
+	# Every other buffer mutation in this file marks the replication flag —
+	# `take_shard`, `spend_buffer`, `_delete`. This one did not, so any divergence
+	# it caused persisted until an unrelated event happened to dirty the buffers.
+	_dirty_buffers = true
 	bundle_taken.emit(bundle_id, peer_id)
 	buffers_changed.emit()
 	if peer_id == Net.local_id():
@@ -1250,6 +1491,12 @@ func _damage_flash(from: Vector3) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _apply_root(rooted_layer: int) -> void:
+	# `authority` already means the engine drops this packet from anybody but the
+	# host. The explicit test is here anyway because this is the ONE rpc in the
+	# game that writes a file on the machine receiving it, and a receiving peer
+	# should be able to say why it trusts the packet without reading annotations.
+	if not _from_host():
+		return
 	backdoor_rooted = true
 	backdoor_rooted_changed.emit()
 	notice.emit("BACKDOOR INSTALLED  ·  LAYER %02d" % rooted_layer)
@@ -1328,7 +1575,12 @@ func _summary(reason: String, success: bool, banked: Dictionary,
 		"crew": Net.crew.size(),
 		"deleted": deleted.keys().size(),
 		"layers": deepest_layer,
-		"start_layer": 1,
+		# The layer the intrusion was injected at, which is 1 only for a surface
+		# run: a backdoor start opens at 6, 11 or 16. Nothing reads this yet, so
+		# the hardcoded 1 was dead *and* wrong — and the first thing to read it
+		# would be a debrief line saying "descended 6 -> 10", which is exactly the
+		# claim the wrong value would have quietly falsified.
+		"start_layer": start_layer,
 		"siphons": siphons_drained,
 		"seconds": float(Time.get_ticks_msec() - _run_started_msec) / 1000.0,
 	}

@@ -203,6 +203,36 @@ static func _tier_of(tiers: Dictionary, track: String) -> int:
 	return clampi(int(tiers.get(track, 0)), 0, tier_count(track))
 
 
+## A `{track: tier}` table that came from somewhere untrusted, made safe.
+##
+## Drops unknown tracks, clamps tiers into range and — the part that matters —
+## drops any value that is not a **number**. `_tier_of` clamps ranges, so an
+## out-of-range integer was never the danger; the *type* was. **[verified 4.7.1]**
+## `int({})` raises `Invalid call. Nonexistent 'int' constructor` and aborts the
+## enclosing function, and `Modules.loadout` is called once per crew member per
+## frame on the host from `Run._drain` and `Run._degrade` — so one modified
+## client announcing `{"runtime": {}}` used to stop the shared pool draining and
+## integrity simulating for the entire crew.
+##
+## GameState runs the *file* through its own `_clean_modules` for the same reason
+## and has since M4; this is the wire half, which did not exist.
+static func sanitize_tiers(raw: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	for key: Variant in raw.keys():
+		if typeof(key) != TYPE_STRING and typeof(key) != TYPE_STRING_NAME:
+			continue
+		var track: String = String(key)
+		if not Balance.MODULES.has(track):
+			continue
+		var value: Variant = raw[key]
+		if typeof(value) != TYPE_INT and typeof(value) != TYPE_FLOAT:
+			continue
+		var tier: int = clampi(int(value), 0, tier_count(track))
+		if tier > 0:
+			out[track] = tier
+	return out
+
+
 ## Everything `peer_id`'s program does to the simulation. Falls back to the bare
 ## loadout for a peer nobody has announced yet, which is what a dedicated
 ## server's own id and an editor-run solo session both look like.
@@ -220,8 +250,12 @@ func loadout(peer_id: int) -> Dictionary:
 func tiers_of(peer_id: int) -> Dictionary:
 	if peer_id == Net.local_id():
 		return local_tiers()
+	# `sub_dict`, not a bare cast: this is called once per crew member per frame on
+	# the host, and a cast that aborts takes `Run._drain` and `Run._degrade` with
+	# it. The roster is sanitised on arrival, so this is the second lock on the
+	# same door — but it is the door the whole simulation walks through.
 	var entry: Dictionary = Net.crew.get(peer_id, {}) as Dictionary
-	return entry.get("modules", {}) as Dictionary
+	return GameState.sub_dict(entry, "modules")
 
 
 ## What this machine's program has compiled. `--modules` wins for a session.
@@ -355,7 +389,7 @@ func _purchase_request(track: String, compiler_id: int) -> void:
 	Run.spend_buffer(sender, from_buffer)
 	var entry: Dictionary = Net.crew.get(sender, {}) as Dictionary
 	entry["archive"] = maxi(int(entry.get("archive", 0)) - from_archive, 0)
-	var tiers: Dictionary = (entry.get("modules", {}) as Dictionary).duplicate()
+	var tiers: Dictionary = GameState.sub_dict(entry, "modules").duplicate()
 	tiers[track] = int(deal["next"])
 	entry["modules"] = tiers
 	Net.crew[sender] = entry

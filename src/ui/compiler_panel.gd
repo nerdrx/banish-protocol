@@ -99,6 +99,13 @@ func _ready() -> void:
 	Modules.refused.connect(_on_refused)
 	Run.run_ended.connect(func(_s: Dictionary) -> void: close())
 	Run.descent_started.connect(func(_n: int) -> void: close())
+	# The panel is parented to the root Window rather than to `current_scene`, so
+	# `change_scene_to_file` does NOT free it — which is the whole reason it can
+	# survive a session ending and wake up in the main menu. `Net.leave()` emits
+	# neither `run_ended` nor `descent_started` (it calls `Run.reset()`, which
+	# emits nothing), so this third connection is the one that covers a host
+	# dropping while you are reading a Compiler.
+	Net.session_ended.connect(func(_reason: String) -> void: close())
 	# A panel is a thing you stand still to read. Releasing the pointer is the
 	# right behaviour for a human and forbidden during a capture, so it goes
 	# through the one guard every mouse-mode call site in this codebase asks.
@@ -111,12 +118,37 @@ func _ready() -> void:
 		", sanctuary" if terminal.sanctuary else ""])
 
 
+## Closing gives the pointer back to the game — but ONLY if there is still a game
+## to give it back to. Two ways there is not, and both used to leave the player
+## with no cursor and dead mouse clicks:
+##
+##   * the host drops while a panel is open. The scene changes to the menu, which
+##     sets MOUSE_MODE_VISIBLE, and then this panel — which the scene change did
+##     not free — notices its terminal is gone and re-captures on the next frame.
+##   * the run ends while a panel is open. `Hud` and this panel are connected to
+##     the same `Run.run_ended` and write opposite mouse modes; Godot fires slots
+##     in connection order and the panel always connects later, so the debrief
+##     came up with no cursor and `LEAVE` could not be clicked.
+##
+## Being live is the condition, not being in a particular scene: the same test
+## the rest of the interface uses.
 func close() -> void:
+	# Three signals and `_process` can all reach here in the same frame, and
+	# `queue_free()` does not stop `_process` running again before the frame ends.
+	if is_queued_for_deletion():
+		return
 	if _open == self:
 		_open = null
-	if Debug.may_capture_mouse():
+	if Debug.may_capture_mouse() and _run_is_live():
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	queue_free()
+
+
+## `Run.configured` rather than `Net.is_online`, so an editor-run solo session
+## still gets its pointer back: `Net.leave()` calls `Run.reset()`, which clears
+## `configured`, and `_end_run` sets `run_over` before it emits `run_ended`.
+func _run_is_live() -> bool:
+	return Run.configured and not Run.run_over and Run.local_alive()
 
 
 # -------------------------------------------------------------------- build --
@@ -430,7 +462,13 @@ func _on_purchased(peer_id: int, track: String, _tier: int,
 	_pip_fill = 0.0
 	_confirm = CONFIRM_TIME + UiFx.COMPILE_BEAT
 	_confirm_row = _row_of(track)
+	# The whole refusal, not just its glitch weight. The footer reads `_refuse_row`
+	# and `_refuse_reason` and checks neither against `_refuse`, so clearing only
+	# the weight left `REFUSED · INSUFFICIENT DATA` printed under a row that had
+	# since been bought — two cells from its own COMPILED ✓ stamp.
 	_refuse = 0.0
+	_refuse_row = -1
+	_refuse_reason = ""
 
 
 func _on_refused(track: String, reason: String) -> void:

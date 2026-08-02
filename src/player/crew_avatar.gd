@@ -65,6 +65,9 @@ const PLATE: Color = Color(0.45, 0.48, 0.54)
 ## The default accent when a player has no colour yet. DESIGN.md's "default
 ## swatch bright blue".
 const DEFAULT_ACCENT: Color = Color(0.32, 0.62, 1.0)
+## What the seams fade toward as a process corrupts. Named rather than inline,
+## because the fade and its restore have to agree about both ends.
+const CORRUPT_ACCENT: Color = Color(1.0, 0.3, 0.24)
 ## Deliberately modest.
 ##
 ## 2.6 was chosen for the third-person read at 15 m and is completely wrong in
@@ -89,8 +92,14 @@ const HAND_BONE: String = "Right wrist"
 ## weapon's ACTUAL grips (the pistol grip, and the foregrip the Surge grew in the
 ## same pass), so the rifle's transform in the wrist's frame moved with them.
 ## Printed by `tools/build_crew_avatar.py` — never hand-tuned.
-const HAND_OFFSET: Vector3 = Vector3(0.00461, 0.02929, -0.03747)
-const HAND_ROTATION: Quaternion = Quaternion(-0.754992, -0.186312, -0.601213, 0.183897)
+##
+## The AIM_ROLL change that fixed the black-silhouette first-person read moved
+## these by 0.05 mm and nothing else: roll turns the wrist and the weapon
+## together, so the rifle's transform *in the wrist's own frame* is invariant
+## under it. Refreshed anyway, because these are transcribed numbers and a
+## transcribed number that is only nearly current is how drift starts.
+const HAND_OFFSET: Vector3 = Vector3(0.00457, 0.02926, -0.03751)
+const HAND_ROTATION: Quaternion = Quaternion(-0.754991, -0.186312, -0.601213, 0.183897)
 
 ## Everything descended from this bone is "upper body" and takes the rifle-hold
 ## pose; everything below it keeps walking. Computed from the skeleton, so a
@@ -267,6 +276,13 @@ var _chest_bone: int = -1
 ## Indices of FP_ARM_BONES, resolved once. Both shoulders, always moved together.
 var _arm_bones: PackedInt32Array = PackedInt32Array()
 var _accent_material: StandardMaterial3D = null
+## The tinted accent `repaint` built, kept because the corruption fade overwrites
+## `_accent_material.emission` and has to have something true to restore.
+var _accent_colour: Color = DEFAULT_ACCENT
+## bone index -> the rotation the animation tree wrote this physics tick, and the
+## tick it was captured on. See `_clip_rotation`.
+var _clip_rotations: Dictionary = {}
+var _clip_frame: int = -1
 var _hand: BoneAttachment3D = null
 var _eye: Node3D = null
 var _body_mesh: MeshInstance3D = null
@@ -317,7 +333,6 @@ func _build(colour: Color) -> void:
 	_model = CreatureKit.instantiate(MODEL)
 	if _model == null:
 		return
-	_loaded = true
 	add_child(_model)
 
 	repaint(colour)
@@ -368,6 +383,12 @@ func _build(colour: Color) -> void:
 				SPLIT_BONE, TRACK_PREFIX)
 		CreatureKit.set_upper_body(_tree, 1.0 if _has_aim else 0.0)
 
+	# Last, not the moment the .glb instantiated. `is_loaded()` is what makes
+	# Player hide its capsule, so latching it before the clips are validated meant
+	# a re-export that renamed them yielded a frozen T-posed body holding nothing
+	# — with the placeholder shell the docstring above promises never deploying.
+	_loaded = true
+
 
 ## The inverted palette, tinted per player. Called again if the owner's lobby
 ## colour changes.
@@ -376,6 +397,13 @@ func repaint(colour: Color) -> void:
 		return
 	var accent: Color = DEFAULT_ACCENT if colour.get_luminance() <= 0.001 \
 			else DEFAULT_ACCENT.lerp(colour, 0.85)
+	# Cached, because the corruption fade lerps *from* it and has to be able to
+	# put it back. It used to lerp from the untinted DEFAULT_ACCENT and restore
+	# nothing (the `_down == 0` branch was a self-assignment), so the first time a
+	# red-shelled crewmate went down and was restored, their seams came back
+	# generic blue for the rest of the run — and colour is how you tell crew apart
+	# in the dark, which is also how you tell crew from quarantine processes.
+	_accent_colour = accent
 	_accent_material = CreatureKit.emissive(accent, ACCENT_ENERGY, 0.55)
 	var shell: StandardMaterial3D = CreatureKit.matte(SHELL, 0.15, 0.46)
 	var plate: StandardMaterial3D = CreatureKit.matte(PLATE, 0.3, 0.32)
@@ -467,9 +495,11 @@ func drive(delta: float, speed: float, heading: Vector3, down: float) -> void:
 		_flash_light.light_energy = heat * heat * MUZZLE_FLASH_ENERGY
 	if _accent_material != null:
 		# The seams go out as the process comes apart. A downed crewmate must not
-		# still be wearing their colour, or the crew cannot read the room.
-		_accent_material.emission = DEFAULT_ACCENT.lerp(Color(1.0, 0.3, 0.24), _down) \
-				if _down > 0.001 else _accent_material.emission
+		# still be wearing their colour, or the crew cannot read the room — and a
+		# *restored* one must get it back, which is why this lerps from their own
+		# tinted accent and writes it unconditionally rather than self-assigning at
+		# zero. At `_down == 0` the first term is exactly `_accent_colour`.
+		_accent_material.emission = _accent_colour.lerp(CORRUPT_ACCENT, _down)
 		_accent_material.emission_energy_multiplier = lerpf(ACCENT_ENERGY, 0.4, _down)
 
 
@@ -559,12 +589,17 @@ func _parent_basis(bone: int) -> Basis:
 ## Translates a bone by a world-space offset, expressed in the avatar's own
 ## frame. Used only for the first-person hold cheat above.
 ##
-## Based on the bone's REST position, never on its current pose. The chest has no
-## position track in the locomotion clips, so nothing rewrites it between frames
-## — reading the live pose and adding to it therefore compounds every frame, and
-## after two seconds the avatar's own torso is an exploded diagram filling the
-## screen. (Ask how I know.) The rotation helpers get away with reading the live
-## pose precisely because rotation IS animated and the tree resets it each tick.
+## Based on the bone's REST position, never on its current pose — because this
+## runs from `_process` and the pose is only reset once per *physics* tick, so
+## reading the live pose and adding to it compounds `fps/60` times per reset and
+## the avatar's own torso becomes an exploded diagram filling the screen. (Ask
+## how I know.)
+##
+## The cost is real and worth naming: every locomotion clip in `crew_avatar.glb`
+## DOES carry a translation channel on `Chest` and on both shoulders — an earlier
+## version of this comment claimed otherwise — so writing the position absolutely
+## discards the authored shoulder bob. Only the local player pays it, and only in
+## first person, where the bob is a hold that will not sit still.
 func _shift_bone(bone: int, offset: Vector3) -> void:
 	if bone < 0:
 		return
@@ -587,10 +622,33 @@ func _aim_bone(bone: int, angles: Vector2, roll: float = 0.0) -> void:
 	if absf(roll) > 0.001:
 		var forward: Vector3 = (inverse * -global_transform.basis.z).normalized()
 		delta = delta * Quaternion(forward, roll)
-	# The tree writes the pose every frame, so this has to be applied after it —
-	# see Player._update_view, which calls drive() from _process.
-	_skeleton.set_bone_pose_rotation(bone,
-			delta * _skeleton.get_bone_pose_rotation(bone))
+	# Composed onto the CLIP's pose, not onto the live one.
+	#
+	# The tree writes the pose once per *physics* tick — `CreatureKit.build_tree`
+	# pins the mixer to ANIMATION_CALLBACK_MODE_PROCESS_PHYSICS, with its own
+	# comment explaining why — while `drive()` is called from `Player._process`,
+	# once per *rendered* frame. Multiplying onto the live pose therefore applied
+	# the delta `fps/60` times per reset: on a 144 Hz display AIM_LIFT's 0.34 rad
+	# landed as ~0.82 and FP_HOLD_YAW's 0.045 as 0.108, past the 0.1 this file's
+	# own comment warns about — and because the ratio is not an integer it also
+	# jittered frame to frame. At exactly 60 Hz it was correct, which is why it
+	# survived review: the bug only appeared on hardware other than the
+	# developer's.
+	_skeleton.set_bone_pose_rotation(bone, delta * _clip_rotation(bone))
+
+
+## The rotation the animation tree last wrote for `bone`, cached for the rest of
+## the physics tick. Physics runs before idle within a frame, so the first read
+## after a tick boundary is the tree's own clean pose; every rendered frame in
+## between reuses it rather than reading back the override we just applied.
+func _clip_rotation(bone: int) -> Quaternion:
+	var frame: int = Engine.get_physics_frames()
+	if frame != _clip_frame:
+		_clip_frame = frame
+		_clip_rotations.clear()
+	if not _clip_rotations.has(bone):
+		_clip_rotations[bone] = _skeleton.get_bone_pose_rotation(bone)
+	return _clip_rotations[bone]
 
 
 ## Weapon collision, 0 = clear, 1 = pressed against a wall. Written by the owning

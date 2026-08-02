@@ -40,9 +40,13 @@ extends Control
 @export var segments: int = 96
 @export var tick_count: int = 12
 
-@export var track_color: Color = Color(0.20, 0.13, 0.05, 0.75)
-@export var fill_color: Color = Color(0.98, 0.68, 0.22)
-@export var tick_color: Color = Color(0.62, 0.42, 0.18, 0.75)
+## Setters, like every other drawn property on this Control. Without them a call
+## site that changes ONLY a colour silently does not repaint — the HUD's phosphor
+## retint gets away with it today purely because it writes a sibling property on
+## the same frame.
+@export var track_color: Color = Color(0.20, 0.13, 0.05, 0.75): set = _set_track_color
+@export var fill_color: Color = Color(0.98, 0.68, 0.22): set = _set_fill_color
+@export var tick_color: Color = Color(0.62, 0.42, 0.18, 0.75): set = _set_tick_color
 
 @export_group("Living ring")
 ## Notches cut into the fill. Zero draws one continuous arc (M2 behaviour).
@@ -71,13 +75,32 @@ var beat: float = 0.0: set = _set_beat
 
 ## Cached unit directions, one per tick, rebuilt only when the geometry changes.
 var _tick_dirs: PackedVector2Array = PackedVector2Array()
-var _tick_key: int = 0
+## The arc geometry `_tick_dirs` was last built for. Three plain scalars rather
+## than one hashed key, so the change test itself allocates nothing.
+var _tick_count_key: int = -1
+var _tick_start_key: float = NAN
+var _tick_sweep_key: float = NAN
 ## Orbit phase, advanced in `_process` only while `orbit` is on.
 var _orbit_phase: float = 0.0
 
 
 func _ready() -> void:
 	set_process(orbit)
+
+
+func _set_track_color(next: Color) -> void:
+	track_color = next
+	queue_redraw()
+
+
+func _set_fill_color(next: Color) -> void:
+	fill_color = next
+	queue_redraw()
+
+
+func _set_tick_color(next: Color) -> void:
+	tick_color = next
+	queue_redraw()
 
 
 func _set_value(next: float) -> void:
@@ -118,10 +141,17 @@ func _process(_delta: float) -> void:
 ## Unit vector per tick. Rebuilt when the arc geometry changes and never
 ## otherwise — this is the only array the meter owns.
 func _rebuild_ticks() -> void:
-	var key: int = hash([tick_count, start_degrees, sweep_degrees])
-	if key == _tick_key and _tick_dirs.size() == tick_count + 1:
+	# Three scalars compared directly, NOT `hash([a, b, c])` — that spelling
+	# builds and hashes an Array literal on every `_draw`, i.e. every frame the
+	# Cycles ring redraws, purely to decide not to rebuild. The allocation note in
+	# the header is only true because this is spelled out.
+	if _tick_count_key == tick_count and is_equal_approx(_tick_start_key, start_degrees) \
+			and is_equal_approx(_tick_sweep_key, sweep_degrees) \
+			and _tick_dirs.size() == tick_count + 1:
 		return
-	_tick_key = key
+	_tick_count_key = tick_count
+	_tick_start_key = start_degrees
+	_tick_sweep_key = sweep_degrees
 	_tick_dirs.resize(tick_count + 1)
 	var start: float = deg_to_rad(start_degrees)
 	var sweep: float = deg_to_rad(sweep_degrees)

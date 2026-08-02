@@ -250,7 +250,12 @@ func _process(delta: float) -> void:
 
 	global_position = global_position.lerp(target, 1.0 - exp(-7.0 * delta))
 
-	if claimant == null or not multiplayer.is_server():
+	# "No peer" counts as authority, the way every check in `core/` writes it: a
+	# bare `is_server()` with no peer assigned pushes `No multiplayer peer is
+	# assigned` and returns false, so running `layer.tscn` straight from the
+	# editor — which `Layer._ready` explicitly supports — used to log an engine
+	# error per shard per frame and make salvage impossible to pick up.
+	if claimant == null or not Net.is_authority():
 		return
 	if global_position.distance_to(claimant.global_position + Vector3.UP * 1.0) \
 			<= Balance.SHARD_ABSORB_RADIUS:

@@ -7,9 +7,14 @@ extends Node3D
 ## the thing that isn't"). DESIGN.md reserves red for hostile processes, so this
 ## is the only red light on an otherwise teal layer.
 ##
-## Cosmetic, so it runs locally on every peer with no replication. It is driven
-## from the wall clock rather than accumulated delta, so peers stay roughly in
-## phase for free.
+## Cosmetic, so it runs locally on every peer with no replication.
+##
+## The clock is `Time.get_ticks_msec()` — milliseconds since **that peer's**
+## engine started — so two peers are NOT in phase with each other, and a player
+## who joined three minutes later sees the beam somewhere else entirely. That is
+## survivable only because it is decoration: the one sweep whose aim is a
+## question players ask out loud is the Sentinel's, and that one sets
+## `driven = true` and takes its angle off replicated `sync_sweep` state.
 
 @export var sweep_speed: float = 0.42
 @export var pulse_depth: float = 0.14

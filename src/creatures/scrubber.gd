@@ -501,6 +501,13 @@ func _drive_animation() -> void:
 ## The sensor is the tell. Dim and slow while lurking, hot and steady while
 ## stalking, white on the lunge, stuttering while it runs.
 func _apply_state_visual() -> void:
+	# `_build_model` returns early when the .glb will not instantiate, and the
+	# materials below are created *after* that return — so on a failed load these
+	# stay null and this function, which runs from `_process` for every Scrubber
+	# on the layer, null-derefs every frame. Sentinel guards its equivalents the
+	# same way (`_track_head` checks `_skeleton`, `_spin_halo` checks `_halo`).
+	if _sensor_material == null or _trim_material == null:
+		return
 	var t: float = float(Time.get_ticks_msec()) / 1000.0
 	var colour: Color = SENSOR_COLOUR
 	var energy: float = 2.0
@@ -542,8 +549,9 @@ func _die_visual(delta: float) -> void:
 	var fade: float = _death * _death
 	# One hard pulse of light as the process is deallocated, then nothing.
 	_light.light_energy = 6.0 * sin(clampf(1.0 - _death, 0.0, 1.0) * PI) + fade
-	_sensor_material.emission_energy_multiplier = 9.0 * fade
-	_trim_material.emission_energy_multiplier = 1.4 * fade
+	if _sensor_material != null and _trim_material != null:
+		_sensor_material.emission_energy_multiplier = 9.0 * fade
+		_trim_material.emission_energy_multiplier = 1.4 * fade
 	if _ember != null and is_instance_valid(_ember):
 		# One hard flash as the process is deallocated, then a coal. Cubed rather
 		# than squared: the tail has to be long enough to still be there when the

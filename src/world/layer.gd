@@ -106,6 +106,15 @@ func _rebuild() -> void:
 		_apply_environment()
 		return
 
+	# The alert belongs to the layer being torn down, not to the one being built.
+	# `ProcLayerBuilder._build_content` already resets the kit's shared uniform on
+	# every build, with a comment saying why — but `_alert` itself survived, and
+	# `_process` re-applied it on the very next frame. Descending mid-PURGE
+	# (alert ~1.0, i.e. the dramatic escape, i.e. the case that actually happens)
+	# ramps down at 1.6/s = 0.625 s, against a 0.35 s hold, so the *new* layer
+	# faded in visibly red with its accents dimmed for its first ~0.28 s.
+	_alert = 0.0
+
 	# Detach before freeing: queue_free() only lands at the end of the frame, and
 	# an old layer's colliders overlapping the new one for even one frame is
 	# enough to launch a player through a wall.
@@ -321,6 +330,12 @@ func _apply_environment() -> void:
 # ------------------------------------------------------------------ descent --
 
 func _on_descent_started(next_layer: int) -> void:
+	# Explicit, and first: everything hostile has to be despawned before the
+	# geometry it is pathing through is freed. This used to be a second subscriber
+	# on the same signal, correct only because Godot fires slots in connection
+	# order and a child's `_ready` happens to run before its parent's.
+	if _director != null and is_instance_valid(_director):
+		_director.clear()
 	_descend(next_layer)
 
 

@@ -40,9 +40,19 @@ func _process(delta: float) -> void:
 		# written as "flicker_gain", which no shader in the project has ever
 		# declared — so binding a housing to its light was a silent no-op from
 		# M3.7 until M4.7. The name now matches the shader.
+		#
+		# Whether it ever RUNS is a different question: see `bind_emissive`.
 		_emissive.set_instance_shader_parameter("emissive_gain", k)
 
 
 ## Optional: tie a mesh's emission to the same curve.
+##
+## **Nothing in `src/` calls this**, so `_emissive` is always null and the branch
+## above is unreachable — SpotLight keys and accents flicker without their
+## housings dimming with them. Kept rather than deleted because it is the correct
+## half of a two-part effect and the M4.7 uniform rename above made it work; what
+## is missing is a call from `LightRig.flicker` when the fixture it is lighting
+## has an emissive housing. Named here so the next reader knows it is a gap and
+## not a mechanism they have failed to find.
 func bind_emissive(mesh: GeometryInstance3D) -> void:
 	_emissive = mesh

@@ -25,6 +25,11 @@ extends Node
 signal unlocked(id: String, definition: Dictionary)
 
 const SAVE_PATH: String = "user://achievements.json"
+## The same temp / backup / quarantine trio the program file has. See
+## GameState's "json, safely, twice" block — both files use one writer.
+const SAVE_TEMP: String = "user://achievements.json.tmp"
+const SAVE_BACKUP: String = "user://achievements.json.bak"
+const SAVE_CORRUPT: String = "user://achievements.json.corrupt"
 const SAVE_VERSION: int = 1
 
 ## Whether this session is running a program the player did not actually earn.
@@ -306,38 +311,35 @@ func reset_all() -> void:
 
 # --------------------------------------------------------------- persistence --
 
+## A corrupt file costs you your unlocks, never your boot — and since M4.8.1 it
+## costs you nothing at all if the `.bak` is good. Both persistent files in the
+## game share GameState's reader for this: the old code here type-tested with
+## `parsed as Dictionary`, which aborts the function on the cast rather than
+## returning null, so the guard beneath it was unreachable and a truncated file
+## loaded as "no achievements" — which the very next unlock then wrote back.
 func load_state() -> void:
-	if not FileAccess.file_exists(SAVE_PATH):
+	var loaded: Dictionary = GameState.load_json(
+			"Achievements", SAVE_PATH, SAVE_BACKUP, SAVE_CORRUPT)
+	if not bool(loaded["ok"]):
 		return
-	var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.READ)
-	if file == null:
-		push_warning("[Achievements] unreadable: %s" % error_string(FileAccess.get_open_error()))
-		return
-	var parsed: Variant = JSON.parse_string(file.get_as_text())
-	file.close()
-	var data: Dictionary = parsed as Dictionary
-	# A corrupt file costs you your unlocks, never your boot.
-	if data == null:
-		push_warning("[Achievements] unparseable, starting fresh")
-		return
-	earned = data.get("earned", {}) as Dictionary
-	var stored: Dictionary = data.get("counters", {}) as Dictionary
+	var data: Dictionary = loaded["data"] as Dictionary
+	earned = GameState.sub_dict(data, "earned")
+	var stored: Dictionary = GameState.sub_dict(data, "counters")
 	for key: String in counters.keys():
 		counters[key] = int(stored.get(key, 0))
 	print("[Achievements] loaded %d/%d unlocked" % [earned.size(), DEFINITIONS.size()])
 
 
+## Atomic, like the program file, and for a sharper reason: this one is written
+## on every unlock and at the end of every run, so it is the file most likely to
+## be open when a session is force-quit. A plain `store_string` here was what
+## made the corruption above reachable in the first place.
 func save_state() -> void:
-	var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
-	if file == null:
-		push_warning("[Achievements] save failed: %s" % error_string(FileAccess.get_open_error()))
-		return
-	file.store_string(JSON.stringify({
+	GameState.commit_json("Achievements", JSON.stringify({
 		"version": SAVE_VERSION,
 		"earned": earned,
 		"counters": counters,
-	}, "\t"))
-	file.close()
+	}, "\t"), SAVE_PATH, SAVE_TEMP, SAVE_BACKUP)
 
 
 # ------------------------------------------------------------- steam mirror --

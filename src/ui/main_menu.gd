@@ -477,6 +477,9 @@ var _hex_edit: LineEdit = null
 var _band_note: Label = null
 ## Seconds left on the refusal tick. Negative when nothing is being refused.
 var _hex_refuse: float = -1.0
+## True between mouse-down and mouse-up on the hue bar. The colour is live the
+## whole time; the program file is only written when the button comes up.
+var _hue_dragging: bool = false
 
 
 func _build_phosphor_picker() -> void:
@@ -556,19 +559,35 @@ func _draw_hue_bar() -> void:
 				Color(UiFx.HOSTILE.r, UiFx.HOSTILE.g, UiFx.HOSTILE.b, weight))
 
 
+## Drag applies the colour live; the program file is written once, on release.
+##
+## `_set_phosphor` ends in `GameState.choose_phosphor` -> `save_progress()`, i.e.
+## a full JSON.stringify, a temp-file write and an atomic rename. A drag emits one
+## InputEventMouseMotion per motion sample — 60+/s, far more on a high-polling
+## mouse — so a two-second drag across the bar used to commit the player's
+## program a hundred and twenty times, each rename a window in which a crash
+## leaves the save mid-commit. Applying and committing are separate things.
 func _on_hue_input(event: InputEvent) -> void:
 	var motion: InputEventMouseMotion = event as InputEventMouseMotion
 	var click: InputEventMouseButton = event as InputEventMouseButton
+	if click != null and click.button_index == MOUSE_BUTTON_LEFT and not click.pressed:
+		# Released. Whatever the drag ended on is the choice worth keeping.
+		if _hue_dragging:
+			_hue_dragging = false
+			GameState.choose_phosphor(GameState.local_color)
+		return
 	var dragging: bool = motion != null and (motion.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0
 	if not dragging and (click == null or not click.pressed
 			or click.button_index != MOUSE_BUTTON_LEFT):
 		return
+	_hue_dragging = true
 	var at: Vector2 = motion.position if motion != null else click.position
 	var hue: float = clampf(at.x / maxf(_hue_bar.size.x, 1.0), 0.0, 1.0)
 	# Saturation and value are kept from the current colour rather than reset, so
 	# a player who typed an exact pale green and then nudged the hue still has a
 	# pale colour afterwards.
-	_set_phosphor(Color.from_hsv(hue, GameState.local_color.s, GameState.local_color.v))
+	_set_phosphor(Color.from_hsv(hue, GameState.local_color.s, GameState.local_color.v),
+			false, true)
 
 
 func _on_hex_submitted(text: String) -> void:
@@ -590,14 +609,15 @@ func _on_hex_submitted(text: String) -> void:
 ## `initial` suppresses the save on the first call, which happens while the menu
 ## is still building itself — writing the program file during construction would
 ## mean a launch that crashed at the wrong moment could leave a half-written one.
-func _set_phosphor(colour: Color, initial: bool = false) -> void:
+## `live` suppresses it for the same reason, mid-drag: the colour is applied
+## immediately, and the commit waits for the mouse button to come up.
+func _set_phosphor(colour: Color, initial: bool = false, live: bool = false) -> void:
 	var clamped: Color = UiFx.clamp_phosphor(colour)
 	# The note is shown when the pick was actually MOVED, not merely when it is
 	# near the band — telling a player their orange was legal is noise.
 	var nudged: bool = UiFx.in_danger_band(colour)
-	if initial:
-		# Building, not choosing: adopt whatever the program file already said
-		# without writing it back.
+	if initial or live:
+		# Building or dragging, not choosing.
 		GameState.local_color = clamped
 		UiFx.set_phosphor(clamped)
 	else:

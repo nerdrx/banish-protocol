@@ -179,7 +179,22 @@ SURGE = os.path.join(REPO, "assets", "models", "surge.glb")
 # hold keeps the muzzle around 34 deg down so the player can actually see their
 # own weapon without it being shouldered.
 AIM_GRIP = Vector((0.115, 0.300, 1.185))
-AIM_PITCH, AIM_YAW, AIM_ROLL = -8.0, 7.0, 12.0
+# ROLL was 12 deg through M4.8, and the first-person Surge read as a black
+# silhouette.  The receiver's only emissive surfaces are the sight-blade face and
+# the chevrons on TOP of it; at 12 deg that face is rolled away from a lens
+# sitting above and inboard of the hold, so everything the player saw of their
+# own weapon was unlit Base slot against a near-black corridor.  30 deg cants it
+# inboard and turns the lit face back toward the eye.
+#
+# Rolling is the only axis that can fix this without renegotiating anything else:
+# it is a rotation about the barrel, so the muzzle line the third-person read and
+# the 34-deg-down framing above are tuned against does not move (measured: the
+# muzzle lands within 10 mm of where it did).  AIM_PITCH and AIM_YAW are
+# untouched, and the finger solver re-runs against the rolled weapon on every
+# build, so the hands re-solve onto the grips by themselves — 30/30 phalanges,
+# buried=none, and the socket transform below comes out unchanged to 0.05 mm
+# because the wrist rotates WITH the weapon.
+AIM_PITCH, AIM_YAW, AIM_ROLL = -8.0, 7.0, 30.0
 # Attach points are on the SURFACE the palm touches, not on the weapon's
 # centre line -- putting them on the axis buries half of each hand inside the
 # receiver.  The hands sit 0.145 m apart, a compact hold that suits a cutting

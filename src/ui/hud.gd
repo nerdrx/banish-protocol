@@ -124,9 +124,16 @@ var _pip_capacity: int = -1
 var _boot_clock: float = 0.0
 var _booting: bool = true
 ## Parallel arrays rather than an array of dictionaries: this is walked every
-## frame of the boot and must not allocate.
+## frame of the boot and must not allocate. `_add_boot` is the ONLY thing allowed
+## to write to either — they are indexed with one counter, so a bare append to
+## one of them reads off the end of the other and aborts the sequence.
 var _boot_nodes: Array[CanvasItem] = []
 var _boot_starts: PackedFloat32Array = PackedFloat32Array()
+## Compile-order starts that something outside the array walk also needs: the
+## reticle shares the crosshair anchor's moment, and the Cycles ring spins up
+## with the panel it is drawn in.
+const BOOT_CROSSHAIR_START: float = 0.05
+const BOOT_CYCLES_START: float = 0.22
 
 # --- glitch / degradation ---------------------------------------------------
 var _glitch: float = 0.0
@@ -231,6 +238,15 @@ func _ready() -> void:
 	_build_gate_panel()
 	_begin_boot()
 	Run.local_shot.connect(_on_local_shot)
+	# Everything above snapshots laid-out geometry — the clusters' home positions,
+	# the speck regions, the rotation pivots. `CyclesPanel`, `IntegrityPanel`,
+	# `KitPanel` and `DataPanel` are all authored bottom-anchored, so their
+	# `position.y` is derived from the parent's height and moves on every viewport
+	# change; the window is resizable and `stretch/aspect=expand` grows the
+	# viewport with it. Captured once, the flinch then wrote launch-time
+	# coordinates back over them — a 720p -> 1080p change snapped all four
+	# clusters ~360 px and left them there.
+	_root.resized.connect(_recapture_layout)
 
 	# The host already has a player when the HUD loads; clients get the signal.
 	var existing: Node = Net.get_player(Net.local_id())
@@ -452,7 +468,12 @@ func _build_crosshair() -> void:
 	_reticle.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_reticle.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_fixed.add_child(_reticle)
-	_boot_nodes.append(_reticle)
+	# Through `_add_boot`, never a bare append: `_boot_nodes` and `_boot_starts`
+	# are parallel and `_apply_boot` indexes both with the same counter, so an
+	# element added to one and not the other reads past the end of the other and
+	# aborts the whole sequence. The reticle compiles in with the anchor it is
+	# drawn over, which is the same moment.
+	_add_boot(_reticle, BOOT_CROSSHAIR_START)
 
 
 ## Local-only, and predicted rather than authoritative — the same standing as the
@@ -498,9 +519,9 @@ func _update_crosshair(delta: float) -> void:
 ## is carrying — because that is the order a program shell would bring its own
 ## readouts up in, and it happens to scan left-to-right as well.
 func _begin_boot() -> void:
-	_add_boot(_crosshair, 0.05)
+	_add_boot(_crosshair, BOOT_CROSSHAIR_START)
 	_add_boot(_crew_cluster, 0.10)
-	_add_boot(_cycles_panel, 0.22)
+	_add_boot(_cycles_panel, BOOT_CYCLES_START)
 	_add_boot(_integrity_panel, 0.36)
 	_add_boot(_kit_panel, 0.46)
 	_add_boot(_data_panel, 0.56)
@@ -546,9 +567,11 @@ func _apply_boot() -> void:
 		_boot_nodes[i].modulate.a = _boot_alpha(_boot_starts[i], i)
 
 	# The ring spins up from zero and overshoots a hair before settling, which is
-	# a gauge finding its reading rather than a bar being drawn.
+	# a gauge finding its reading rather than a bar being drawn. It starts when
+	# the panel it lives in does — named, not an index into `_boot_starts`, which
+	# moves the moment anything is added to the compile order.
 	var spin: float = clampf(
-			(_boot_clock - _boot_starts[2]) / UiFx.BOOT_RING_TIME, 0.0, 1.0)
+			(_boot_clock - BOOT_CYCLES_START) / UiFx.BOOT_RING_TIME, 0.0, 1.0)
 	var eased: float = 1.0 - pow(1.0 - spin, 3.0)
 	if spin < 1.0:
 		eased += sin(spin * PI) * UiFx.BOOT_RING_OVERSHOOT
@@ -882,14 +905,31 @@ func _update_damage(delta: float) -> void:
 ## on a Label), and the list of clusters that jump.
 func _install_glitch_rig() -> void:
 	_clusters = [_crew_cluster, _cycles_panel, _integrity_panel, _kit_panel, _data_panel]
-	_cluster_home.resize(_clusters.size())
-	for i: int in _clusters.size():
-		_cluster_home[i] = _clusters[i].position
+	_capture_cluster_homes()
 
 	_cycles_ghosts = _make_ghosts(_cycles_value)
 	_data_ghosts = _make_ghosts(_data_value)
 
 	_flicker_labels = [_cycles_caption, _kit_label, _integrity_label, _cycles_cap]
+
+
+func _capture_cluster_homes() -> void:
+	_cluster_home.resize(_clusters.size())
+	for i: int in _clusters.size():
+		_cluster_home[i] = _clusters[i].position
+
+
+## Re-takes every one-shot layout snapshot after the viewport changes size.
+## Skipped mid-flinch would be fine too, but the jump is 0.2 s and a resize is
+## not something to be clever about: re-home first, and let the current flinch
+## finish against the new coordinates.
+func _recapture_layout() -> void:
+	if _clusters.is_empty():
+		return
+	_capture_cluster_homes()
+	_capture_speck_regions()
+	for cluster: Control in _clusters:
+		cluster.pivot_offset = cluster.size * 0.5
 
 
 ## Phosphor ghosts for the big readouts.
@@ -1038,7 +1078,12 @@ func _install_depth() -> void:
 	_sheen(%KitSheen, -0.35)
 	_sheen(%DataSheen, 0.4)
 
-	# The readouts worth corrupting when the pool runs dry.
+	_capture_speck_regions()
+
+
+## The readouts worth corrupting when the pool runs dry. Re-taken on resize with
+## the cluster homes — same geometry, same staleness.
+func _capture_speck_regions() -> void:
 	_specks.regions = [
 		Rect2(_cycles_panel.position, _cycles_panel.size),
 		Rect2(_kit_panel.position, _kit_panel.size),

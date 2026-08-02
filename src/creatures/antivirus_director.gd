@@ -61,7 +61,6 @@ func _ready() -> void:
 	add_to_group("antivirus_director")
 	_container = get_node_or_null(CONTAINER) as Node3D
 	Net.crew_changed.connect(_on_crew_changed)
-	Run.descent_started.connect(_on_descent_started)
 	NoiseBus.heard.connect(_on_noise)
 	set_process(true)
 
@@ -269,10 +268,12 @@ func _reconcile(dead: Array) -> void:
 ## Descent starts a rebuild of the whole layer. Everything hostile has to be gone
 ## before the new geometry is written, or a Scrubber ends up hunting through
 ## walls that no longer exist. Every peer clears its own, so nothing is in flight.
-func _on_descent_started(_next_layer: int) -> void:
-	clear()
-
-
+##
+## Called by `Layer._descend` rather than from a `Run.descent_started` connection
+## of our own. Both used to subscribe to that signal and rely on Godot firing
+## slots in connection order — the director winning only because a child's
+## `_ready` runs before its parent's. Moving or re-instancing this node in
+## `layer.tscn` would have silently inverted it and freed the geometry first.
 func clear() -> void:
 	var removed: int = 0
 	for creature: Antivirus in _creatures():

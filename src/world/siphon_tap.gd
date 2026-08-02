@@ -195,6 +195,9 @@ func _apply_spent() -> void:
 	_channel = 0.0
 	_core_material.emission = SPENT_COLOUR
 	_ring_material.emission = SPENT_COLOUR
-	_light.light_color = LIVE_COLOUR
+	# SPENT, not LIVE. A drained tap kept the live hue in its light while its own
+	# materials went dark, so the one fixture a player looks at to answer "has
+	# this been worked?" disagreed with the rest of the prop as it faded out.
+	_light.light_color = SPENT_COLOUR
 	for ring: MeshInstance3D in _rings:
 		ring.visible = true

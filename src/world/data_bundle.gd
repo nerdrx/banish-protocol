@@ -95,7 +95,9 @@ func _process(delta: float) -> void:
 	position.y = REST_HEIGHT + sin(t * 1.3) * 0.09
 	_material.emission_energy_multiplier = 2.0 + sin(t * 2.6) * 0.5
 
-	if not multiplayer.is_server():
+	# See DataShard: "no peer" is authority, so an editor-run layer can still be
+	# looted instead of logging an engine error every frame.
+	if not Net.is_authority():
 		return
 	for id: int in Net.crew.keys():
 		var peer: int = int(id)

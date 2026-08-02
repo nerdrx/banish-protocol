@@ -73,6 +73,11 @@ const GROUP_CABINET: String = "loot_cabinets"
 const GROUP_BULKHEAD: String = "bulkhead_doors"
 const GROUP_TERMINAL: String = "command_terminals"
 
+## How much of a client's typed command reaches the host's log. The command
+## itself does nothing on the host — the answer is computed locally on every peer
+## — so this is purely about not letting a modified client write the log file.
+const QUERY_LOG_LIMIT: int = 64
+
 
 func _ready() -> void:
 	Run.layer_changed.connect(_on_layer_changed)
@@ -250,16 +255,24 @@ func _at_prop(peer: int, group: String, index: int, reach: float) -> Node3D:
 	var player: Node = Net.get_player(peer)
 	if player == null or not is_instance_valid(player):
 		return null
+	var here: Vector3 = (player as Node3D).global_position
+	# `sync_position` is client-authoritative, so this is where a client-owned
+	# number becomes a host decision. A non-finite one compares false against
+	# everything, which would walk straight through the reach test below.
+	if not here.is_finite():
+		return null
 	for node: Node in get_tree().get_nodes_in_group(group):
 		var prop: Node3D = node as Node3D
 		if prop == null or not is_instance_valid(prop):
 			continue
 		if int(prop.get("prop_index")) != index:
 			continue
-		if prop.global_position.distance_to((player as Node3D).global_position) > reach:
+		# Spelled `not (d <= reach)`, never `d > reach` — see Run's "validating
+		# client requests" block. Every distance guard in the project fails closed.
+		var span: float = prop.global_position.distance_to(here)
+		if not (span <= reach):
 			push_warning("[Props] %s %d refused: peer %d is %.1f m away" % [
-				group, index, peer,
-				prop.global_position.distance_to((player as Node3D).global_position)])
+				group, index, peer, span])
 			return null
 		return prop
 	return null
@@ -297,6 +310,8 @@ func _nearest_junction(peer: int) -> Node3D:
 	if player == null or not is_instance_valid(player):
 		return null
 	var here: Vector3 = (player as Node3D).global_position
+	if not here.is_finite():
+		return null
 	for node: Node in get_tree().get_nodes_in_group(GROUP_JUNCTION):
 		var prop: Node3D = node as Node3D
 		if prop == null or not is_instance_valid(prop):
@@ -402,8 +417,10 @@ func _query_request(index: int, command: String) -> void:
 			Balance.TERMINAL_USE_RANGE)
 	if terminal == null:
 		return
+	# The command is client-authored and only ever printed, but "only ever
+	# printed" is still a host-side log a client can write megabytes into.
 	print("[Props] terminal %d query by %s: %s" % [
-		index, Net.crew_name(sender), command])
+		index, Net.crew_name(sender), command.substr(0, QUERY_LOG_LIMIT)])
 	NoiseBus.ping(terminal.global_position, Balance.NOISE_ROOMS_TERMINAL, "query",
 			Balance.NOISE_TIME_TERMINAL)
 

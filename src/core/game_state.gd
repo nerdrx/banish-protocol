@@ -20,14 +20,24 @@ extends Node
 ##   1. **A crash mid-write must never cost you your program.** Every save goes
 ##      to a temp file and is then renamed over the real one, which is atomic on
 ##      every filesystem this ships on. A half-written program file is not a
-##      state this game can be in.
+##      state this game can be in. `commit_json` is the only writer, here and in
+##      Achievements, so there is one implementation of that rule rather than
+##      one per file.
 ##   2. **A file we cannot read is never a file we overwrite blind.** A missing
-##      or corrupt save loads as a fresh program (the game boots, always), and
-##      the first thing any migration does is take a `.bak` copy.
+##      or corrupt save loads as a fresh program (the game boots, always) — but
+##      before it does, the reader tries the `.bak` the writer takes ahead of
+##      every commit, and if that fails too the damaged bytes are moved aside to
+##      `.corrupt` rather than being overwritten by the next save. Losing a
+##      program to a bad shutdown is the one cost in this game a player cannot
+##      earn back.
 
 const SAVE_PATH: String = "user://save.json"
 const SAVE_TEMP: String = "user://save.json.tmp"
 const SAVE_BACKUP: String = "user://save.json.bak"
+## Where a file that neither parsed nor had a usable `.bak` is put out of harm's
+## way. Nothing reads it; it exists so "we started you fresh" is recoverable by
+## hand instead of being a deletion.
+const SAVE_CORRUPT: String = "user://save.json.corrupt"
 
 ## 1 — M3: {version, archive, deepest_backdoor}. `archive` counted *shards*.
 ## 2 — M4: the full program file. `archive` counts *data units*.
@@ -230,22 +240,14 @@ func module_tier(track: String) -> int:
 
 
 func load_progress() -> void:
-	if not FileAccess.file_exists(SAVE_PATH):
-		print("[GameState] no program file; starting a fresh program")
+	# A corrupt or hand-edited save must never stop the game booting, and must
+	# never be silently replaced either: `load_json` walks file -> .bak ->
+	# quarantine, and only then gives up and starts fresh.
+	var loaded: Dictionary = load_json("GameState", SAVE_PATH, SAVE_BACKUP, SAVE_CORRUPT)
+	var text: String = String(loaded["text"])
+	if not bool(loaded["ok"]):
 		return
-	var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.READ)
-	if file == null:
-		push_warning("[GameState] save unreadable: %s" % error_string(FileAccess.get_open_error()))
-		return
-	var text: String = file.get_as_text()
-	file.close()
-	var parsed: Variant = JSON.parse_string(text)
-	# A corrupt or hand-edited save must never stop the game booting: fall back
-	# to a fresh program rather than refusing to start.
-	var data: Dictionary = parsed as Dictionary
-	if data == null:
-		push_warning("[GameState] save unparseable, starting fresh")
-		return
+	var data: Dictionary = loaded["data"] as Dictionary
 
 	var version: int = int(data.get("version", 1))
 	deepest_backdoor = maxi(int(data.get("deepest_backdoor", 0)), 0)
@@ -261,8 +263,11 @@ func load_progress() -> void:
 	# the menu entirely (every automated run, the dedicated server, a
 	# `--autohost` capture) still renders in the player's own phosphor.
 	UiFx.set_phosphor(local_color)
-	modules = _clean_modules(data.get("modules", {}) as Dictionary)
-	var stored: Dictionary = data.get("stats", {}) as Dictionary
+	# `sub_dict`, not `as Dictionary`: a file whose "modules" is a number or a
+	# list would abort this function on the cast and leave the program half
+	# loaded — the same trap the file-level read had.
+	modules = _clean_modules(sub_dict(data, "modules"))
+	var stored: Dictionary = sub_dict(data, "stats")
 	for key: String in STAT_KEYS:
 		stats[key] = maxi(int(stored.get(key, 0)), 0)
 
@@ -296,7 +301,7 @@ func _clean_modules(raw: Dictionary) -> Dictionary:
 ## something wrong is recoverable by hand rather than by apology.
 func _migrate(from_version: int, original: String) -> void:
 	migrated_from = from_version
-	_write_text(SAVE_BACKUP, original)
+	write_text_file("GameState", SAVE_BACKUP, original)
 	print("[GameState] migrating program file v%d -> v%d (backup: %s)" % [
 		from_version, SAVE_VERSION, SAVE_BACKUP])
 
@@ -323,17 +328,13 @@ func _migrate(from_version: int, original: String) -> void:
 ## migration that has to wait for the rest of the boot is a migration that can
 ## be interrupted halfway.
 func _seed_stats_from_achievements() -> void:
-	if not FileAccess.file_exists(ACHIEVEMENTS_PATH):
+	# Same type test as everywhere else, and for the same reason: `as Dictionary`
+	# on a damaged file aborts this function on the cast, which used to leave the
+	# migration running on with zeroed lifetime stats.
+	var parsed: Variant = as_json_object(read_text_file("GameState", ACHIEVEMENTS_PATH))
+	if parsed == null:
 		return
-	var file: FileAccess = FileAccess.open(ACHIEVEMENTS_PATH, FileAccess.READ)
-	if file == null:
-		return
-	var parsed: Variant = JSON.parse_string(file.get_as_text())
-	file.close()
-	var data: Dictionary = parsed as Dictionary
-	if data == null:
-		return
-	var counters: Dictionary = data.get("counters", {}) as Dictionary
+	var counters: Dictionary = sub_dict(parsed as Dictionary, "counters")
 	stats["runs"] = maxi(int(counters.get("runs", 0)), 0)
 	stats["exfils"] = maxi(int(counters.get("exfils", 0)), 0)
 	stats["deletions"] = maxi(int(counters.get("kills", 0)), 0)
@@ -348,10 +349,144 @@ func _stats_text() -> String:
 		stat("runs"), stat("exfils"), stat("deletions"), stat("data_banked")]
 
 
-## Temp-then-rename. `store_string` can return short on a full disk and the
-## process can die between the open and the close; neither is allowed to leave
-## the real file truncated, so the real file is only ever replaced by a rename
-## of something already flushed and closed.
+# ------------------------------------------------------- json, safely, twice --
+#
+# Both persistent files in the game go through the three helpers below.
+# Achievements calls them too rather than keeping its own copy: it had a
+# hand-rolled non-atomic writer and the same unreachable corruption guard, and
+# two implementations of "do not lose the player's file" is one too many.
+
+
+## A file's whole contents, or "" if it is missing or unreadable.
+static func read_text_file(tag: String, path: String) -> String:
+	if not FileAccess.file_exists(path):
+		return ""
+	var file: FileAccess = FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		push_warning("[%s] unreadable (%s): %s" % [
+			tag, path, error_string(FileAccess.get_open_error())])
+		return ""
+	var text: String = file.get_as_text()
+	file.close()
+	return text
+
+
+## The JSON **object** in `text`, or `null` for anything that is not one.
+##
+## This exists because `parsed as Dictionary` is not a type test. **[verified
+## 4.7.1]** casting a non-Dictionary with `as` raises `Invalid cast: could not
+## convert value to 'Dictionary'` and terminates the enclosing function on the
+## spot — so a `if data == null` guard written underneath one can never run (and
+## a typed `Dictionary` local is never null anyway). Every read of untrusted
+## bytes in this project type-tests first and casts second.
+static func as_json_object(text: String) -> Variant:
+	if text.is_empty():
+		return null
+	var parsed: Variant = JSON.parse_string(text)
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return null
+	return parsed
+
+
+## A nested object off an untrusted dictionary, or `{}` if that key holds
+## anything else. The same rule as `as_json_object`, one level down: JSON and
+## the wire both hand us dictionaries whose *values* are equally unchecked.
+static func sub_dict(data: Dictionary, key: String) -> Dictionary:
+	var value: Variant = data.get(key, {})
+	if typeof(value) != TYPE_DICTIONARY:
+		return {}
+	return value as Dictionary
+
+
+## Reads a JSON object, recovering from `backup` if the real file is damaged and
+## quarantining the damage at `corrupt` if it is not recoverable.
+##
+## Returns `{"ok": bool, "data": Dictionary, "text": String}` — `text` is the
+## bytes the object was actually parsed from, which a migration needs so its own
+## `.bak` is the file it migrated and not the one it wrote.
+static func load_json(tag: String, path: String, backup: String,
+		corrupt: String) -> Dictionary:
+	var text: String = read_text_file(tag, path)
+	var parsed: Variant = as_json_object(text)
+	if parsed != null:
+		return {"ok": true, "data": parsed as Dictionary, "text": text}
+
+	if text.is_empty() and not FileAccess.file_exists(path):
+		print("[%s] no file at %s; starting fresh" % [tag, path])
+		return {"ok": false, "data": {}, "text": ""}
+
+	# There were bytes and they were not a JSON object: truncated by a crash mid
+	# write, hand-edited into invalidity, or half-synced from a cloud save. One
+	# generation back is the `.bak` the writer takes before every commit.
+	push_warning("[%s] %s is not readable JSON; trying %s" % [tag, path, backup])
+	var recovered: String = read_text_file(tag, backup)
+	var from_backup: Variant = as_json_object(recovered)
+	if from_backup != null:
+		# The damaged bytes are kept as well: the .bak is one save behind, and
+		# whatever was in the newer file may still be worth reading by hand.
+		_quarantine(tag, path, corrupt)
+		print("[%s] recovered from %s" % [tag, backup])
+		return {"ok": true, "data": from_backup as Dictionary, "text": recovered}
+
+	# Nothing readable anywhere. Boot fresh — the game always boots — but move
+	# the damage aside first, because the alternative is that the next write
+	# overwrites it and the player's history is genuinely gone.
+	_quarantine(tag, path, corrupt)
+	push_warning("[%s] no readable file and no usable backup; starting fresh" % tag)
+	return {"ok": false, "data": {}, "text": ""}
+
+
+static func _quarantine(tag: String, path: String, corrupt: String) -> void:
+	if not FileAccess.file_exists(path):
+		return
+	var err: Error = DirAccess.copy_absolute(path, corrupt)
+	if err != OK:
+		push_warning("[%s] could not quarantine %s: %s" % [tag, path, error_string(err)])
+		return
+	print("[%s] damaged file kept at %s" % [tag, corrupt])
+
+
+## Temp-then-rename, with a `.bak` of the last known good bytes taken first.
+##
+## `store_string` can return short on a full disk and the process can die
+## between the open and the close; neither is allowed to leave the real file
+## truncated, so the real file is only ever replaced by a rename of something
+## already flushed and closed. The backup copy is what makes `load_json`'s
+## recovery path have something to recover from — it is taken from the file on
+## disk, so it is always a file that parsed at least once.
+static func commit_json(tag: String, payload: String, path: String, temp: String,
+		backup: String) -> bool:
+	if not write_text_file(tag, temp, payload):
+		return false
+	# Only ever promote a file that PARSES to the backup slot. The moment this
+	# matters is the first save after a recovery: the primary on disk is still the
+	# damaged copy the boot refused, and copying it over `.bak` would destroy the
+	# only good generation there is — turning a recoverable file into two bad ones
+	# on the next crash. Re-reading a 300-byte file per save is nothing next to
+	# that; this is not a per-frame path.
+	if FileAccess.file_exists(path) \
+			and as_json_object(read_text_file(tag, path)) != null:
+		var copied: Error = DirAccess.copy_absolute(path, backup)
+		if copied != OK:
+			push_warning("[%s] could not refresh %s: %s" % [tag, backup, error_string(copied)])
+	var err: Error = DirAccess.rename_absolute(temp, path)
+	if err != OK:
+		push_warning("[%s] could not commit %s: %s" % [tag, path, error_string(err)])
+		return false
+	return true
+
+
+static func write_text_file(tag: String, path: String, text: String) -> bool:
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		push_warning("[%s] write failed (%s): %s" % [
+			tag, path, error_string(FileAccess.get_open_error())])
+		return false
+	file.store_string(text)
+	file.close()
+	return true
+
+
 func save_progress() -> void:
 	if sandboxed:
 		return
@@ -368,22 +503,7 @@ func save_progress() -> void:
 		# noise in a file a player might open.
 		"color": _file_color.to_html(false),
 	}, "\t")
-	if not _write_text(SAVE_TEMP, payload):
-		return
-	var err: Error = DirAccess.rename_absolute(SAVE_TEMP, SAVE_PATH)
-	if err != OK:
-		push_warning("[GameState] could not commit save: %s" % error_string(err))
-
-
-func _write_text(path: String, text: String) -> bool:
-	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
-	if file == null:
-		push_warning("[GameState] write failed (%s): %s" % [
-			path, error_string(FileAccess.get_open_error())])
-		return false
-	file.store_string(text)
-	file.close()
-	return true
+	commit_json("GameState", payload, SAVE_PATH, SAVE_TEMP, SAVE_BACKUP)
 
 
 ## The player choosing their phosphor, from the injection console's picker. The
@@ -391,6 +511,12 @@ func _write_text(path: String, text: String) -> bool:
 ## `_file_color`.
 func choose_phosphor(colour: Color) -> void:
 	local_color = UiFx.clamp_phosphor(colour)
-	_file_color = local_color
 	UiFx.set_phosphor(local_color)
+	# A commit that changes nothing is still a full serialise, temp write and
+	# atomic rename — and every rename is a window in which a crash leaves the
+	# save mid-flight. The picker calls this on release and on every tab-away out
+	# of the hex field, so "nothing moved" is the common case, not the rare one.
+	if _file_color.is_equal_approx(local_color):
+		return
+	_file_color = local_color
 	save_progress()

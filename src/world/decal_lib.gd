@@ -102,9 +102,13 @@ static func place(parent: Node3D, name: String, at: Vector3, yaw_deg: float,
 	decal.size = Vector3(size.x, DEPTH, size.y)
 	decal.upper_fade = 0.25
 	decal.lower_fade = 0.25
-	# Only project onto surfaces roughly facing the same way, or a sign on a wall
-	# smears across the floor in front of it and up over the ceiling.
-	decal.normal_fade = 0.0  # 0 = project regardless of angle; the kit's chamfers make anything higher drop out
+	# Projected regardless of surface angle. The obvious setting is a normal fade
+	# — only project onto surfaces roughly facing the same way, so a sign on a
+	# wall cannot smear across the floor in front of it — but the kit's chamfers
+	# put enough angle on every edge that anything above zero drops the sign out
+	# at exactly the corners a player reads it from. The size and placement keep
+	# it on its wall instead.
+	decal.normal_fade = 0.0
 	decal.modulate = Color(1.0, 1.0, 1.0, fade)
 	# Signage is not worth a full-resolution projection from across the room.
 	decal.distance_fade_enabled = true

@@ -14,8 +14,11 @@ extends Control
 ## every band — the drop shaft, the only thing in the drawing that goes deeper.
 ##
 ## Cost and allocation: all the geometry is built once into packed line arrays
-## and drawn with three `draw_multiline` calls. Scrolling is a transform, not a
-## rebuild, so a frame costs three draw calls and no allocations at all.
+## and scrolling is a transform, not a rebuild, so a frame allocates nothing.
+## The draw-call count is not three, though — `_draw` runs **two** passes (one
+## period apart, so the seam is always off-screen) of three `draw_multiline`
+## plus one `draw_string` per band label, i.e. `2 * (3 + BANDS)`. At nine bands
+## that is 24 calls a frame, on a menu with nothing else in it.
 
 ## Height of one layer band, in pixels.
 const BAND: float = 128.0
