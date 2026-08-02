@@ -298,6 +298,13 @@ nullvoid/
   (breaker-cut the lock, data inside), physics debris that makes noise when
   kicked (antivirus hears it), sealable bulkhead doors (temporary barricade,
   MOTHER re-opens them eventually). All deterministic placement.
+  **GTFO-inspired: in-world command terminals** — CRT consoles (player-tech
+  aesthetic) where you TYPE actual commands to query MOTHER's own systems:
+  `LIST DATA`, `LOCATE COMPILER`, `PING SHAFT`, `QUERY <room>` — powerful
+  intel, but queries are loud (antivirus ping radius), and deeper layers
+  return partially corrupted output. The crew's navigator ritual: one player
+  heads-down typing while the others hold the dark. (Our muster-to-descend
+  is already a GTFO bioscan cousin; alarm-scan events join in M6.)
 - **M5 — Expensive**: post/glitch polish, audio, screen shake, kill cams,
   low-Cycles presentation, menu/lobby polish, Linux + Windows export presets.
 - **M6 — The Haunting**: MOTHER becomes the horror director + hunter processes.
