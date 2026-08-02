@@ -134,6 +134,16 @@ anti_aliasing/quality/screen_space_aa=0
 anti_aliasing/quality/use_taa=true
 lights_and_shadows/positional_shadow/atlas_size=4096
 lights_and_shadows/positional_shadow/soft_shadow_filter_quality=3
+;; M4.95: one ReflectionProbe per room (ProcLayerBuilder), each UPDATE_ONCE. The
+;; reflection ATLAS is the VRAM cost, not the probes — INTEGRATION2 §5 measured
+;; the default count of 64 at +517 MB. Capped to the maximum room count a layer
+;; can show at once; a ten-room layer with box-projected, interior probes never
+;; needs more visible simultaneously, and this recovers most of that 517 MB.
+reflections/reflection_atlas/reflection_count=12
+;; And a smaller per-probe cubemap: in a near-black game the reflections carry
+;; subtle emissive spill, not mirror detail, so 128 holds up where 256 would and
+;; recovers most of the atlas VRAM. Halves the atlas footprint.
+reflections/reflection_atlas/reflection_size=128
 environment/volumetric_fog/volume_size=128
 environment/volumetric_fog/volume_depth=192
 environment/volumetric_fog/use_filter=1

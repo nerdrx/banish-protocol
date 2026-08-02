@@ -63,9 +63,20 @@ ambient_light_sky_contribution = 0.0
 ambient_light_energy = 0.36
 reflected_light_source = 0
 
-tonemap_mode = 3
-tonemap_exposure = 1.02
-tonemap_white = 6.0
+; M4.95 THE FILMIC PASS: AgX, not ACES. ACES rotates saturated primaries toward
+; blue and clips them to a flat plate of colour with no internal detail — which
+; is precisely this game's failure case, since the entire light vocabulary is
+; saturated emissive line-work. AgX desaturates as it approaches the display
+; ceiling, so an over-range teal inlay goes toward white through its own hue and
+; keeps a readable core with a coloured falloff. The exposure is the number that
+; was wrong twice in look-dev (INTEGRATION2 §7): AgX's toe sits lower, so the
+; naive fix is to open up — at 1.20 the junction measured 68% brighter, a
+; darkness-law failure dressed as a tonemapper swap. 0.78 lands within a few
+; percent of the ACES baseline luminance. White 8.0 keeps the emissive cores
+; from flattening.
+tonemap_mode = 4
+tonemap_exposure = 0.78
+tonemap_white = 8.0
 
 ; --- screen-space reflections -------------------------------------------------
 ; 56 steps is generous, but corridors are exactly the case SSR is good at: long
@@ -110,7 +121,12 @@ ssil_normal_rejection = 0.12
 ; --- glow ---------------------------------------------------------------------
 glow_enabled = true
 glow_normalized = false
-glow_intensity = 0.85
+; Glow threshold reads the HDR buffer BEFORE the tonemapper, so it does not move
+; under AgX — but AgX rolls off what glow adds, so intensity rises to restore the
+; same visible halo (INTEGRATION2 §7). Only the dataflow shader (energy 3.4)
+; crosses the 1.65 threshold; the baked-PBR albedo is dark and never blooms, so
+; "only true emissives bloom" holds.
+glow_intensity = 1.05
 glow_strength = 1.05
 glow_mix = 0.04
 glow_bloom = 0.02
@@ -145,7 +161,16 @@ volumetric_fog_temporal_reprojection_enabled = true
 volumetric_fog_temporal_reprojection_amount = 0.94
 
 ; --- grade --------------------------------------------------------------------
-adjustment_enabled = true
+; M4.95: the depth-band 3D LUTs (post_process.gdshader, driven per layer by
+; Layer._apply_environment) now OWN the grade. Grading twice — once here in the
+; Environment's contrast/saturation/gradient curve and again in the LUT — is how
+; an image ends up crushed with nobody able to say which stage did it, so the
+; adjustment is switched OFF (INTEGRATION2 §7: "a LUT must subsume the entire
+; grade it replaces"). The contrast term and the split-tone gradient the baseline
+; ran are carried inside the LUTs (make_luts.py bakes the 1.05/1.075/1.10 per
+; band) plus the post shader's own cool shadow-lift. The values below are kept as
+; a record of the pre-filmic grade and are inert while adjustment_enabled is false.
+adjustment_enabled = false
 adjustment_brightness = 1.0
 adjustment_contrast = 1.12
 adjustment_saturation = 1.04

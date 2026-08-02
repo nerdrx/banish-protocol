@@ -1,0 +1,54 @@
+[gd_resource type="ShaderMaterial" load_steps=8 format=3]
+
+; M_Grate (PBR) — walkway grating and vent louvres.
+;
+; The height field behind this set is unusually deep and clean because it is
+; also the parallax-occlusion hero surface (see nv_surface_pom.gdshader). Even
+; with POM off, the albedo goes near-zero between the bars, so a grate reads as
+; holes rather than as a pattern painted on a plate — which matters because the
+; grates are the only place in the kit where a beam shines THROUGH the floor.
+
+[ext_resource type="Shader" path="res://src/shaders/nv_surface_pbr.gdshader" id="1"]
+[ext_resource type="Texture2D" path="res://assets/pbr/grate_albedo.png" id="2"]
+[ext_resource type="Texture2D" path="res://assets/pbr/grate_normal.png" id="3"]
+[ext_resource type="Texture2D" path="res://assets/pbr/grate_orm.png" id="4"]
+[ext_resource type="Texture2D" path="res://assets/textures/noise_macro.tres" id="5"]
+[ext_resource type="Texture2D" path="res://assets/pbr/detail_normal.png" id="6"]
+[ext_resource type="Texture2D" path="res://assets/pbr/detail_orm.png" id="7"]
+
+[resource]
+shader = ExtResource("1")
+shader_parameter/tex_albedo = ExtResource("2")
+shader_parameter/tex_normal = ExtResource("3")
+shader_parameter/tex_orm = ExtResource("4")
+shader_parameter/macro_noise = ExtResource("5")
+shader_parameter/detail_normal_tex = ExtResource("6")
+shader_parameter/detail_orm = ExtResource("7")
+shader_parameter/tile_metres = 2.0
+shader_parameter/plane_blend = 0.08
+shader_parameter/alert_tint = Color(1, 0.28, 0.3, 1)
+shader_parameter/alert = 0.0
+shader_parameter/albedo_tint = Color(1, 1, 1, 1)
+shader_parameter/roughness_offset = 0.0
+shader_parameter/metallic_offset = 0.0
+shader_parameter/ao_strength = 1.0
+shader_parameter/normal_depth = 1.3
+shader_parameter/detail_tiling = 4.0
+shader_parameter/detail_depth = 0.6
+shader_parameter/detail_rough = 0.2
+shader_parameter/detail_fade_start = 2.2
+shader_parameter/detail_fade_end = 6.0
+shader_parameter/macro_scale = 0.09
+shader_parameter/macro_rough = 0.14
+shader_parameter/macro_albedo = 0.14
+shader_parameter/smudge_amount = 0.0
+shader_parameter/smudge_centre = 1.25
+shader_parameter/smudge_width = 0.45
+shader_parameter/traffic_amount = 0.3
+shader_parameter/grime_amount = 0.3
+shader_parameter/grime_height = 0.9
+shader_parameter/wet_amount = 0.0
+shader_parameter/wet_threshold = 0.55
+shader_parameter/wet_softness = 0.14
+shader_parameter/wet_roughness = 0.045
+shader_parameter/wet_darken = 0.55

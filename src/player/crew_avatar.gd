@@ -292,6 +292,11 @@ var _muzzle: Node3D = null
 var _has_aim: bool = false
 var _first_person: bool = false
 var _flash: float = 0.0
+## Flash-rate governor state (see MUZZLE_FLASH_MIN_INTERVAL). `_since_full_flash`
+## counts up in `drive`; `_room_gate` is 1 for a shot allowed a full room flash,
+## 0 for one the rate cap suppressed. Starts large so the first shot flashes.
+var _since_full_flash: float = 10.0
+var _room_gate: float = 0.0
 var _emitter_material: StandardMaterial3D = null
 var _flash_light: OmniLight3D = null
 
@@ -301,6 +306,12 @@ const FLASH_TIME: float = 0.09
 ## ViewModel.MUZZLE_FLASH_ENERGY — the two rigs hold the same weapon and it has to
 ## discharge the same way in both.
 const MUZZLE_FLASH_ENERGY: float = 2.6
+## SAFETY-CRITICAL (limbo-a11y 01-photosensitivity): the muzzle flash's rate cap.
+## See ViewModel.MUZZLE_FLASH_MIN_INTERVAL — the two rigs discharge the same way,
+## so they share the same governor. >1/3 s between full room flashes keeps a held
+## trigger under the WCAG 2.3.1 three-flashes-a-second ceiling, unconditionally,
+## and this copy protects the third-person view of a crewmate firing at you too.
+const MUZZLE_FLASH_MIN_INTERVAL: float = 0.34
 
 var _look: Vector2 = Vector2.ZERO
 ## 0..1 weapon-collision tuck, written by the owning Player once a frame.
@@ -505,6 +516,7 @@ func drive(delta: float, speed: float, heading: Vector3, down: float) -> void:
 	_choose_clip()
 	_track_head(delta, heading)
 
+	_since_full_flash += delta
 	_flash = maxf(_flash - delta, 0.0)
 	var heat: float = _flash / FLASH_TIME
 	if _emitter_material != null:
@@ -513,8 +525,11 @@ func drive(delta: float, speed: float, heading: Vector3, down: float) -> void:
 		# fired in a dark corridor whited out the room it was supposed to light.
 		_emitter_material.emission_energy_multiplier = 1.1 + heat * 2.8
 	if _flash_light != null:
-		# Squared, so the decay reads as a discharge rather than as a dimmer.
-		_flash_light.light_energy = heat * heat * MUZZLE_FLASH_ENERGY
+		# Squared, so the decay reads as a discharge rather than as a dimmer. Gated
+		# by the flash-rate governor (`_room_gate`) and scaled by A11y.flash_scale —
+		# SAFETY-CRITICAL, see MUZZLE_FLASH_MIN_INTERVAL.
+		_flash_light.light_energy = heat * heat * MUZZLE_FLASH_ENERGY \
+				* _room_gate * A11y.flash_scale
 	if _accent_material != null:
 		# The seams go out as the process comes apart. A downed crewmate must not
 		# still be wearing their colour, or the crew cannot read the room — and a
@@ -679,10 +694,18 @@ func set_tuck(amount: float) -> void:
 	_tuck = clampf(amount, 0.0, 1.0)
 
 
-## One shot fired: light the emitter on the socketed rifle. Cosmetic and local —
-## remote copies get their flash from `Player.show_breaker_shot`.
+## One shot fired: light the emitter on the socketed rifle. Called on the local
+## embodied copy from `Player._fire_muzzle`, and on a remote copy from
+## `Player.show_breaker_shot` when a crewmate's shot arrives.
 func fire() -> void:
 	_flash = FLASH_TIME
+	# Flash-rate governor — see ViewModel.fire and MUZZLE_FLASH_MIN_INTERVAL. A
+	# too-soon shot keeps its emitter glow but not its room-casting flash.
+	if _since_full_flash >= MUZZLE_FLASH_MIN_INTERVAL:
+		_room_gate = 1.0
+		_since_full_flash = 0.0
+	else:
+		_room_gate = 0.0
 
 
 ## Where the first-person lens belongs: the eye node the exporter parked between

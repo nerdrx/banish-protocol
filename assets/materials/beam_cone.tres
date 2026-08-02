@@ -1,18 +1,34 @@
-[gd_resource type="StandardMaterial3D" format=3]
+[gd_resource type="ShaderMaterial" load_steps=3 format=3]
 
-; Additive cone stapled to a crewmate's decryption beam. The volumetric fog does most
-; of the work; this just guarantees the beam reads as a solid shaft of light even
-; when the fog is thin or a peer is far away.
+; Additive cone stapled to a crewmate's decryption beam. The volumetric fog does
+; most of the work; this adds near-field STRUCTURE the fog cannot — scrolling
+; dust, a soft depth fade so it never cuts a hard ellipse into the floor, and an
+; art-directed radial/longitudinal profile. See src/shaders/nv_beam.gdshader.
+;
+; M4.95: was a flat additive StandardMaterial3D (albedo alpha 0.035). Now the
+; ported nv_beam shader. `energy` starts DELIBERATELY LOW — the darkness law: the
+; beam must light itself, not the room, and the SpotLight + fog are already doing
+; the real work. Player._apply_identity duplicates this and tints `beam_color`
+; per player; the cone is only ever seen on OTHER peers' beams (hidden from your
+; own lens), so a whole crew's worth of these must stay subtle in the dark.
+
+[ext_resource type="Shader" path="res://src/shaders/nv_beam.gdshader" id="1_shader"]
+[ext_resource type="Texture2D" path="res://assets/textures/noise_detail.tres" id="2_dust"]
 
 [resource]
 resource_name = "BeamCone"
-transparency = 1
-blend_mode = 1
-; CULL_BACK, deliberately. The cone is an open tube with outward normals, so
-; back-face culling makes it vanish the moment the camera is inside it. Without
-; this, standing in a crewmate's beam washes the entire frame out with a grey
-; additive wedge.
-cull_mode = 0
-shading_mode = 0
-disable_receive_shadows = true
-albedo_color = Color(0.62, 0.76, 1, 0.035)
+render_priority = 0
+shader = ExtResource("1_shader")
+shader_parameter/beam_color = Color(0.62, 0.76, 1, 1)
+shader_parameter/energy = 0.08
+shader_parameter/edge_power = 2.8
+shader_parameter/near_fade = 0.14
+shader_parameter/far_fade = 0.5
+shader_parameter/dust_noise = ExtResource("2_dust")
+shader_parameter/noise_scale = 1.7
+shader_parameter/noise_speed = 0.42
+shader_parameter/noise_amount = 0.6
+shader_parameter/soft_distance = 0.55
+shader_parameter/cone_half_height = 4.5
+shader_parameter/cone_near_radius = 0.045
+shader_parameter/cone_far_radius = 1.55

@@ -290,6 +290,34 @@ const GRADE_SATURATION: Array[float] = [1.06, 0.88, 0.97]
 const GRADE_DRAINED_LAYER: float = 10.0
 const GRADE_HOSTILE_LAYER: float = 16.0
 
+## M4.95: the depth-band 3D LUTs, one per grade anchor (surface / mid / deep),
+## matching DESIGN.md's aesthetic gradient and the limbo-concepts biome study —
+## surface cold-clean → mid teal-drain → deep warm-wrong. Selected and cross-faded
+## exactly like the ambient/fog anchors above (same `low`/`mix`), so the grade
+## slides down the descent instead of cutting. These REPLACE the Environment
+## adjustment grade, which is disabled in layer_environment.tres.
+const GRADE_LUTS: Array[String] = [
+	"res://assets/luts/lut_surface.png",
+	"res://assets/luts/lut_mid.png",
+	"res://assets/luts/lut_deep.png",
+]
+## Per-band cinematic exposure offset in stops (INTEGRATION2 §7): a touch up at the
+## clean surface, drifting down into the deep, so the world dims further as it goes
+## wrong. Measured alone this pass makes the game DARKER, which is why it ships.
+const GRADE_EXPOSURE: Array[float] = [0.10, -0.06, -0.22]
+## The iris-hunting breath, ±this many stops at 0.055 Hz. Sub-threshold; unscaled.
+const GRADE_EXPOSURE_BREATHE: float = 0.035
+
+static var _lut_textures: Array[Texture2D] = []
+
+
+## The three depth-band LUTs, loaded once and shared across every layer.
+static func _lut(index: int) -> Texture2D:
+	if _lut_textures.is_empty():
+		for path: String in GRADE_LUTS:
+			_lut_textures.append(load(path) as Texture2D)
+	return _lut_textures[clampi(index, 0, _lut_textures.size() - 1)]
+
 
 ## 0..2 position along the three grade anchors.
 static func grade_position(layer: int) -> float:
@@ -322,9 +350,23 @@ func _apply_environment() -> void:
 	scaled.ambient_light_color = GRADE_AMBIENT[low].lerp(GRADE_AMBIENT[low + 1], mix)
 	scaled.volumetric_fog_albedo = GRADE_FOG[low].lerp(GRADE_FOG[low + 1], mix)
 	scaled.background_color = GRADE_BACKGROUND[low].lerp(GRADE_BACKGROUND[low + 1], mix)
-	scaled.adjustment_saturation = lerpf(
-			GRADE_SATURATION[low], GRADE_SATURATION[low + 1], mix)
+	# M4.95: the Environment adjustment grade is disabled (the depth-band LUTs own
+	# it now), so the old per-band adjustment_saturation is gone from here — its job
+	# moved into the LUTs. GRADE_SATURATION is kept above only as a record of it.
 	_world_environment.environment = scaled
+
+	# Drive the post shader's depth-band LUT + cinematic exposure off the SAME band
+	# the ambient/fog anchors use. Guarded: the authored test layer and a very early
+	# frame can reach here before the Post ColorRect's material is resolved.
+	var grade: ShaderMaterial = _grade.material as ShaderMaterial
+	if grade != null:
+		grade.set_shader_parameter("lut_a", _lut(low))
+		grade.set_shader_parameter("lut_b", _lut(low + 1))
+		grade.set_shader_parameter("lut_mix", mix)
+		grade.set_shader_parameter("lut_amount", 1.0)
+		grade.set_shader_parameter("exposure",
+				lerpf(GRADE_EXPOSURE[low], GRADE_EXPOSURE[low + 1], mix))
+		grade.set_shader_parameter("exposure_breathe", GRADE_EXPOSURE_BREATHE)
 
 
 # ------------------------------------------------------------------ descent --

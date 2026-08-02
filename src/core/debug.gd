@@ -1425,6 +1425,10 @@ const M48_TARGETS: Dictionary = {
 	"terminal": {"group": "command_terminals", "standoff": 2.2, "aim": 1.5},
 	"bulkhead": {"group": "bulkhead_doors", "standoff": 4.2, "aim": 1.8},
 	"debris": {"group": "debris", "standoff": 2.0, "aim": 0.2},
+	# M4.95: a density-pass machinery island, so the routed catenary feed cable and
+	# its fixings can be photographed. Stands back far enough to see the machine and
+	# the cable arcing up to its wall source, aimed high to catch the sag.
+	"machine": {"group": "machines", "standoff": 3.8, "aim": 1.5},
 }
 
 
@@ -2101,12 +2105,17 @@ func _sample_fps(delta: float) -> void:
 	for value: float in sorted:
 		total += value
 	var low_index: int = maxi(int(float(sorted.size()) * 0.01), 0)
-	print("[FPS] avg=%.0f  1%%low=%.0f  min=%.0f  frames=%d  draws=%d  prims=%dk" % [
+	# VRAM added M4.95: the filmic pass (PBR texture sets + the reflection atlas) is
+	# the milestone with the real VRAM budget, so the soak has to be able to print
+	# what it costs (INTEGRATION2 caps it at ~700 MB with the atlas at 12).
+	print("[FPS] avg=%.0f  1%%low=%.0f  min=%.0f  frames=%d  draws=%d  prims=%dk  vram=%dMB" % [
 		total / float(sorted.size()), sorted[low_index], sorted[0], sorted.size(),
 		RenderingServer.get_rendering_info(
 				RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
 		RenderingServer.get_rendering_info(
-				RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME) / 1000])
+				RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME) / 1000,
+		RenderingServer.get_rendering_info(
+				RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576])
 
 
 # ---------------------------------------------------------------- screenshot --

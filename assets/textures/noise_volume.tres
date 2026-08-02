@@ -1,0 +1,25 @@
+[gd_resource type="NoiseTexture3D" load_steps=2 format=3]
+
+; Volumetric drift noise for nv_shaft_fog.gdshader.
+;
+; 64^3 and seamless. Small on purpose: it is sampled at 0.16 tiles/metre, so one
+; blob covers ~6 m of shaft, and the shader beats two copies of it against each
+; other at different scales and speeds. Anything higher-resolution would be
+; sampled below its own Nyquist by the volumetric fog's froxel grid (128 x 192)
+; and would only produce temporal noise for the reprojection filter to chase.
+
+[sub_resource type="FastNoiseLite" id="FastNoiseLite_shaft"]
+noise_type = 1
+seed = 41
+frequency = 0.032
+fractal_octaves = 3
+fractal_lacunarity = 2.2
+fractal_gain = 0.5
+
+[resource]
+width = 64
+height = 64
+depth = 64
+seamless = true
+seamless_blend_skirt = 0.2
+noise = SubResource("FastNoiseLite_shaft")

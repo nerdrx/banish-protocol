@@ -58,7 +58,30 @@ const GRIME_DEPTH: float = 0.5
 const CABLE_HEIGHT: float = 0.13
 const CABLE_RADIUS: float = 0.030
 const CABLE_SPAN: float = 2.4
+## The small dip between clips on a wall loom. A clipped cable barely sags — the
+## deep true-catenary curve is reserved for the runs that actually HANG (see below).
 const CABLE_SAG: float = 0.045
+
+## M4.95 catenary rewrite (HUB_NOTES §9). Cables hang on a TRUE catenary now
+## (y = a·cosh), not a parabola with a hand-authored sag, so the sag scales with
+## span for free and two runs in one frame no longer read as decoration. The only
+## handle is `slack` — the fraction by which the cable is longer than the straight
+## line between its ends, i.e. how much cable somebody paid out. Tension tells the
+## story: a taut feed is slack ~0.006, a dead-weight bundle sags at ~0.06.
+const SLACK_WALL_LOOM: float = 0.028
+const SLACK_FEED: float = 0.006
+const SLACK_BUNDLE: float = 0.060
+
+## Motivated motion (DESIGN.md pillar 6; HUB_NOTES §9). MOTION FOLLOWS CAUSE: there
+## is no wind in a sealed machine-space, so nothing sways for free. A cable's motion
+## is chosen by what is at its end, not by taste.
+##   DEAD     a run bolted to nothing that moves — hangs dead still.
+##   VIBRATE  bolted to RUNNING machinery — a fine, fast, low-amplitude tremor.
+##   SWAY     in a real draught (a god-ray aperture's open shaft) — a slow, true
+##            pendulum sway. Amplitude stays 1-3 cm; at 5 cm it becomes a flag and
+##            the sealed bay starts feeling outdoors.
+enum Motion { DEAD, VIBRATE, SWAY }
+const CABLE_SHADER: String = "res://src/shaders/nv_cable.gdshader"
 
 const PIPE_RADIUS: float = 0.085
 
@@ -70,6 +93,10 @@ static var _grime_cache: Dictionary = {}
 ## batching possible in the first place.
 static var _tube_mesh: CylinderMesh = null
 static var _chunk_mesh: BoxMesh = null
+## The catenary sway shader, loaded once. A moving cable is one generated tube
+## mesh with this material; the sway is a single sin() in its vertex stage, so a
+## swaying run costs exactly what a static one costs (HUB_NOTES §9).
+static var _cable_shader: Shader = null
 
 var _parent: Node3D = null
 var _seed: int = 0
@@ -80,6 +107,7 @@ var _chunks: Array[Transform3D] = []
 ## and a claim about generation belongs in a log rather than in a screenshot.
 var census: Dictionary = {
 	"cable": 0, "pipe": 0, "rubble": 0, "crate": 0, "husk": 0, "grime": 0,
+	"island": 0, "sway": 0, "duct": 0,
 }
 
 
@@ -166,6 +194,287 @@ func cable_run(from: Vector3, to: Vector3, inward: Vector3) -> void:
 			if i % 3 == 0 and strand == 0:
 				_chunk(point + inward * -0.02, Vector3(0.07, 0.16, 0.11), 0.0)
 			previous = point
+
+	# M4.95: real fixings at both ends, so a loom no longer emerges from bare wall
+	# (HUB_NOTES §9). Into the shared MultiMesh, so the hardware is near-free.
+	var end_lift: Vector3 = inward * 0.10 + Vector3.UP * CABLE_HEIGHT
+	_anchor_hw(from + end_lift, to)
+	_anchor_hw(to + end_lift, from)
+
+
+# ---------------------------------------------------------------- catenary --
+#
+# HUB_NOTES §9's hanging-matter rewrite, ported. Everything that hangs between two
+# anchors — a machinery feed, a cable bundle, a coil dropping to the floor — is a
+# TRUE catenary solved from an arc length, not a parabola with a guessed sag: the
+# sag then scales with span for free, and two runs in one frame stop reading as
+# decoration. The clipped wall looms above stay nearly straight, because a clipped
+# cable is; the deep curve is for the runs that actually hang.
+
+## Pins TIME at 0 during automated captures (the game's `Debug.automated`) so a
+## round-to-round comparison is not confounded by where the cables were swinging.
+## The frozen pose is NOT the rest pose — each run keeps its own phase — which is
+## what a still photograph of a room full of hanging cable actually looks like.
+static func _frozen() -> float:
+	return 1.0 if Debug.automated else 0.0
+
+
+## Solve sinh(u)/u = k by bracket + bisect (there is no closed form). Monotone for
+## k > 1, so a bracket always exists and bisection cannot fail. ~70 sinh calls,
+## once, at build time — never a per-frame path.
+static func _cat_u(k: float) -> float:
+	if k <= 1.000001:
+		return 0.0001
+	var lo: float = 0.00001
+	var hi: float = 1.0
+	while sinh(hi) / hi < k and hi < 80.0:
+		hi *= 2.0
+	for _i: int in 64:
+		var mid: float = (lo + hi) * 0.5
+		if sinh(mid) / mid < k:
+			lo = mid
+		else:
+			hi = mid
+	return (lo + hi) * 0.5
+
+
+## A true catenary between two anchors, sampled as a polyline. `slack` is the only
+## handle — the fraction the cable is longer than the straight chord — so the sag
+## comes out proportional to span for free. The s0 term makes an asymmetric run
+## (unequal anchor heights) put its low point toward the low end, which the eye is
+## extremely good at even when it cannot say why.
+static func _catenary(a: Vector3, b: Vector3, slack: float, samples: int = 0) -> Array:
+	var ax: Vector2 = Vector2(a.x, a.z)
+	var bx: Vector2 = Vector2(b.x, b.z)
+	var d: float = ax.distance_to(bx)
+	var h: float = b.y - a.y
+	var chord: float = a.distance_to(b)
+	var n: int = samples if samples > 0 else clampi(int(chord * 1.4) + 4, 6, 22)
+	var pts: Array = []
+	# A near-vertical drop degenerates — the answer is a straight line, and its
+	# character comes from the coil at the bottom, not from the curve.
+	if d < 0.10 or chord < 0.02:
+		for i: int in n + 1:
+			pts.append(a.lerp(b, float(i) / float(n)))
+		return pts
+	var arc: float = chord * (1.0 + maxf(slack, 0.00005))
+	var root: float = sqrt(maxf(arc * arc - h * h, 1e-9))
+	var u: float = _cat_u(root / d)
+	var aa: float = d / (2.0 * u)
+	var q: float = h / root
+	# asinh, written out: Godot's is recent enough to be a portability risk.
+	var s0: float = d * 0.5 - aa * log(q + sqrt(q * q + 1.0))
+	var c: float = a.y - aa * cosh(-s0 / aa)
+	for i: int in n + 1:
+		var t: float = float(i) / float(n)
+		var flat: Vector2 = ax.lerp(bx, t)
+		pts.append(Vector3(flat.x, aa * cosh((t * d - s0) / aa) + c, flat.y))
+	return pts
+
+
+## Motion amplitude + period for a cause, position-hashed so it is deterministic
+## and so no two runs beat in lockstep. Amplitude stays inside the 1-3 cm band —
+## this is air movement in a sealed bay, not wind.
+func _motion_params(motion: int, at: Vector3) -> Dictionary:
+	match motion:
+		Motion.VIBRATE:
+			# Running machinery: fast and tiny — a tremor, not a sway.
+			return {"amp": lerpf(0.004, 0.010, roll(at, 5501)),
+					"period": lerpf(0.35, 0.85, roll(at, 5507))}
+		Motion.SWAY:
+			# A real draught off an open shaft: slow, 1-3 cm, first pendulum mode.
+			return {"amp": lerpf(0.012, 0.028, roll(at, 5513)),
+					"period": lerpf(4.0, 9.0, roll(at, 5521))}
+		_:
+			return {"amp": 0.0, "period": 6.0}
+
+
+## One ShaderMaterial per hanging run (nv_cable.gdshader). The sway is lateral to
+## the run — a cable swings ACROSS its span, never along it — and pinned for
+## captures. Zero amplitude collapses to a static-cost material.
+func _cable_material(a: Vector3, b: Vector3, amp: float, period: float,
+		phase: float) -> ShaderMaterial:
+	if _cable_shader == null:
+		_cable_shader = load(CABLE_SHADER) as Shader
+	var m: ShaderMaterial = ShaderMaterial.new()
+	m.shader = _cable_shader
+	m.set_shader_parameter("albedo", Color(0.118, 0.124, 0.138))
+	m.set_shader_parameter("anchor_a", a)
+	m.set_shader_parameter("anchor_b", b)
+	var lat: Vector3 = Vector3(b.z - a.z, 0.0, a.x - b.x)
+	m.set_shader_parameter("sway_axis",
+			Vector3.RIGHT if lat.length() < 0.05 else lat.normalized())
+	m.set_shader_parameter("sway_amp", amp)
+	m.set_shader_parameter("sway_period", period)
+	m.set_shader_parameter("sway_phase", phase)
+	m.set_shader_parameter("frozen", _frozen())
+	return m
+
+
+## A swept tube along a polyline, as ONE mesh and ONE draw call — the only way a
+## room can afford a dozen hanging runs. Six radial sides: these are 20-40 mm
+## objects and their silhouette is a line. Only runs that actually MOVE go through
+## here; dead runs are cheaper still as MultiMesh segments.
+func _swept_tube(pts: Array, radius: float, mat: Material, name_hint: String) -> void:
+	if pts.size() < 2:
+		return
+	var n: int = pts.size()
+	var rings: Array = []
+	for i: int in n:
+		var tan: Vector3
+		if i == 0:
+			tan = pts[1] - pts[0]
+		elif i == n - 1:
+			tan = pts[i] - pts[i - 1]
+		else:
+			tan = pts[i + 1] - pts[i - 1]
+		tan = tan.normalized()
+		var up: Vector3 = Vector3.UP if absf(tan.dot(Vector3.UP)) < 0.95 else Vector3.FORWARD
+		var rt: Vector3 = tan.cross(up).normalized()
+		var vu: Vector3 = rt.cross(tan).normalized()
+		var ring: Array = []
+		for k: int in 6:
+			var ang: float = TAU * float(k) / 6.0
+			ring.append(rt * cos(ang) + vu * sin(ang))
+		rings.append(ring)
+	var st: SurfaceTool = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i: int in n - 1:
+		for k: int in 6:
+			var k2: int = (k + 1) % 6
+			var quad: Array = [
+				[pts[i] + rings[i][k] * radius, rings[i][k]],
+				[pts[i] + rings[i][k2] * radius, rings[i][k2]],
+				[pts[i + 1] + rings[i + 1][k2] * radius, rings[i + 1][k2]],
+				[pts[i + 1] + rings[i + 1][k] * radius, rings[i + 1][k]]]
+			for idx: int in [0, 1, 2, 0, 2, 3]:
+				st.set_normal(quad[idx][1])
+				st.add_vertex(quad[idx][0])
+	var mi: MeshInstance3D = MeshInstance3D.new()
+	mi.name = name_hint
+	mi.mesh = st.commit()
+	mi.material_override = mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+	# The sway shader moves vertices the CPU-side AABB does not know about.
+	mi.extra_cull_margin = 0.3
+	_parent.add_child(mi)
+
+
+## FIXINGS. Nothing terminates into bare wall: a hanging cable is only believable
+## if the eye can find the thing holding it up. Bolt plate + eyebolt ring + shank,
+## into the shared MultiMesh so the hardware is near-free.
+func _anchor_hw(at: Vector3, toward: Vector3) -> void:
+	var dir: Vector3 = toward - at
+	dir.y = 0.0
+	dir = Vector3.FORWARD if dir.length() < 0.05 else dir.normalized()
+	var yaw: float = atan2(dir.x, dir.z)
+	_chunk(at + dir * 0.05, Vector3(0.13, 0.16, 0.03), yaw)
+	_chunk(at - dir * 0.055, Vector3(0.05, 0.085, 0.05), yaw)
+	_tube(at + dir * 0.05, at - dir * 0.05, 0.014)
+
+
+## Where a cable reaches the floor it does not stop — it is left in a lazy coil,
+## slightly elliptical with a decaying radius, so the spiral is something dropped
+## rather than something wound. Dead, so it goes into the batched MultiMesh.
+func _coil(centre: Vector3, r0: float, r1: float, turns: float) -> void:
+	var n: int = int(turns * 12.0)
+	var prev: Vector3 = Vector3.ZERO
+	for i: int in n + 1:
+		var t: float = float(i) / float(n)
+		var ang: float = t * turns * TAU
+		var r: float = lerpf(r0, r1, t)
+		var p: Vector3 = centre + Vector3(cos(ang) * r,
+				CABLE_RADIUS + sin(ang * 1.7) * 0.012, sin(ang) * r * 0.86)
+		if i > 0:
+			_tube(prev, p, CABLE_RADIUS)
+		prev = p
+
+
+# ---------------------------------------------------------- routed cabling --
+#
+# The MOTIVATION LAW made geometry. A routed cable runs FROM a named source (a
+# tap, a junction box) TO a named load (a machine, a fixture) on a true catenary,
+# with real fixings at both ends — never sprinkled along a wall for texture. Its
+# MOTION is chosen by the load: bolted to a running machine it vibrates, hanging in
+# a shaft's draught it sways, otherwise it hangs dead still. If you cannot name the
+# cause, the run is DEAD.
+
+## One hanging run, source -> load. `strands` > 1 fans it into a bundle, each
+## strand on its own slack so the strands separate through the sag and re-converge
+## at the fixings — the single most recognisable thing about a real cable bundle.
+func routed_cable(source: Vector3, load: Vector3, motion: int,
+		radius: float = CABLE_RADIUS, strands: int = 1,
+		slack: float = SLACK_FEED) -> void:
+	var mp: Dictionary = _motion_params(motion, source)
+	var amp: float = float(mp["amp"])
+	var period: float = float(mp["period"])
+	var lat: Vector3 = Vector3(load.z - source.z, 0.0, source.x - load.x)
+	lat = Vector3.RIGHT if lat.length() < 0.05 else lat.normalized()
+	for s: int in strands:
+		var f: float = (float(s) / maxf(float(strands - 1), 1.0) - 0.5) \
+				if strands > 1 else 0.0
+		var off: Vector3 = lat * (f * 0.05) + Vector3(0.0, -absf(f) * 0.018, 0.0)
+		var sl: float = slack * (1.0 + f * 0.34 + float(s) * 0.03)
+		var pts: Array = _catenary(source + off, load + off, sl)
+		if motion == Motion.DEAD:
+			# Dead runs cost nothing beyond geometry: straight into the batched
+			# MultiMesh, no shader, no per-frame anything.
+			for i: int in pts.size() - 1:
+				_tube(pts[i], pts[i + 1], radius)
+		else:
+			var phase: float = roll(source + Vector3(float(s), 0.0, 0.0), 5601) * TAU
+			var mat: ShaderMaterial = _cable_material(source + off, load + off,
+					amp * (1.0 + f * 0.1), period * (1.0 + f * 0.2), phase)
+			_swept_tube(pts, radius, mat, "RoutedCable")
+			census["sway"] = int(census["sway"]) + 1
+		census["cable"] = int(census["cable"]) + 1
+	_anchor_hw(source, load)
+	_anchor_hw(load, source)
+
+
+## A machinery island: a cabinet-sized machine standing in the room's midground,
+## FED by a routed cable from a source. The density pass's core motivated element —
+## a load that explains the cable and a cable that explains the load. The feed
+## VIBRATES because the machine is running. Returns the footprint so the caller can
+## place a box proxy and keep it out of the reading lanes, exactly like a crate.
+func machinery_island(at: Vector3, yaw: float, source: Vector3) -> Vector3:
+	var group: Node3D = Node3D.new()
+	group.name = "Machine"
+	group.position = at
+	group.rotation.y = yaw
+	# So `--goto machine` can frame one for a capture (see Debug.M48_TARGETS). The
+	# +Z the goto probe stands off is the machine's front, which faces the source.
+	group.add_to_group("machines")
+	_parent.add_child(group)
+	var w: float = lerpf(0.9, 1.3, roll(at, 5701))
+	var tall: float = lerpf(1.4, 2.0, roll(at, 5707))
+	# A stack of dark cabinet boxes with a conduit cap and one dim slot, so it
+	# reads as powered equipment rather than as a crate.
+	_group_box(group, Vector3(0.0, tall * 0.5, 0.0), Vector3(w, tall, w * 0.8), MAT_PANEL)
+	_group_box(group, Vector3(0.0, tall + 0.05, 0.0),
+			Vector3(w * 0.9, 0.1, w * 0.72), MAT_CONDUIT)
+	_group_box(group, Vector3(0.0, tall * 0.62, -(w * 0.41)),
+			Vector3(w * 0.5, 0.02, 0.014), _slot_material())
+	# The feed lands on a junction port at the top of the machine — an overhead
+	# feed, which needs no facing and reads clearly as the cable's destination.
+	var port: Vector3 = at + Vector3.UP * (tall + 0.06)
+	_chunk(port, Vector3(0.2, 0.14, 0.14), yaw)
+	# The SOURCE, made visible: a junction box on the wall where the feed begins,
+	# so the cable is a connection between two things rather than a loose end.
+	_chunk(source, Vector3(0.24, 0.32, 0.14),
+			atan2(port.x - source.x, port.z - source.z))
+	routed_cable(source, port, Motion.VIBRATE, 0.024, 2 + int(roll(at, 5713) * 2.0))
+	census["island"] = int(census["island"]) + 1
+	return Vector3(w, tall, w)
+
+
+## An overhead cable bundle strung across the ceiling between two drop anchors —
+## the "ceiling runs" of the density brief. Dead weight sags deep (nobody tensions
+## it); it only moves if a draught is named for it.
+func ceiling_run(a: Vector3, b: Vector3, motion: int = Motion.DEAD) -> void:
+	routed_cable(a, b, motion, 0.02, 3 + int(roll(a, 5801) * 2.0), SLACK_BUNDLE)
+	census["duct"] = int(census["duct"]) + 1
 
 
 # -------------------------------------------------------------------- pipes --
@@ -408,6 +717,8 @@ func _flush_family(node_name: String, mesh: Mesh, transforms: Array[Transform3D]
 
 ## One line for the layer census.
 func describe() -> String:
-	return "cable %d, pipe %d, rubble %d, crate %d, husk %d, grime %d" % [
+	return ("cable %d, pipe %d, rubble %d, crate %d, husk %d, grime %d, "
+			+ "island %d, sway %d, duct %d") % [
 		int(census["cable"]), int(census["pipe"]), int(census["rubble"]),
-		int(census["crate"]), int(census["husk"]), int(census["grime"])]
+		int(census["crate"]), int(census["husk"]), int(census["grime"]),
+		int(census["island"]), int(census["sway"]), int(census["duct"])]

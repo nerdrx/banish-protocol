@@ -30,8 +30,10 @@ flat face cannot.  That single line of bevel does more for perceived cost than
 any texture in the kit.
 """
 
+import json
 import math
 import os
+import struct
 import sys
 
 import bpy
@@ -196,6 +198,16 @@ class Part:
         mesh = bpy.data.meshes.new(name)
         self.bm.to_mesh(mesh)
         self.bm.free()
+        # `bmesh.to_mesh` leaves `active_color_index = -1`, and the glTF
+        # exporter's `export_vertex_color="ACTIVE"` then exports NOTHING. The
+        # engine gets the default white for COLOR, which means wear = 1 and
+        # height = 1 on every vertex in the kit: full edge polish everywhere,
+        # grime nowhere. Both surface shaders read those two channels, so the
+        # entire wear/grime system has been silently inert since the kit was
+        # first built. One line.
+        if len(mesh.color_attributes):
+            mesh.color_attributes.active_color_index = 0
+            mesh.color_attributes.render_color_index = 0
         obj = bpy.data.objects.new(name, mesh)
         for _, mat in sorted(_mats.items()):
             mesh.materials.append(mat)
@@ -596,18 +608,119 @@ MODULES = [
 
 # --------------------------------------------------------------------- main --
 
+def _split_by_material(obj):
+    """One single-material mesh per slot the module actually uses.
+
+    See the COLOR_0 note on `_merge_slots` for why this exists.
+    """
+    me = obj.data
+    out = []
+    for mi in sorted({p.material_index for p in me.polygons}):
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        drop = [f for f in bm.faces if f.material_index != mi]
+        if drop:
+            bmesh.ops.delete(bm, geom=drop, context="FACES")
+        for f in bm.faces:
+            f.material_index = 0
+        nm = bpy.data.meshes.new("%s__%d" % (obj.name, mi))
+        bm.to_mesh(nm)
+        bm.free()
+        nm.materials.append(bpy.data.materials[MATERIALS[mi][0]])
+        if len(nm.color_attributes):
+            nm.color_attributes.active_color_index = 0
+            nm.color_attributes.render_color_index = 0
+        o = bpy.data.objects.new(nm.name, nm)
+        bpy.context.collection.objects.link(o)
+        out.append(nm.name)
+    return out
+
+
+def _read_glb(path):
+    with open(path, "rb") as f:
+        d = f.read()
+    off, js, blob = 12, None, b""
+    while off < len(d):
+        ln, ty = struct.unpack_from("<I4s", d, off)
+        chunk = d[off + 8:off + 8 + ln]
+        if ty == b"JSON":
+            js = json.loads(chunk)
+        elif ty[:3] == b"BIN":
+            blob = chunk
+        off += 8 + ln + ((4 - ln % 4) % 4)
+    return js, blob
+
+
+def _write_glb(path, js, blob):
+    j = json.dumps(js, separators=(",", ":")).encode("utf-8")
+    j += b" " * ((4 - len(j) % 4) % 4)
+    b = blob + b"\x00" * ((4 - len(blob) % 4) % 4)
+    with open(path, "wb") as f:
+        f.write(struct.pack("<4sII", b"glTF", 2, 12 + 8 + len(j) + 8 + len(b)))
+        f.write(struct.pack("<I4s", len(j), b"JSON"))
+        f.write(j)
+        f.write(struct.pack("<I4s", len(b), b"BIN\x00"))
+        f.write(b)
+
+
+def _merge_slots(path, layout):
+    """Fold the per-slot meshes back into one mesh + one node per module.
+
+    WHY THIS WHOLE DETOUR EXISTS
+    ----------------------------
+    Blender 5.2.0's glTF exporter writes a real COLOR_0 stream only for the
+    FIRST primitive of a multi-material mesh. Every later primitive gets a
+    placeholder filled with opaque white.
+
+    White is the worst possible failure value here, because it is not a crash
+    and not even obviously wrong in a viewer. It hands the surface shaders
+    wear = 1 and height = 1 on every surface that is not in the first material
+    slot, which switches ON the full edge polish and switches OFF the floor
+    grime, everywhere, at once. The kit just looks uniformly plastic and nobody
+    can say why. This shipped in look-dev 1 and was never noticed.
+
+    The workaround: export one single-material object per slot — each of those
+    is primitive 0 of its own mesh, so each gets a correct COLOR_0 — then stitch
+    the primitives back into one mesh per module in the container afterwards.
+    Only the JSON is rewritten; the binary chunk Blender produced is passed
+    through untouched, so the geometry is exactly what the exporter wrote.
+    """
+    js, blob = _read_glb(path)
+    node_by_name = {n["name"]: n for n in js["nodes"] if "mesh" in n}
+    meshes, nodes = [], []
+    for name, slots in layout:
+        prims = []
+        for sn in slots:
+            src = node_by_name.get(sn)
+            if src is None:
+                continue
+            prims += js["meshes"][src["mesh"]]["primitives"]
+        nodes.append({"name": name, "mesh": len(meshes)})
+        meshes.append({"name": name, "primitives": prims})
+    js["meshes"] = meshes
+    js["nodes"] = nodes
+    js["scenes"] = [{"name": "Scene", "nodes": list(range(len(nodes)))}]
+    js["scene"] = 0
+    _write_glb(path, js, blob)
+
+
 def main():
     bpy.ops.wm.read_factory_settings(use_empty=True)
     make_materials()
 
     total = 0
     report = []
+    layout = []
     for fn in MODULES:
         part, name = fn()
         obj, tris = part.to_object(name)
         obj.location = (0, 0, 0)
         total += tris
         report.append((name, tris))
+        layout.append((name, _split_by_material(obj)))
+        # The combined object was only ever a staging step; exporting it too
+        # would put the broken multi-primitive mesh back in the file.
+        bpy.data.objects.remove(obj, do_unlink=True)
 
     os.makedirs(OUT, exist_ok=True)
     path = os.path.join(OUT, "nullvoid_kit.glb")
@@ -625,6 +738,7 @@ def main():
         export_active_vertex_color_when_no_material=True,
         use_selection=False,
     )
+    _merge_slots(path, layout)
 
     print("\n=== NULLVOID look-dev kit ===")
     for name, tris in report:

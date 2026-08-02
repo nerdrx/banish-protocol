@@ -14,7 +14,7 @@ You are an invading program. The dungeon is a rogue AI. Its antivirus is hunting
 [![Language](https://img.shields.io/badge/GDScript-static%20typed-355570)](#architecture)
 [![Multiplayer](https://img.shields.io/badge/multiplayer-Steam%20%C2%B7%20ENet%20%C2%B7%201–4%20players-1de9b6)](#multiplayer)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows-2e4f63)](#getting-started)
-[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M4.8%20complete-ff2d78)](#roadmap)
+[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M4.95%20complete-ff2d78)](#roadmap)
 [![Interface](https://img.shields.io/badge/interface-CRT%20cassette%20futurism-ffb454)](#features)
 
 [The Pitch](#the-pitch) · [Features](#features) · [The Loop](#the-loop) ·
@@ -286,16 +286,18 @@ fiction-earns-the-mechanics reasoning, art direction language.
 - [x] **M3.7 — Embodiment & Overhaul** · authored Scrubber + Sentinel, beveled modular architecture kit on a 4 m lattice, four-layer light rig with gobo projectors, SSR/SSIL WorldEnvironment, post v2, the Surge breaker in your hands, crew avatars, and MOTHER's signage on the walls
 - [x] **M4 — The long game** · Compiler terminals in the world + a diegetic purchase panel, eight permanent module tracks resolved per player and applied host-side, the per-player program file (versioned, atomic writes, migrated from M3), the backdoor injection gate, the archive economy with depth-scaled data value, and the threat/power curve tuned across layers 1–18
 - [x] **M4.8 — Functional clutter** · the density pass (cable looms, pipe runs, rubble, spills and scorch, crate stacks, dead maintenance drones — all MultiMesh-batched) plus five props that *do* things: rewire junctions, weldable vent covers that shut down a nest's reinforcement trickle, lootable cabinets with two ways in, kickable physics debris the antivirus hears, sealable bulkheads that re-route its pathing, and typed command terminals. One shared noise API underneath all of it
+- [x] **M4.95 — The Expensive Pass** · the filmic graphics tier, integrated: baked-PBR tiling surfaces with a close-up detail octave, AgX tonemap, per-room reflection probes, depth-band 3D-LUT grade (surface cold → mid teal-drain → deep warm-wrong) and a cinematic post pass, kit trim/corner modules killing the wall-floor seam, and **god-ray hero shafts** — a real ceiling aperture, slatted, dropping one authored volumetric shaft into every two-storey vault, drop shaft and backdoor. The density pass gets the motivation law in geometry: cables hang on **true catenaries**, routed *from* a source *to* a load, with real fixings and coiled floor ends, and they only move where something makes them — a fine tremor on a running machine, a slow sway in a shaft's draught, dead-still everywhere else. Two shipping renderer bugs fixed on the way (the kit's dead vertex-colour wear masks; sRGB decode on custom-shader samplers). Held 60 fps with a comfortable margin across an 18-layer soak and a two-instance run; darkness law measured, not asserted
 - [ ] **M5 — Expensive** · glitch post stack, positional audio, kill cams, low-Cycles presentation, menu polish, Linux + Windows exports
 
 ## Screenshots
 
-> Live captures from the build — two networked instances, real lighting, no
-> post-production. Everything below is the M3.7 art pass: authored creature
-> models, a beveled modular architecture kit on a 4 m lattice, a four-layer
-> light rig firing through gobo projectors, screen-space reflections on wet
-> deck plating, and MOTHER's own signage on the walls — now dressed with M4.8's
-> density pass and the props that do something.
+> Live captures from the build — real lighting, no post-production. The world is
+> the M4.95 filmic pass on top of the M3.7 kit: baked-PBR surfaces that hold up at
+> 30 cm, an AgX + depth-band-LUT grade that cools with depth, per-room reflection
+> probes turning every wet floor into free light, trim killing the wall-floor seam,
+> and god-ray hero shafts dropped through real ceiling apertures. Dressed with the
+> motivation-law density pass — machinery islands cable-fed on true catenaries that
+> only move where something moves them — and M4.8's props that do something.
 >
 > The interface is the M3.8 pass: the shell compiles itself in when you are
 > injected, hangs a few pixels behind your lens, flinches and corrupts your own
@@ -335,7 +337,7 @@ fiction-earns-the-mechanics reasoning, art direction language.
 
 ![Cycles depleted](.github/assets/screenshots/depleted.png)
 
-*The data vault: ribbed storage racks with something still running behind the shelf slits, quarantine marked on the deck, salvage chips lying where they fell:*
+*The data vault, under its god-ray: a real ceiling aperture drops one cold volumetric shaft through the haze, dust riding it, while the walls four metres off stay black — the shaft lights the air and the floor pool, never the room. A crewmate crossing it reads as a silhouette against the light:*
 
 ![Data vault](.github/assets/screenshots/vault.png)
 

@@ -79,7 +79,21 @@ const CRATE_PROP_CLEAR: float = 3.6
 ## not allowed to stand in front of each other.
 const PROP_SEPARATION: float = 2.6
 
+## M4.95: at most this many god-ray hero shafts per layer. Scarcity is what makes
+## a motif a motif — "a room with three shafts has weather, a room with one has a
+## hole in it" (HUB_NOTES §10; INTEGRATION2 §4).
+const MAX_SHAFTS: int = 2
+
 var _clutter: ClutterLib = null
+## M4.95: god-ray hero-shaft specs, keyed by room index -> {pos, ceiling}. Planned
+## in `_plan_shafts` BEFORE the shells are built (so the ceiling field can omit the
+## aperture cell), and consumed in `_light_room` to spawn the full GodRays unit.
+var _shaft_specs: Dictionary = {}
+## M4.95: batched trim transforms, per trim module, flushed into MultiMeshes once.
+## Baseboards and corner posts run the whole perimeter of every room — hundreds of
+## instances — so they go through a MultiMesh (a few draw calls) exactly like the
+## clutter, or the wall/floor seam pass would cost the soak its 60 fps on its own.
+var _trim_batches: Dictionary = {}
 ## Resolved transforms for the functional props, filled before the density pass.
 ## `{kind, index, room, pos, yaw}`.
 var _prop_spots: Array[Dictionary] = []
@@ -128,6 +142,11 @@ func _build_content() -> void:
 			longest = span
 			_trunk_corridor = String(corridor["id"])
 
+	# M4.95: decide the god-ray hero shafts BEFORE the shells go up, so the ceiling
+	# field can leave the aperture cell open — a shaft is a hole with a light behind
+	# it, and the hole is not optional (INTEGRATION2 §4).
+	_plan_shafts()
+
 	_rects.resize(graph.rooms.size())
 	for room: Dictionary in graph.rooms:
 		_rects[int(room["index"])] = kit_room(room)
@@ -152,6 +171,11 @@ func _build_content() -> void:
 
 	for room: Dictionary in graph.rooms:
 		_light_room(room)
+		# M4.95: one box-projected interior ReflectionProbe per room — free light in
+		# a darkness-law game (a reflection adds apparent brightness without a lumen),
+		# and the trim/corner modules that kill the wall/floor greybox seam.
+		_add_probe(room)
+		_trim_room(room)
 	for corridor: Dictionary in graph.corridors:
 		_light_corridor(corridor)
 
@@ -179,8 +203,9 @@ func _build_content() -> void:
 	_place_props()
 
 	var draws: int = _clutter.flush()
-	clutter_note = " clutter=[%s] batched=%d%s" % [
-		_clutter.describe(), draws, _prop_note]
+	draws += _flush_trim()
+	clutter_note = " clutter=[%s] batched=%d shafts=%d%s" % [
+		_clutter.describe(), draws, _shaft_specs.size(), _prop_note]
 
 
 ## The shell a room actually got, rather than the rect the generator asked for.
@@ -403,6 +428,15 @@ func _light_room(room: Dictionary) -> void:
 	var reach: float = span + 8.0
 	var index: int = int(room["index"])
 
+	# M4.95: when a hero shaft is the room's key light, its other fixtures must not
+	# front-light the figure standing in the shaft (§4 rule 3: "a figure standing in
+	# front of a light rather than in front of a window"). So the washes drop to 55%
+	# and the keys to 40% — the shaft becomes the room's key and everything else
+	# recedes, which is what silhouettes the crew and creatures against it.
+	var has_shaft: bool = _shaft_specs.has(index)
+	var shaft_accent: float = 0.55 if has_shaft else 1.0
+	var shaft_key: float = 0.40 if has_shaft else 1.0
+
 	# --- wall wash ---------------------------------------------------------
 	#
 	# One grazing light per wall, mounted low and close to that wall and aimed
@@ -420,7 +454,7 @@ func _light_room(room: Dictionary) -> void:
 		var wash: SpotLight3D = LightRig.accent(_fixtures,
 				_wall_point(rect, side, 0.85, _rng.randf_range(2.4, 3.2), start),
 				_wall_point(rect, side, 0.35, _rng.randf_range(1.0, 1.8), finish),
-				(_rng.randf_range(2.1, 3.0) + boost * 0.5) * light_scale,
+				(_rng.randf_range(2.1, 3.0) + boost * 0.5) * light_scale * shaft_accent,
 				LightRig.AMBER if warm else LightRig.KEY_COLD,
 				# NARROW, not wide. A 70-degree cone is the showcase's number, and
 				# it is right for a 10 m wall; pointed 24 m down a generated room's
@@ -452,7 +486,7 @@ func _light_room(room: Dictionary) -> void:
 		var target: Vector3 = _wall_point(rect, side, 0.3, _rng.randf_range(0.9, 1.6),
 				along + 0.6)
 		var key: SpotLight3D = LightRig.key(_fixtures, mount, target,
-				(_rng.randf_range(3.6, 5.0) + boost * 0.8) * light_scale,
+				(_rng.randf_range(3.6, 5.0) + boost * 0.8) * light_scale * shaft_key,
 				gobos[i % gobos.size()], _rng.randf_range(42.0, 52.0),
 				LightRig.AMBER if warm else LightRig.KEY_COLD, reach)
 		key.name = "Key_r%d_%d" % [index, i]
@@ -461,16 +495,32 @@ func _light_room(room: Dictionary) -> void:
 
 	# --- hero shaft --------------------------------------------------------
 	#
-	# One aperture cone straight down at the middle of the room. Unshadowed on
-	# purpose: its job is the volumetric shaft through the haze, and a shadow map
-	# for a light pointing at an empty floor is the most expensive way in the
-	# engine to buy nothing.
-	LightRig.key(_fixtures, Vector3(mid.x, height - 0.4, mid.y),
-			Vector3(mid.x, 0.0, mid.y),
-			(_rng.randf_range(2.2, 3.4) + boost * 0.7) * light_scale,
-			LightRig.GOBO_APERTURE, _rng.randf_range(46.0, 58.0),
-			LightRig.AMBER if warm else LightRig.KEY_COLD,
-			height + 6.0, false).name = "Key_shaft_r%d" % index
+	# M4.95: the two-storey special rooms planned in `_plan_shafts` get the FULL
+	# god-ray unit — a real hole in the ceiling, a slotted aperture plate whose
+	# slats CAST into the beam, the raked cold light, a LOCAL fog volume and dust
+	# motes for scale (GodRays.hero_shaft). The two numbers that hold the darkness
+	# law: LOW light_energy (it lights the floor pool, not the walls) and HIGH fog
+	# energy (the shaft is bright because the AIR is, not the room). Depth dims
+	# both, but never below readable. Every other room keeps the cheap aperture
+	# cone below — a gobo'd shaft through the haze with no physical opening.
+	if has_shaft:
+		var spec: Dictionary = _shaft_specs[index]
+		GodRays.hero_shaft(_geometry, _fixtures, _fixtures,
+				spec["pos"] as Vector3, float(spec["ceiling"]),
+				Vector2(1.5, 3.2), Vector3(1.4, 0.0, 0.6),
+				(2.2 + boost * 0.4) * clampf(light_scale, 0.62, 1.0),
+				3, 9.0 * clampf(light_scale, 0.7, 1.0))
+	else:
+		# One aperture cone straight down at the middle of the room. Unshadowed on
+		# purpose: its job is the volumetric shaft through the haze, and a shadow
+		# map for a light pointing at an empty floor is the most expensive way in
+		# the engine to buy nothing.
+		LightRig.key(_fixtures, Vector3(mid.x, height - 0.4, mid.y),
+				Vector3(mid.x, 0.0, mid.y),
+				(_rng.randf_range(2.2, 3.4) + boost * 0.7) * light_scale,
+				LightRig.GOBO_APERTURE, _rng.randf_range(46.0, 58.0),
+				LightRig.AMBER if warm else LightRig.KEY_COLD,
+				height + 6.0, false).name = "Key_shaft_r%d" % index
 
 	# --- ceiling wash ------------------------------------------------------
 	#
@@ -498,6 +548,162 @@ func _light_room(room: Dictionary) -> void:
 		LightRig.practical(_fixtures, Vector3(at.x, _rng.randf_range(2.0, 3.0), at.y),
 				_rng.randf_range(0.35, 0.7) * light_scale,
 				_rng.randf_range(4.0, 6.0), colour).name = "Practical_r%d_%d" % [index, i]
+
+
+# ------------------------------------------------------------- M4.95 filmic --
+#
+# God-ray hero shafts, per-room reflection probes, and the trim/corner modules
+# that kill the wall/floor greybox seam. All three are deterministic — driven by
+# archetype, room geometry and position, never `_rng` — so the layer a peer sees
+# matches every other peer's exactly.
+
+## Choose up to MAX_SHAFTS two-storey special rooms for a god-ray and mark each
+## one's aperture cell, so the ceiling field (built next) leaves it open. Runs
+## before the shells; consumed later by `_light_room`.
+func _plan_shafts() -> void:
+	ceiling_apertures.clear()
+	_shaft_specs.clear()
+	for room: Dictionary in graph.rooms:
+		if _shaft_specs.size() >= MAX_SHAFTS:
+			break
+		if bool(room.get("unlit", false)):
+			continue
+		var arch: String = String(room["archetype"])
+		if arch != LayerGraph.VAULT and arch != LayerGraph.SHAFT \
+				and arch != LayerGraph.BACKDOOR:
+			continue
+		# Two-storey volume only: an 8 m shaft cannot be composed at the player's FOV
+		# from inside a 4 m room without aiming the camera up (§4 rule 2).
+		if _height_of(room) < STOREY * 2.0 - 0.1:
+			continue
+		var rect: Rect2 = kit_rect(room["min"], room["max"])
+		# Enough room around the aperture to frame the shaft and keep its fog box off
+		# the walls.
+		if rect.size.x < CELL * 2.5 or rect.size.y < CELL * 2.5:
+			continue
+		var mid: Vector2 = rect.position + rect.size * 0.5
+		# snap_slot lands on the same {CELL/2 + n*CELL} lattice the ceiling field
+		# uses, so the omitted cell and the aperture plate line up exactly.
+		var cell: Vector2 = Vector2(snap_slot(mid.x), snap_slot(mid.y))
+		var index: int = int(room["index"])
+		ceiling_apertures[index] = cell
+		_shaft_specs[index] = {
+			"pos": Vector3(cell.x, 0.0, cell.y),
+			"ceiling": _height_of(room),
+		}
+
+
+## One box-projected, interior ReflectionProbe per lit room (INTEGRATION2 §5). SSR
+## only reflects what is on screen; the probe fills the hole — the bright emissive
+## strip behind the camera that SSR cannot see. UPDATE_ONCE because the geometry
+## never moves; the atlas count is capped in project.godot, and THAT is the VRAM
+## cost, not the probes.
+func _add_probe(room: Dictionary) -> void:
+	if bool(room.get("unlit", false)):
+		return
+	var rect: Rect2 = _rect_of(room)
+	var height: float = _height_of(room)
+	var mid: Vector2 = rect.position + rect.size * 0.5
+	var probe: ReflectionProbe = ReflectionProbe.new()
+	probe.name = "Probe_r%d" % int(room["index"])
+	probe.position = Vector3(mid.x, height * 0.98, mid.y)
+	probe.size = Vector3(rect.size.x, height, rect.size.y)
+	# Capture from eye height, not the ceiling: a cubemap shot from 8 m up reflects
+	# the tops of everything and a room the player never stands in.
+	probe.origin_offset = Vector3(0.0, -height * 0.98 + 1.7, 0.0)
+	probe.box_projection = true
+	probe.interior = true
+	probe.enable_shadows = false
+	probe.max_distance = 48.0
+	probe.update_mode = ReflectionProbe.UPDATE_ONCE
+	_fixtures.add_child(probe)
+
+
+## Baseboards along every wall at the floor line, plus a vertical post at every
+## corner — the kit trim that kills the wall/floor and wall/wall greybox seams.
+## Collected into per-module batches and flushed into MultiMeshes by `_flush_trim`.
+func _trim_room(room: Dictionary) -> void:
+	if not KitLib.has("BASEBOARD_4M"):
+		return
+	var rect: Rect2 = _rect_of(room)
+	var doors: Array = room.get("doors", []) as Array
+	# Yaws match the wall runs in kit_room, so a baseboard's detailed +Z face lands
+	# against the same wall face the modules above it show.
+	_baseboard_run("x", rect.position.y, rect.position.x, rect.end.x, 0.0,
+			_door_centres(doors, "n"))
+	_baseboard_run("x", rect.end.y, rect.position.x, rect.end.x, 180.0,
+			_door_centres(doors, "s"))
+	_baseboard_run("z", rect.position.x, rect.position.y, rect.end.y, 90.0,
+			_door_centres(doors, "w"))
+	_baseboard_run("z", rect.end.x, rect.position.y, rect.end.y, -90.0,
+			_door_centres(doors, "e"))
+	if KitLib.has("CORNER_TRIM_V"):
+		# Yaw orients the post's two 35 mm faces onto the two walls meeting at the
+		# corner: NW faces +X/+Z (yaw 0), and round from there.
+		_trim_at("CORNER_TRIM_V", Vector3(rect.position.x, 0.0, rect.position.y), 0.0)
+		_trim_at("CORNER_TRIM_V", Vector3(rect.position.x, 0.0, rect.end.y), 90.0)
+		_trim_at("CORNER_TRIM_V", Vector3(rect.end.x, 0.0, rect.position.y), -90.0)
+		_trim_at("CORNER_TRIM_V", Vector3(rect.end.x, 0.0, rect.end.y), 180.0)
+
+
+## Snapped doorway centres on one wall, so a 4 m baseboard is not laid across a
+## doorway.
+func _door_centres(doors: Array, wall: String) -> Array:
+	var out: Array = []
+	for door: Dictionary in doors:
+		if String(door.get("wall", "")) == wall:
+			out.append(GeometryKit.snap_slot(float(door.get("at", 0.0))))
+	return out
+
+
+func _baseboard_run(axis: String, fixed: float, from: float, to: float,
+		yaw: float, doors: Array) -> void:
+	var t: float = from + CELL * 0.5
+	while t < to - 0.01:
+		var is_door: bool = false
+		for d: float in doors:
+			if absf(t - d) < CELL * 0.5:
+				is_door = true
+		if not is_door:
+			var pos: Vector3 = Vector3(t, 0.0, fixed) if axis == "x" \
+					else Vector3(fixed, 0.0, t)
+			_trim_at("BASEBOARD_4M", pos, yaw)
+		t += CELL
+
+
+func _trim_at(module: String, pos: Vector3, yaw_deg: float) -> void:
+	if not _trim_batches.has(module):
+		_trim_batches[module] = [] as Array[Transform3D]
+	(_trim_batches[module] as Array[Transform3D]).append(
+			Transform3D(Basis.from_euler(Vector3(0.0, deg_to_rad(yaw_deg), 0.0)), pos))
+
+
+## Flush the collected trim into one MultiMeshInstance3D per module. The trim mesh
+## carries its own per-surface materials (M_PanelDark / M_PanelTrim), so there is
+## no material_override and the whole layer's baseboards cost one draw call per
+## surface instead of one per baseboard. Returns the draw calls added.
+func _flush_trim() -> int:
+	var draws: int = 0
+	for module: String in _trim_batches:
+		var xforms: Array = _trim_batches[module] as Array
+		var mesh: Mesh = KitLib.mesh(module)
+		if xforms.is_empty() or mesh == null:
+			continue
+		var mm: MultiMesh = MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = mesh
+		mm.instance_count = xforms.size()
+		for i: int in xforms.size():
+			mm.set_instance_transform(i, xforms[i] as Transform3D)
+		var inst: MultiMeshInstance3D = MultiMeshInstance3D.new()
+		inst.name = "Trim_%s" % module
+		inst.multimesh = mm
+		inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		inst.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+		_geometry.add_child(inst)
+		draws += mesh.get_surface_count()
+	_trim_batches.clear()
+	return draws
 
 
 ## A point on one of a rect's four walls. `side` is 0=north(-Z) 1=east(+X)
@@ -868,13 +1074,22 @@ func _scatter_blocks(room: Dictionary, count: int, min_size: float, max_size: fl
 #   SANCTUARY    tidy. DESIGN.md makes this the one place you can stop running,
 #                and a room you can breathe in is a room somebody swept.
 const DENSITY: Dictionary = {
-	"bus": {"cables": 3, "pipes": 2, "rubble": 3, "crates": 2, "grime": 3, "husk": 0.34},
-	"nest": {"cables": 3, "pipes": 1, "rubble": 5, "crates": 1, "grime": 4, "husk": 0.5},
-	"siphon": {"cables": 2, "pipes": 3, "rubble": 2, "crates": 1, "grime": 3, "husk": 0.12},
-	"vault": {"cables": 2, "pipes": 1, "rubble": 0, "crates": 0, "grime": 1, "husk": 0.0},
-	"arrival": {"cables": 2, "pipes": 1, "rubble": 1, "crates": 1, "grime": 1, "husk": 0.0},
-	"shaft": {"cables": 2, "pipes": 2, "rubble": 2, "crates": 1, "grime": 2, "husk": 0.2},
-	"backdoor": {"cables": 1, "pipes": 0, "rubble": 0, "crates": 0, "grime": 1, "husk": 0.0},
+	"bus": {"cables": 3, "pipes": 2, "rubble": 3, "crates": 2, "grime": 3, "husk": 0.34,
+			"islands": 1, "ducts": 2},
+	"nest": {"cables": 3, "pipes": 1, "rubble": 5, "crates": 1, "grime": 4, "husk": 0.5,
+			"islands": 1, "ducts": 1},
+	"siphon": {"cables": 2, "pipes": 3, "rubble": 2, "crates": 1, "grime": 3, "husk": 0.12,
+			"islands": 1, "ducts": 2},
+	"vault": {"cables": 2, "pipes": 1, "rubble": 0, "crates": 0, "grime": 1, "husk": 0.0,
+			"islands": 0, "ducts": 1},
+	"arrival": {"cables": 2, "pipes": 1, "rubble": 1, "crates": 1, "grime": 1, "husk": 0.0,
+			"islands": 0, "ducts": 1},
+	"shaft": {"cables": 2, "pipes": 2, "rubble": 2, "crates": 1, "grime": 2, "husk": 0.2,
+			"islands": 1, "ducts": 2},
+	# The sanctuary stays tidy — DESIGN.md's one place you can breathe is a place
+	# somebody swept — so no machinery islands and no slung ducts.
+	"backdoor": {"cables": 1, "pipes": 0, "rubble": 0, "crates": 0, "grime": 1, "husk": 0.0,
+			"islands": 0, "ducts": 0},
 }
 
 
@@ -950,6 +1165,65 @@ func _clutter_room(room: Dictionary) -> void:
 	var husk_at: Vector3 = _clutter_spot(rect, centre, index * 17, 4441)
 	if _clutter.roll(husk_at, 4483) < float(density["husk"]):
 		_clutter.drone_husk(husk_at, _clutter.roll(husk_at, 4519) * TAU)
+
+	# --- machinery island, cable-fed from a wall junction (MOTIVATION LAW) -----
+	# A routed source->load: a junction box on a wall feeds a machine standing in
+	# the room's midground, the cable arcing between them on a true catenary and
+	# VIBRATING because the machine runs. In the same band as the crates, kept off
+	# doors and the crew's props, so the reading lanes and navigation are untouched.
+	if int(density.get("islands", 0)) > 0:
+		var m_at: Vector3 = _clutter_spot(rect, centre, index * 19 + 5, 4601)
+		if not _blocks_a_door(m_at, doors, rect) and not _blocks_a_prop(m_at):
+			var m_side: int = _nearest_wall(rect, m_at)
+			var src: Vector3 = _wall_point(rect, m_side, WALL_PROP_INSET, 1.9,
+					_wall_along(rect, m_side, m_at))
+			var m_yaw: float = atan2(src.x - m_at.x, src.z - m_at.z)
+			var fp: Vector3 = _clutter.machinery_island(m_at, m_yaw, src)
+			var shape: CollisionShape3D = CollisionShape3D.new()
+			var box: BoxShape3D = BoxShape3D.new()
+			box.size = Vector3(fp.x * 1.1, fp.y, fp.z * 1.1)
+			shape.shape = box
+			shape.position = m_at + Vector3(0.0, fp.y * 0.5, 0.0)
+			shape.rotation.y = m_yaw
+			_colliders.add_child(shape)
+
+	# --- overhead ceiling runs ------------------------------------------------
+	# Cable bundles slung across the ceiling, so it reads as worked-on and a beam
+	# sweeping up finds something. They SWAY only where this room has a god-ray
+	# aperture — a real draught down an open shaft; everywhere else they hang dead
+	# still, because a sealed bay has no wind (MOTION FOLLOWS CAUSE).
+	var duct_motion: int = ClutterLib.Motion.SWAY if _shaft_specs.has(index) \
+			else ClutterLib.Motion.DEAD
+	for i: int in int(density.get("ducts", 0)):
+		var a: Vector3 = _wall_point(rect, (index + i) % 4, 0.5, height - 0.45,
+				0.28 + 0.14 * float(i))
+		var b: Vector3 = _wall_point(rect, (index + i + 2) % 4, 0.5, height - 0.45,
+				0.72 - 0.14 * float(i))
+		_clutter.ceiling_run(a, b, duct_motion)
+
+
+## Which of a rect's four walls is nearest a point (0=N 1=E 2=S 3=W).
+func _nearest_wall(rect: Rect2, at: Vector3) -> int:
+	var dn: float = at.z - rect.position.y
+	var ds: float = rect.end.y - at.z
+	var dw: float = at.x - rect.position.x
+	var de: float = rect.end.x - at.x
+	var m: float = minf(minf(dn, ds), minf(dw, de))
+	if m == dn:
+		return 0
+	if m == de:
+		return 1
+	if m == ds:
+		return 2
+	return 3
+
+
+## The 0..1 position along a wall nearest a point's projection, kept off the very
+## corners.
+func _wall_along(rect: Rect2, side: int, at: Vector3) -> float:
+	if side % 2 == 0:
+		return clampf(inverse_lerp(rect.position.x, rect.end.x, at.x), 0.12, 0.88)
+	return clampf(inverse_lerp(rect.position.y, rect.end.y, at.z), 0.12, 0.88)
 
 
 ## A run along one wall of a rect, inset from both corners, plus that wall's

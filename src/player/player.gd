@@ -238,6 +238,9 @@ var _dip_pitch: float = 0.0
 var _fov_kick: float = 0.0
 ## 0..1 how tucked the breaker is against a near wall. See WEAPON_CLEAR.
 var _tuck: float = 0.0
+## Latches the once-per-run muzzle-alignment diagnostic (`--log-ai`). See
+## `_log_muzzle_alignment` — the M4.95 muzzle-coincidence measurement.
+var _muzzle_aligned_logged: bool = false
 
 # --- beam dust ---------------------------------------------------------------
 ## Motes drifting in the beam cone. Local player only; see `_build_beam_dust`.
@@ -495,11 +498,16 @@ func _apply_identity() -> void:
 	visor.material_override = visor_mat
 
 	beam.light_color = Color(0.86, 0.9, 1.0).lerp(player_color, 0.18)
-	var beam_mat: StandardMaterial3D = beam_cone.material_override as StandardMaterial3D
+	# The cone is a ShaderMaterial (nv_beam) since M4.95. Duplicate it per player
+	# and tint the `beam_color` uniform rather than an albedo — the shader owns the
+	# additive profile, so only the colour is per-player. Preserved from the old
+	# StandardMaterial path: each avatar's cone still reads as its owner's colour,
+	# which is how you tell whose beam swept past in the dark.
+	var beam_mat: ShaderMaterial = beam_cone.material_override as ShaderMaterial
 	if beam_mat != null:
-		var tinted: StandardMaterial3D = beam_mat.duplicate() as StandardMaterial3D
-		tinted.albedo_color = Color(0.7, 0.8, 1.0).lerp(player_color, 0.25)
-		tinted.albedo_color.a = beam_mat.albedo_color.a
+		var tinted: ShaderMaterial = beam_mat.duplicate() as ShaderMaterial
+		tinted.set_shader_parameter("beam_color",
+				Color(0.7, 0.8, 1.0).lerp(player_color, 0.25))
 		beam_cone.material_override = tinted
 
 
@@ -711,9 +719,17 @@ func _update_breaker(frozen: bool) -> void:
 	var from: Vector3 = camera.global_position
 	var basis: Basis = camera.global_transform.basis
 	var direction: Vector3 = -basis.z
-	var muzzle: Vector3 = from + basis * MUZZLE_OFFSET
+	# The streak leaves the Surge's ACTUAL emitter, not a point floating near the
+	# lens: `_muzzle_point` returns the socketed rifle's muzzle when embodied (the
+	# same node `_fire_muzzle` lights), so the drawn lash, the muzzle flash and the
+	# emitter glow all agree at the barrel tip. Until M4.95 this was a hardcoded
+	# `from + basis * MUZZLE_OFFSET`, which put the lash origin a hand's width off
+	# the emitter — see `_log_muzzle_alignment` for the measured gap.
+	var muzzle: Vector3 = _muzzle_point(from, basis)
 
 	_breaker.pull_trigger()
+	# Light the barrel on the same frame as the lash, before the host round-trip.
+	_fire_muzzle()
 	# Predicted endpoint, drawn this frame. The host re-casts the same ray and
 	# decides what actually died — this is only where the streak stops.
 	var aimed: Antivirus = Antivirus.pick_target(
@@ -721,6 +737,8 @@ func _update_breaker(frozen: bool) -> void:
 			_breaker_range())
 	_breaker.show_lash(muzzle, _breaker_endpoint(from, direction))
 	add_shake(0.22)
+	if Debug.log_ai:
+		_log_muzzle_alignment(from, basis, muzzle)
 	# Crosshair feedback, predicted off the same target selection the lash uses.
 	# The kill half of it waits for the host (see `show_breaker_shot`).
 	Run.local_shot.emit(aimed != null, false)
@@ -813,6 +831,36 @@ func _muzzle_point(from: Vector3, basis: Basis) -> Vector3:
 	return from + basis * MUZZLE_OFFSET
 
 
+## Lights the muzzle the instant the trigger is pulled — the socketed Surge when
+## embodied, the fallback viewmodel otherwise. Called immediately from
+## `_update_breaker` rather than waiting for the host's `show_breaker_shot`
+## round-trip, so the flash lands on the same frame as the lash it belongs to.
+func _fire_muzzle() -> void:
+	if _avatar != null and is_instance_valid(_avatar) and _avatar.is_loaded():
+		_avatar.fire()
+	elif _view_model != null and is_instance_valid(_view_model):
+		_view_model.fire()
+
+
+## `--log-ai` diagnostic, printed once per run: how far the pre-M4.95 hardcoded
+## MUZZLE_OFFSET lash origin sat from the real emitter the lash now leaves — in
+## world metres and in screen pixels. The muzzle-coincidence measurement the
+## milestone asked for. Purely a measurement; changes nothing.
+func _log_muzzle_alignment(from: Vector3, basis: Basis, muzzle: Vector3) -> void:
+	if _muzzle_aligned_logged:
+		return
+	_muzzle_aligned_logged = true
+	var legacy: Vector3 = from + basis * MUZZLE_OFFSET
+	var legacy_s: Vector2 = camera.unproject_position(legacy)
+	var muzzle_s: Vector2 = camera.unproject_position(muzzle)
+	print("[MuzzleAlign] legacy MUZZLE_OFFSET world=%s screen=%s" % [
+		str(legacy.snapped(Vector3.ONE * 0.001)), str(legacy_s.round())])
+	print("[MuzzleAlign] emitter (lash origin) world=%s screen=%s" % [
+		str(muzzle.snapped(Vector3.ONE * 0.001)), str(muzzle_s.round())])
+	print("[MuzzleAlign] gap: %.3f m in world, %.1f px on screen — lash now leaves the emitter (0 px)" % [
+		legacy.distance_to(muzzle), legacy_s.distance_to(muzzle_s)])
+
+
 ## Where the streak stops: whatever the cutter is pointing at, or the wall behind
 ## it. Same target selection the host runs, so the prediction is not a guess.
 func _breaker_endpoint(from: Vector3, direction: Vector3) -> Vector3:
@@ -849,7 +897,16 @@ func throw_flare() -> void:
 ## drawn its own lash a round trip ago and only wants the kill confirmation.
 func show_breaker_shot(origin: Vector3, endpoint: Vector3, killed: bool, mine: bool) -> void:
 	if not mine:
-		_breaker.show_lash(origin, endpoint)
+		# A crewmate's shot, on your screen. Draw the lash from THIS copy's own
+		# view of their barrel tip — the socketed Surge's muzzle — and flash that
+		# muzzle, so a remote shot leaves the barrel exactly the way your own does.
+		# `origin` is the camera point the host echoed (inside the shooter's head);
+		# the authoritative `endpoint` is untouched, only the cosmetic origin moves.
+		var barrel: Vector3 = origin
+		if _avatar != null and is_instance_valid(_avatar) and _avatar.is_loaded():
+			barrel = _avatar.muzzle_point()
+			_avatar.fire()
+		_breaker.show_lash(barrel, endpoint)
 		return
 	if killed:
 		add_shake(0.85)

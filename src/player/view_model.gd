@@ -75,6 +75,19 @@ const FLASH_TIME: float = 0.09
 ## reads as a discharge rather than as a dimmer.
 const MUZZLE_FLASH_ENERGY: float = 2.6
 
+## SAFETY-CRITICAL (limbo-a11y 01-photosensitivity). The breaker fires as fast as
+## Balance.BREAKER_COOLDOWN allows — ~3.85 Hz at 0.26 s — which is OVER the WCAG
+## 2.3.1 ceiling of three general flashes a second. The muzzle flash is a real
+## world-casting light (until M4.95 `fire()` was never called, so this only became
+## live this milestone), and a held trigger would strobe the room above the line.
+##
+## The governor guarantees at most one FULL room flash per this interval: >1/3 s,
+## so <=3 Hz UNCONDITIONALLY, with Reduced Flashing OFF (the ship gate). A shot
+## that lands inside the interval keeps its emitter glow and its lash — the shot
+## still reads — but its room-casting light is gated off. Independently, the room
+## light is scaled by A11y.flash_scale, so Reduced Flashing calms it toward 0.
+const MUZZLE_FLASH_MIN_INTERVAL: float = 0.34
+
 ## Weapon collision: where the hold ends up when a wall is right in front of the
 ## lens. Down, back, and canted over — the same gesture the avatar's chest makes.
 const TUCK_POSITION: Vector3 = Vector3(0.06, -0.19, 0.30)
@@ -95,6 +108,11 @@ var _tuck: float = 0.0
 var _recoil: float = 0.0
 var _recoil_velocity: float = 0.0
 var _flash: float = 0.0
+## Flash-rate governor state (see MUZZLE_FLASH_MIN_INTERVAL). `_since_full_flash`
+## counts up in `drive`; `_room_gate` is 1 for a shot allowed a full room flash,
+## 0 for one suppressed by the rate cap. Starts large so the first shot flashes.
+var _since_full_flash: float = 10.0
+var _room_gate: float = 0.0
 var _last_yaw: float = 0.0
 var _last_pitch: float = 0.0
 
@@ -198,6 +216,15 @@ func set_tuck(amount: float) -> void:
 func fire() -> void:
 	_recoil_velocity += RECOIL_RETURN * RECOIL_KICK
 	_flash = FLASH_TIME
+	# Rate governor: only a shot at least MUZZLE_FLASH_MIN_INTERVAL after the last
+	# full one gets a full ROOM flash. A too-soon shot still lights the emitter and
+	# draws its lash below — it just does not throw a fresh light on the walls, so
+	# a held trigger stays under the WCAG flash ceiling.
+	if _since_full_flash >= MUZZLE_FLASH_MIN_INTERVAL:
+		_room_gate = 1.0
+		_since_full_flash = 0.0
+	else:
+		_room_gate = 0.0
 
 
 ## `look` is the lens's current (yaw, pitch); `lateral` is the strafe component
@@ -228,6 +255,7 @@ func drive(delta: float, look: Vector2, lateral: float, bob: Vector3) -> void:
 			_sway.x * 0.09,
 			-_sway.x * 0.06)
 
+	_since_full_flash += delta
 	_flash = maxf(_flash - delta, 0.0)
 	var heat: float = _flash / FLASH_TIME
 	if _emitter_material != null:
@@ -235,8 +263,11 @@ func drive(delta: float, look: Vector2, lateral: float, bob: Vector3) -> void:
 		# which is most of what stops it reading as a prop.
 		_emitter_material.emission_energy_multiplier = 1.1 + heat * 2.8
 	if _flash_light != null:
-		# The flash is now a real light on the world as well as on the weapon:
-		# energy well above the emitter's own glow, a short reach, and a heavy fog
+		# The flash is a real light on the world as well as on the weapon: energy
+		# well above the emitter's own glow, a short reach, and a heavy fog
 		# contribution so a shot fired into a dark corridor puts one frame of
 		# structure on the walls beside you. See CrewAvatar for the socketed twin.
-		_flash_light.light_energy = heat * heat * MUZZLE_FLASH_ENERGY
+		# Gated by the flash-rate governor (`_room_gate`, 0 on a too-soon shot) and
+		# scaled by A11y.flash_scale — SAFETY-CRITICAL, see MUZZLE_FLASH_MIN_INTERVAL.
+		_flash_light.light_energy = heat * heat * MUZZLE_FLASH_ENERGY \
+				* _room_gate * A11y.flash_scale

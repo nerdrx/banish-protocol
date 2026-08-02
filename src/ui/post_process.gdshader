@@ -42,6 +42,39 @@ uniform float vignette_intensity : hint_range(0.0, 2.0) = 0.78;
 uniform float vignette_inner : hint_range(0.0, 1.0) = 0.30;
 uniform float vignette_outer : hint_range(0.0, 1.5) = 0.92;
 uniform float corner_desaturate : hint_range(0.0, 1.0) = 0.24;
+// M4.95 (filmic pass) vignette refinement (INTEGRATION2 §7).
+//   aspect   1.0 = circular in SCREEN space (a lens); 0.0 = the old uv-space
+//            ellipse that pretended to be one on a 16:9 frame.
+//   falloff  exponent on the darkening ramp. A smoothstep has a knee that shows
+//            as a faint ring on a flat dark wall — the single most common "why
+//            does the frame look cheap" artefact in a near-black game. A power
+//            curve has no knee.
+//   shift    nudges the centre down a hair, where an operator frames a subject.
+uniform float vignette_aspect : hint_range(0.0, 1.0) = 1.0;
+uniform float vignette_falloff : hint_range(0.6, 4.0) = 1.85;
+uniform float vignette_shift : hint_range(-0.2, 0.2) = 0.03;
+
+// --- M4.95: depth-band colour-grading LUTs -----------------------------------
+// The FILMIC pass's grade. Two 32^3 strip LUTs (tools/make_luts.py) and a blend,
+// so a descent CROSS-FADES its grade from one depth band to the next over
+// seconds instead of cutting. Layer._apply_environment picks the two bands
+// (surface / mid / deep) and drives lut_mix from the layer number. This REPLACES
+// the Environment's adjustment grade (which is now disabled) — grading twice is
+// how an image is crushed with nobody able to say which stage did it.
+uniform sampler2D lut_a : hint_default_black, repeat_disable, filter_linear;
+uniform sampler2D lut_b : hint_default_black, repeat_disable, filter_linear;
+uniform float lut_mix : hint_range(0.0, 1.0) = 0.0;
+uniform float lut_amount : hint_range(0.0, 1.0) = 0.0;
+uniform float lut_size = 32.0;
+
+// --- M4.95: cinematic exposure -----------------------------------------------
+// A per-depth-band offset in stops (0 = unchanged) and an optional very slow
+// breath on top — an iris hunting in near-darkness, not a pulse. Measured ALONE
+// this pass makes the game DARKER (INTEGRATION2 §7): surface +0.10 EV drifting to
+// deep -0.22 EV. Deliberately near the threshold of perception.
+uniform float exposure : hint_range(-2.0, 2.0) = 0.0;
+uniform float exposure_breathe : hint_range(0.0, 0.3) = 0.0;
+uniform float exposure_breathe_hz = 0.055;
 
 uniform float grain_amount : hint_range(0.0, 0.2) = 0.040;
 uniform float grain_chroma : hint_range(0.0, 1.0) = 0.35;
@@ -49,7 +82,12 @@ uniform float grain_peak : hint_range(0.0, 1.0) = 0.22;   // luma the grain peak
 uniform float grain_spread : hint_range(0.02, 1.0) = 0.30;
 
 uniform float aberration : hint_range(0.0, 0.02) = 0.0011;
-uniform float aberration_edge : hint_range(0.0, 8.0) = 1.6;
+// M4.95: down from 1.6. An edge-weighted CA fires on local contrast, and a 20 mm
+// emissive inlay seen edge-on is nothing BUT local contrast, so at 1.6 (tuned
+// against a doorframe) it rainbow-fringed the kit's thin traces. The baked kit is
+// full of them; 1.0 keeps the doorframe fringe and drops the trace fringe
+// (INTEGRATION2 §12).
+uniform float aberration_edge : hint_range(0.0, 8.0) = 1.0;
 
 uniform float sharpen : hint_range(0.0, 1.5) = 0.42;
 
@@ -81,6 +119,28 @@ float hash11(float p) {
 
 float luma(vec3 c) {
 	return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// Sample a 3D LUT stored as a horizontal strip of `size` slices.
+//
+// The blue axis selects the slice and is interpolated MANUALLY, because hardware
+// filtering across a strip would bleed the last column of one slice into the
+// first column of the next — a wrong colour on the diagonal of the cube, which
+// shows as a magenta tint on exactly the mid-greys that make up most of this
+// game's frame. The +0.5/(size*size) half-texel inset is not optional either:
+// without it the R axis samples off the ends of each slice and the LUT clips its
+// own black and white points.
+vec3 lut_sample(sampler2D tex, vec3 c, float size) {
+	c = clamp(c, vec3(0.0), vec3(1.0));
+	float slice = 1.0 / size;
+	float u = (c.r * (size - 1.0) + 0.5) / (size * size);
+	float v = (c.g * (size - 1.0) + 0.5) / size;
+	float zf = c.b * (size - 1.0);
+	float z0 = floor(zf);
+	float z1 = min(z0 + 1.0, size - 1.0);
+	vec3 s0 = texture(tex, vec2(u + z0 * slice, v)).rgb;
+	vec3 s1 = texture(tex, vec2(u + z1 * slice, v)).rgb;
+	return mix(s0, s1, zf - z0);
 }
 
 void fragment() {
@@ -158,10 +218,37 @@ void fragment() {
 	float dark = 1.0 - smoothstep(0.0, 0.08, luma(color));
 	color += shadow_tint * shadow_lift * dark * intensity;
 
+	// --- M4.95: cinematic exposure -----------------------------------------
+	// Before the LUT, because a LUT is a print curve and expects the exposure it
+	// was graded for; doing it after would move the image across a transform
+	// authored for a different black point.
+	float ev = exposure;
+	if (exposure_breathe > 0.0001) {
+		// SAFETY (a11y): a 0.055 Hz drift of a fraction of a stop is far below any
+		// flash threshold and is an amplitude change, not a flash — left unscaled.
+		ev += sin(TIME * exposure_breathe_hz * 6.2831853) * exposure_breathe;
+	}
+	color *= exp2(ev);
+
+	// --- M4.95: depth-band colour-grading LUT ------------------------------
+	if (lut_amount > 0.001) {
+		vec3 graded = mix(lut_sample(lut_a, color, lut_size),
+						  lut_sample(lut_b, color, lut_size), lut_mix);
+		color = mix(color, graded, lut_amount * intensity);
+	}
+
 	// --- vignette + corner desaturation ------------------------------------
+	// M4.95: aspect-corrected radius and a POWER falloff instead of a smoothstep.
+	// `dist` above stays uv-space for the CA offset (the fringe follows the
+	// sensor, not the lens barrel); the vignette gets its own screen-space radius.
+	vec2 vc = centered;
+	vc.x *= mix(1.0, SCREEN_PIXEL_SIZE.y / SCREEN_PIXEL_SIZE.x, vignette_aspect);
+	vc.y += vignette_shift;
+	float vdist = length(vc) * 1.414;
 	float inner = mix(vignette_inner, 0.02, fail);
 	float outer = mix(vignette_outer, 0.30, fail);
-	float vig = 1.0 - smoothstep(inner, outer, dist);
+	float vt = clamp((vdist - inner) / max(outer - inner, 0.001), 0.0, 1.0);
+	float vig = 1.0 - pow(vt, vignette_falloff);
 	float amount = vignette_intensity * intensity * (1.0 + stress * 0.8 + fail * 0.6);
 	color *= mix(clamp(1.0 - amount, 0.0, 1.0), 1.0, vig);
 

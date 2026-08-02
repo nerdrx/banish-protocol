@@ -88,6 +88,12 @@ const WALL_VARIANTS: Array = [
 var _geometry: Node3D
 var _colliders: StaticBody3D
 var _fixtures: Node3D
+## M4.95: ceiling cells to OMIT from the ceiling field, so a god-ray aperture has
+## a real hole to shine through — "a shaft is a hole with a light behind it", and
+## the generator must know about the shaft before it stamps the ceiling
+## (INTEGRATION2 §4). Keyed by room index -> aperture cell centre (Vector2 in XZ).
+## ProcLayerBuilder fills this in `_plan_shafts` before the shells are built.
+var ceiling_apertures: Dictionary = {}
 var _gate_material: StandardMaterial3D
 var _trace_material: StandardMaterial3D
 var _grid_material: StandardMaterial3D
@@ -1158,11 +1164,17 @@ func _kit_floor_field(rect: Rect2, trace_axis: String = "") -> void:
 		x += CELL
 
 
-func _kit_ceiling_field(rect: Rect2, y: float) -> void:
+func _kit_ceiling_field(rect: Rect2, y: float, skip: Vector2 = Vector2(INF, INF)) -> void:
+	var has_skip: bool = is_finite(skip.x)
 	var x: float = rect.position.x + CELL * 0.5
 	while x < rect.end.x - 0.01:
 		var z: float = rect.position.y + CELL * 0.5
 		while z < rect.end.y - 0.01:
+			# M4.95: the god-ray aperture cell gets no module — the hole IS the
+			# shaft. GodRays.hero_shaft fills it with a slotted aperture plate.
+			if has_skip and absf(x - skip.x) < CELL * 0.5 and absf(z - skip.y) < CELL * 0.5:
+				z += CELL
+				continue
 			# Random quarter-turns so the hanging ducts and cable drops never line
 			# up into a corridor of identical silhouettes.
 			var yaw: float = float(absi(hash(Vector2i(int(x) + 7, int(z)))) % 4) * 90.0
@@ -1239,7 +1251,8 @@ func kit_room(room: Dictionary) -> Rect2:
 	var east: Array = _kit_doors(doors, "e")
 
 	_kit_floor_field(rect, "z")
-	_kit_ceiling_field(rect, height)
+	_kit_ceiling_field(rect, height,
+			ceiling_apertures.get(int(room["index"]), Vector2(INF, INF)))
 
 	for level: int in storeys:
 		var y: float = float(level) * STOREY

@@ -17,8 +17,16 @@ extends Node3D
 ## Long enough to register at 60 fps without smearing into a beam. The cutter is
 ## a snap, not a laser.
 const LASH_TIME: float = 0.1
-const LASH_WIDTH: float = 0.05
+## Widened in M4.95: at 0.05 the streak was a hairline that vanished on a
+## nose-to-wall shot (M3's point-blank complaint), where the streak is only a
+## sliver long to begin with. A thicker snap reads at any range and still stays
+## well shy of a laser at fifteen metres.
+const LASH_WIDTH: float = 0.075
 const COLOUR: Color = Color(0.72, 0.96, 1.0)
+## Energy of the impact-end glow, lighting whatever the cut lands on. Fires on
+## every shot, point-blank ones included — where, with the muzzle flash at the
+## other end, it does most of the reading.
+const GLOW_ENERGY: float = 4.0
 
 ## 0..1. At 1.0 the cutter locks out until it falls back below the reset point.
 var heat: float = 0.0
@@ -115,7 +123,22 @@ func pull_trigger() -> void:
 func show_lash(from: Vector3, to: Vector3) -> void:
 	var delta: Vector3 = to - from
 	var length: float = delta.length()
-	if length < 0.05:
+
+	# The impact end reads even when the streak does not. At point-blank the
+	# muzzle is almost on the wall, so the streak is a sliver — but the spray and
+	# the glow at `to`, together with the muzzle flash back at `from`, bracket the
+	# cut so a nose-to-wall shot still snaps. These fire first and unconditionally
+	# for exactly that case: the old early-return skipped them too, which is a
+	# large part of why the point-blank shot read as nothing at all.
+	_sparks.global_position = to
+	_sparks.restart()
+	_glow.global_position = to
+	_glow.light_energy = GLOW_ENERGY
+
+	# Below a couple of centimetres there is no streak worth orienting, and
+	# `look_at` on a near-zero vector errors — but the impact above has already
+	# carried the read.
+	if length < 0.02:
 		return
 
 	_lash_mesh.size = Vector3(LASH_WIDTH, LASH_WIDTH, length)
@@ -127,11 +150,6 @@ func show_lash(from: Vector3, to: Vector3) -> void:
 	_lash.rotate_object_local(Vector3.UP, PI)
 	_lash.visible = true
 	_lash_time = LASH_TIME
-
-	_sparks.global_position = to
-	_sparks.restart()
-	_glow.global_position = to
-	_glow.light_energy = 4.0
 
 
 func _process(delta: float) -> void:

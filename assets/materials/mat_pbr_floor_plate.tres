@@ -1,0 +1,60 @@
+[gd_resource type="ShaderMaterial" load_steps=8 format=3]
+
+; M_FloorPlate (PBR) — the reflective floor, and still the biggest single
+; win in the kit.
+;
+; Two wear systems overlap here and they are deliberately at different scales.
+; The BAKED one is in the ORM: the tread tips are buffed, the joints hold dirt.
+; The PLACED one is traffic_amount in the shader, driven by the world-space
+; macro field, so a corridor develops a polished path down its middle that
+; continues across module boundaries because the noise does not know where the
+; modules are.
+;
+; wet_amount stays high. Paired with SSR and a room ReflectionProbe, a wet patch
+; is free light — it doubles the apparent brightness of a room without adding a
+; lumen, which is the only honest way to make a darkness-law game readable.
+
+[ext_resource type="Shader" path="res://src/shaders/nv_surface_pbr.gdshader" id="1"]
+[ext_resource type="Texture2D" path="res://assets/pbr/floor_plate_albedo.png" id="2"]
+[ext_resource type="Texture2D" path="res://assets/pbr/floor_plate_normal.png" id="3"]
+[ext_resource type="Texture2D" path="res://assets/pbr/floor_plate_orm.png" id="4"]
+[ext_resource type="Texture2D" path="res://assets/textures/noise_macro.tres" id="5"]
+[ext_resource type="Texture2D" path="res://assets/pbr/detail_normal.png" id="6"]
+[ext_resource type="Texture2D" path="res://assets/pbr/detail_orm.png" id="7"]
+
+[resource]
+shader = ExtResource("1")
+shader_parameter/tex_albedo = ExtResource("2")
+shader_parameter/tex_normal = ExtResource("3")
+shader_parameter/tex_orm = ExtResource("4")
+shader_parameter/macro_noise = ExtResource("5")
+shader_parameter/detail_normal_tex = ExtResource("6")
+shader_parameter/detail_orm = ExtResource("7")
+shader_parameter/tile_metres = 2.0
+shader_parameter/plane_blend = 0.08
+shader_parameter/alert_tint = Color(1, 0.28, 0.3, 1)
+shader_parameter/alert = 0.0
+shader_parameter/albedo_tint = Color(1, 1, 1, 1)
+shader_parameter/roughness_offset = 0.0
+shader_parameter/metallic_offset = 0.0
+shader_parameter/ao_strength = 1.0
+shader_parameter/normal_depth = 1.0
+shader_parameter/detail_tiling = 4.0
+shader_parameter/detail_depth = 0.75
+shader_parameter/detail_rough = 0.22
+shader_parameter/detail_fade_start = 2.2
+shader_parameter/detail_fade_end = 6.5
+shader_parameter/macro_scale = 0.045
+shader_parameter/macro_rough = 0.18
+shader_parameter/macro_albedo = 0.16
+shader_parameter/smudge_amount = 0.0
+shader_parameter/smudge_centre = 1.25
+shader_parameter/smudge_width = 0.45
+shader_parameter/traffic_amount = 0.75
+shader_parameter/grime_amount = 0.0
+shader_parameter/grime_height = 0.9
+shader_parameter/wet_amount = 0.9
+shader_parameter/wet_threshold = 0.50
+shader_parameter/wet_softness = 0.17
+shader_parameter/wet_roughness = 0.045
+shader_parameter/wet_darken = 0.5
