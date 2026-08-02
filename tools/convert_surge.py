@@ -80,6 +80,131 @@ XF = S @ R @ Matrix.Translation(-GRIP_RAW)
 ob.data.transform(XF)
 ob.matrix_world = Matrix.Identity(4)
 
+# ------------------------------------------------- M4.8: the foregrip -----
+#
+# A deliberate ART ADDITION, and the reason is a bug: the crew avatar's support
+# hand was posed onto the handguard, and the Surge has no handguard to hold. Its
+# midsection is a skeletonised open frame about 28-36 mm wide, so the left hand
+# was closing on a rectangle of air beside the frame cut-out with its fingers
+# passing through the lower rail. No amount of offset tuning fixes a hand
+# gripping a feature the model does not have.
+#
+# So the model grows one, which is what every real rifle does: a short angled
+# foregrip hung off the underside of the lower rail, exactly where a two-handed
+# hold puts the support hand. It is authored here rather than in the source FBX
+# because the FBX is READ ONLY (see the header) — this file is already the place
+# where the weapon is turned into NULLVOID's weapon.
+#
+# Design language, matched to the rest of the Surge:
+#   * hard-surface, flat-chamfered, no curves the rest of the model does not have
+#   * the body goes in the `Base` slot (matte black, same as the receiver)
+#   * ONE emissive seam down its forward face, in the `Emiss` slot, so it reads
+#     as part of the same machine as the emitter ring and not as a bolt-on
+#
+# Placement is measured, not guessed (scratchpad m48/probe_surge.py): in the
+# exported Blender frame the lower rail runs along z = -0.066..-0.073 for
+# y = 0.05..0.29, and the frame there is +-0.014 wide. The grip therefore hangs
+# from z = -0.066 down, centred on the weapon's plane.
+#
+# HOW BIG is set by the hand, not by real-world ergonomics: this creature's hand
+# is a great deal larger than a person's, and the first pass sized the grip like
+# a rifle accessory — the fingers closed past the heel and hung in the air below
+# it, which is the same "holding nothing" read the bug report started with. It is
+# now 135 mm long and 52 mm across, which the hand wraps rather than swallows.
+#
+# HOW FAR FORWARD is a reach constraint, not an aesthetic one, and the first
+# attempt got it wrong: at y = 0.196 the support hand sat 25 cm from the trigger
+# hand, well outside the envelope this creature's arms were rigged for (the M3.7
+# hold is 14.5 cm), and the left arm's IK gave up and buried the hand in the
+# receiver. Pulled back to y = 0.108 the two hands are ~17 cm apart — still a
+# compact cutting-tool hold, and inside what the arms can actually do.
+#
+# Numbers below are in the FINAL (post-transform) Blender frame — barrel +Y, up
+# +Z, origin at the pistol grip — and are converted back through XF's inverse so
+# they can be authored where they are read.
+FOREGRIP_TOP = Vector((0.0, 0.108, -0.062))   # where it meets the rail
+FOREGRIP_LEN = 0.135                          # column length
+FOREGRIP_RAKE = math.radians(17.0)            # tilted forward, thumb-forward hold
+FOREGRIP_HALF = Vector((0.026, 0.022))        # half-width (x), half-depth (y)
+FOREGRIP_TAPER = 0.82                         # narrower at the bottom
+
+
+def add_foregrip(mesh_ob):
+    """Builds the foregrip directly into the Surge mesh, in the final frame."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(mesh_ob.data)
+
+    axis = Vector((0.0, math.sin(FOREGRIP_RAKE), -math.cos(FOREGRIP_RAKE)))
+    side = Vector((1.0, 0.0, 0.0))
+    fwd = axis.cross(side).normalized() * -1.0
+
+    def ring(t, scale):
+        """Four corners of the column's cross-section at parameter t (0 top)."""
+        c = FOREGRIP_TOP + axis * (FOREGRIP_LEN * t)
+        hx = FOREGRIP_HALF.x * scale
+        hy = FOREGRIP_HALF.y * scale
+        return [c + side * sx * hx + fwd * sy * hy
+                for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+
+    # Three rings: a flare where it meets the rail, the shaft, and a flared
+    # heel so the hand has something to pull against. Twelve faces total.
+    rings = [ring(0.0, 1.04), ring(0.18, 1.0), ring(0.86, FOREGRIP_TAPER),
+             ring(1.0, FOREGRIP_TAPER * 0.86)]
+    verts = [[bm.verts.new(p) for p in r] for r in rings]
+    base_slot = 0
+    emiss_slot = 1
+    faces = []
+    for i in range(len(rings) - 1):
+        a, b = verts[i], verts[i + 1]
+        for k in range(4):
+            n = (k + 1) % 4
+            faces.append((bm.faces.new((a[k], a[n], b[n], b[k])), base_slot))
+    # Cap the heel.
+    faces.append((bm.faces.new(tuple(reversed(verts[-1]))), base_slot))
+
+    # The seam: a shallow inset strip on the FORWARD face of the shaft, in the
+    # emissive slot. One strip, not a wrap — the same restraint the kit's trace
+    # channels use.
+    seam = []
+    for t, scale in ((0.24, 1.0), (0.80, FOREGRIP_TAPER)):
+        c = FOREGRIP_TOP + axis * (FOREGRIP_LEN * t)
+        hx = FOREGRIP_HALF.x * scale * 0.42
+        hy = FOREGRIP_HALF.y * scale
+        seam.append([c + side * sx * hx + fwd * (hy + 0.0015)
+                     for sx in (-1, 1)])
+    sv = [[bm.verts.new(p) for p in row] for row in seam]
+    faces.append((bm.faces.new((sv[0][0], sv[0][1], sv[1][1], sv[1][0])), emiss_slot))
+
+    for f, slot in faces:
+        f.material_index = slot
+        f.smooth = False
+    # Recalculate winding on the NEW faces only. `bm.faces.new` takes the vertex
+    # order it is given, and a column built ring-by-ring comes out with half its
+    # sides facing inward — which renders as holes and, worse, makes an
+    # inside/outside test against the mesh answer backwards for every point near
+    # the grip. Restricted to the new faces so the imported body is untouched.
+    bmesh.ops.recalc_face_normals(bm, faces=[f for f, _ in faces])
+    bm.normal_update()
+    bm.to_mesh(mesh_ob.data)
+    bm.free()
+    mesh_ob.data.update()
+    print("[surge] foregrip: %d faces added, top %s len %.3f rake %.0f deg" % (
+        len(faces), tuple(round(v, 4) for v in FOREGRIP_TOP),
+        FOREGRIP_LEN, math.degrees(FOREGRIP_RAKE)))
+    # The palm centre a support hand should be posed onto: half way down the
+    # shaft, on the surface of its left face. build_crew_avatar.py reads this
+    # number out of this log line.
+    palm = FOREGRIP_TOP + axis * (FOREGRIP_LEN * 0.45)
+    print("[surge] foregrip palm centre (blender) = (%.4f, %.4f, %.4f)"
+          % tuple(palm))
+    print("[surge] foregrip surface half-width x = %.4f, depth y = %.4f"
+          % (FOREGRIP_HALF.x, FOREGRIP_HALF.y))
+
+
+add_foregrip(ob)
+
+
 # ------------------------------------------------------------------ empties
 def empty(name, raw_pos, size=0.03):
     e = bpy.data.objects.new(name, None)

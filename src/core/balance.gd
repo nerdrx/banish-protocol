@@ -421,3 +421,135 @@ const MODULE_MAX_TIER: int = 5
 ## (DESIGN.md: "Deeper Compilers stock higher tiers"), which is what makes a
 ## backdoor room worth walking to even when you are not exfiltrating.
 const COMPILER_SANCTUARY_BONUS: int = 1
+
+# --- M4.8 functional clutter -------------------------------------------------
+#
+# The world gets dense and it gets levers. Two rules run through every number
+# below and both come straight out of DESIGN.md:
+#
+#   **The solo invariant.** Every prop here is usable by one agent. Nothing
+#   needs a second pair of hands, nothing is held open by a crewmate, and
+#   nothing costs more than one player can pay. Co-op makes them *easier to use
+#   safely* (somebody else watches the dark while you type), never *possible*.
+#
+#   **The killability law's cousin: props never trap you.** A sealed bulkhead
+#   opens again on its own, only ever stands on a corridor with an alternative
+#   route, and can be re-opened by hand. A welded vent is a wall, and walls are
+#   already everywhere. Nothing in this milestone can end a run by itself.
+
+# --- noise ------------------------------------------------------------------
+#
+# Reach is measured in ROOMS rather than metres, because that is the unit the
+# antivirus already thinks in (`LayerGraph.room_distance`, which the siphon's
+# alert has used since M3) and because a metre radius through a wall is a lie —
+# sound in this building travels down corridors, not through slabs.
+#
+# The ladder, quietest to loudest:
+#   0 rooms   kicked debris. Whatever is in here with you hears it; nothing else.
+#   1 room    a terminal query, a cabinet lock cut. Louder than a footstep,
+#             quieter than a siphon: the neighbours look up.
+#   2 rooms   rewiring a junction, draining a siphon. The layer knows.
+const NOISE_ROOMS_DEBRIS: int = 0
+const NOISE_ROOMS_TERMINAL: int = 1
+const NOISE_ROOMS_CABINET: int = 1
+const NOISE_ROOMS_JUNCTION: int = 2
+
+## How long each kind of noise holds a process's attention. Same shape as
+## TAP_ALERT_TIME, which is the loudest of them and stays the reference.
+const NOISE_TIME_DEBRIS: float = 5.0
+const NOISE_TIME_TERMINAL: float = 8.0
+const NOISE_TIME_CABINET: float = 8.0
+const NOISE_TIME_JUNCTION: float = TAP_ALERT_TIME
+
+# --- rewire junctions -------------------------------------------------------
+
+## Opening the panel is a beat, not a commitment — the same reasoning as the
+## Compiler's OPEN_TIME. The *choice* is the expensive part.
+const JUNCTION_OPEN_TIME: float = 0.4
+const JUNCTION_USE_RANGE: float = 5.5
+## How long VENT FANS holds every weldable vent on the layer shut.
+const VENT_FAN_SECONDS: float = 90.0
+## Emergency strips under ROOM LIGHTING. Deliberately feeble compared to the
+## key/wash rig — this is a corridor you can cross without your beam, not a
+## room with the lights on. DESIGN.md pillar 2 is not negotiable for a lever.
+const JUNCTION_LIGHT_ENERGY: float = 1.35
+const JUNCTION_LIGHT_RANGE: float = 9.0
+
+# --- weldable vent covers ---------------------------------------------------
+
+## Seconds of focused breaker to weld one shut. Two seconds is long enough to
+## be a decision in a nest and short enough to be worth making.
+const VENT_WELD_TIME: float = 2.0
+const VENT_WELD_RANGE: float = 6.5
+
+# --- lootable cabinets ------------------------------------------------------
+
+## Cutting the lock is louder and slower than welding a vent: you are making a
+## hole in MOTHER's property rather than closing one.
+const CABINET_CUT_TIME: float = 1.6
+const CABINET_CUT_RANGE: float = 6.5
+## The silent path — hold E with DOOR LOCKS powered at the junction.
+const CABINET_OPEN_TIME: float = 1.0
+const CABINET_USE_RANGE: float = 5.5
+## What is inside. Chips are spilled as a recoverable bundle (the same object a
+## corrupted crewmate drops), so opening one still costs you the walk over.
+const CABINET_SHARDS: Vector2i = Vector2i(2, 4)
+## Roughly a third of cabinets also hold a flare. Cache tier still caps you.
+const CABINET_FLARE_CHANCE: float = 0.34
+const CABINET_FLARES: int = 1
+
+# --- sealable bulkhead doors ------------------------------------------------
+
+## Heavy. This one IS a commitment — you are standing still in a doorway with
+## something coming down the corridor.
+const BULKHEAD_SEAL_TIME: float = 1.6
+## How long MOTHER tolerates a door of hers being shut.
+const BULKHEAD_SEAL_SECONDS: float = 60.0
+## Her warning before she forces it: the hiss, and then it is open.
+const BULKHEAD_WARN_SECONDS: float = 6.0
+const BULKHEAD_USE_RANGE: float = 6.0
+
+# --- command terminals ------------------------------------------------------
+
+const TERMINAL_OPEN_TIME: float = 0.45
+const TERMINAL_USE_RANGE: float = 5.5
+## How long a query takes to 'process' before the phosphor starts typing back.
+const TERMINAL_QUERY_SECONDS: float = 2.2
+## Characters per second the answer types at. Slower than the HUD's self-test:
+## this is a machine thinking, not a machine reporting.
+const TERMINAL_TYPE_SPEED: float = 58.0
+## Output corruption ramps between these layers, to this fraction of glyphs.
+## Same shape as GeometryKit's architecture decay and DecalLib's signage decay,
+## because it is the same fact about the same building.
+const TERMINAL_CORRUPT_START: int = 6
+const TERMINAL_CORRUPT_FULL: int = 18
+const TERMINAL_CORRUPT_MAX: float = 0.40
+
+# --- physics debris ---------------------------------------------------------
+
+## Impulse a walking player imparts. Enough to send a can skittering, nowhere
+## near enough to make the deck a pinball table.
+const DEBRIS_PUSH: float = 2.4
+## How fast a piece has to be moving for its clatter to count as a noise event,
+## and how long before it may ping again. Without the cooldown one can rolling
+## down a corridor is a siren.
+const DEBRIS_NOISE_SPEED: float = 1.2
+const DEBRIS_NOISE_COOLDOWN: float = 1.4
+## Below this speed a piece is put back to sleep by hand. RigidBody3D's own
+## sleep threshold is generous, and a layer with ten pieces jittering in the
+## broadphase forever is ten pieces of frame budget nobody asked for.
+const DEBRIS_SLEEP_SPEED: float = 0.12
+const DEBRIS_SLEEP_DELAY: float = 1.5
+
+# --- reinforcement trickle --------------------------------------------------
+#
+# M4.8 adds a modest one so that welding a vent means something. Before this a
+# layer's antivirus was a fixed purchase: kill it and the layer was clear, which
+# made the nests scenery. The trickle is deliberately slow and hard-capped at
+# the layer's own budget — it is pressure, not attrition, and it can never make
+# a layer harder than the threat curve already said it was.
+const TRICKLE_FIRST_DELAY: float = 60.0
+const TRICKLE_INTERVAL: float = 45.0
+## Only nests with an unwelded vent trickle at all, and each welded vent in the
+## room multiplies that room's rate by this. Weld them all and the nest is shut.
+const TRICKLE_WELD_PENALTY: float = 0.45

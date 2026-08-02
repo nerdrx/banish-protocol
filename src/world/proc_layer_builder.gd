@@ -41,6 +41,55 @@ var _trunk_corridor: String = ""
 ## below the pipe runs, which is also roughly where a person hangs a sign.
 const DECAL_HEIGHT: float = 2.05
 
+# --- M4.8 functional clutter -------------------------------------------------
+#
+# Two passes, and they are deliberately different in kind.
+#
+#   **Density** (`_clutter_room` / `_clutter_corridor`) is decoration: cable
+#   looms, pipe runs, rubble, stains, crates, the occasional dead drone. All of
+#   it is hashed off world position and the layer seed like the signage is, none
+#   of it touches `_rng`, and almost none of it collides. Its budget is draw
+#   calls, and ClutterLib spends that budget by putting everything that repeats
+#   into two MultiMeshes for the whole layer.
+#
+#   **Function** (`_place_props`) is the levers: the rewire junction, the
+#   weldable vents, the cabinets, the bulkhead and the command terminal. Those
+#   ARE in the determinism dump, resolved by LayerGraph from the run seed, and
+#   this file only turns each anchor into a standing object.
+#
+## Where a wall prop's origin sits, for the runs that do not consult the kit's
+## own relief (the cable looms and pipe clusters, which lie along a wall rather
+## than hang off one). Functional props go through `_wall_prop`, which reads the
+## actual module depth — see GeometryKit.WALL_RELIEF.
+const WALL_PROP_INSET: float = WALL_THICKNESS * 0.5 + 0.02
+## How far a wall prop keeps from a snapped doorway centre. The graph already
+## cleared the *unsnapped* door by 3.4 m; snapping can move a doorway by up to
+## two metres, so the projection re-checks against where the doorframe actually
+## went and shuffles the prop along the wall if it has to.
+const WALL_PROP_DOOR_CLEAR: float = 3.0
+
+## How much room a crate stack leaves around a functional prop. Wide enough that
+## the breaker's line to a vent and the interact ray to a junction are both clear
+## from anywhere a player would reasonably stand.
+const CRATE_PROP_CLEAR: float = 3.6
+## And how far apart two FUNCTIONAL props have to be. A tour found the case:
+## layer 8 put a rewire junction on the slot in front of a vent, and the
+## breaker's line of sight — correctly — hit the junction instead of the grille,
+## so the vent could not be welded. Props are allowed to share a wall; they are
+## not allowed to stand in front of each other.
+const PROP_SEPARATION: float = 2.6
+
+var _clutter: ClutterLib = null
+## Resolved transforms for the functional props, filled before the density pass.
+## `{kind, index, room, pos, yaw}`.
+var _prop_spots: Array[Dictionary] = []
+## Circles nothing solid may be dressed inside. See `_blocks_a_prop`.
+var _keep_out: Array[Dictionary] = []
+## One line for the layer census. "The world got denser" is a claim about
+## generation, and a claim about generation belongs in a log.
+var clutter_note: String = ""
+var _prop_note: String = ""
+
 
 static func create(from_graph: LayerGraph) -> ProcLayerBuilder:
 	var builder: ProcLayerBuilder = ProcLayerBuilder.new()
@@ -62,6 +111,8 @@ func _build_content() -> void:
 	# A stream of its own, so tuning the dressing never shifts the layout.
 	_rng = RandomNumberGenerator.new()
 	_rng.seed = hash(str(graph.layer_seed, ":dressing"))
+	# Position-hashed, never `_rng` — see the class docstring and ClutterLib's.
+	_clutter = ClutterLib.new(_geometry, graph.layer_seed)
 
 	KitLib.load_kit()
 	# The kit's alert uniform is on shared material resources, so it survives a
@@ -82,6 +133,17 @@ func _build_content() -> void:
 		_rects[int(room["index"])] = kit_room(room)
 	for corridor: Dictionary in graph.corridors:
 		kit_corridor(corridor)
+
+	# Where every functional prop is going to stand, resolved as soon as the
+	# shells exist and long before anything is dressed. Everything that puts a
+	# solid object on a floor — the archetype dressing's loose blocks and racks,
+	# and the density pass's crate stacks — consults this list and keeps out of
+	# the way. A tour caught why it has to: two of layer 7's three vents could not
+	# be welded, because something the dressing had stood in front of them was
+	# breaking the breaker's line of sight to the grille, and decoration is not
+	# allowed to disable a mechanic.
+	_resolve_prop_spots()
+	_build_keep_out()
 
 	for room: Dictionary in graph.rooms:
 		_dress_room_decals(room)
@@ -108,7 +170,17 @@ func _build_content() -> void:
 			_:
 				_dress_bus(room)
 
+	for room: Dictionary in graph.rooms:
+		_clutter_room(room)
+	for corridor: Dictionary in graph.corridors:
+		_clutter_corridor(corridor)
+
 	_place_furniture()
+	_place_props()
+
+	var draws: int = _clutter.flush()
+	clutter_note = " clutter=[%s] batched=%d%s" % [
+		_clutter.describe(), draws, _prop_note]
 
 
 ## The shell a room actually got, rather than the rect the generator asked for.
@@ -575,9 +647,13 @@ func _dress_vault(room: Dictionary) -> void:
 		var offset: float = maxf(rect.size.y * 0.28, 5.5)
 		for j: int in 2:
 			var z: float = centre.y + (offset if j == 0 else -offset)
+			# Drawn first, skipped second: see `_scatter_blocks` for why the stream
+			# must not shorten when a rack is dropped for standing on a prop.
+			var shelves: int = _rng.randi_range(4, 6)
+			if _blocks_a_prop(Vector3(x, 0.0, z)):
+				continue
 			_data_rack(Vector3(x, 0.0, z), Vector3(2.2, 2.6, 1.0),
-					0.0 if j == 0 else PI, vault_glow,
-					_rng.randi_range(4, 6))
+					0.0 if j == 0 else PI, vault_glow, shelves)
 	_scatter_blocks(room, 7, 0.9, 1.8)
 	_glyph_panel(Vector3(centre.x, 0.0, rect.position.y + 1.4), vault_glow)
 
@@ -698,8 +774,12 @@ func _dress_bus(room: Dictionary) -> void:
 		# The processing stack is the same rack prop as the vault's, taller and
 		# running the system's own teal — one piece of furniture doing two jobs
 		# is one silhouette the player learns instead of two.
-		_data_rack(Vector3(x, 0.0, z), Vector3(1.9, 3.2, 2.4),
-				_rng.randf_range(-0.25, 0.25), SYSTEM_TEAL, _rng.randi_range(5, 7))
+		var yaw: float = _rng.randf_range(-0.25, 0.25)
+		var shelves: int = _rng.randi_range(5, 7)
+		if _blocks_a_prop(Vector3(x, 0.0, z)):
+			continue
+		_data_rack(Vector3(x, 0.0, z), Vector3(1.9, 3.2, 2.4), yaw, SYSTEM_TEAL,
+				shelves)
 		_conduit_run(Vector3(x, 3.4, z), Vector3(x, h - 0.8, z), 0.28)
 
 	for i: int in 3:
@@ -755,8 +835,522 @@ func _scatter_blocks(room: Dictionary, count: int, min_size: float, max_size: fl
 		if absf(x - centre.x) < 3.0 and absf(z - centre.y) < 3.0:
 			x = centre.x + signf(x - centre.x + 0.001) * _rng.randf_range(3.2, 5.0)
 			x = clampf(x, rect.position.x + 2.2, rect.end.x - 2.2)
-		_data_block(Vector3(x, 0.0, z), Vector3(s, s * _rng.randf_range(0.7, 1.2), s),
-				_rng.randf_range(-0.7, 0.7))
+		# Both remaining draws are taken BEFORE the skip below, in the order the
+		# argument list used to evaluate them. Dropping a block that would stand in
+		# front of a functional prop must not shorten the RNG stream, or every
+		# crate, tap and Sentinel post further down the layer moves.
+		var height: float = _rng.randf_range(0.7, 1.2)
+		var yaw: float = _rng.randf_range(-0.7, 0.7)
+		if _blocks_a_prop(Vector3(x, 0.0, z)):
+			continue
+		_data_block(Vector3(x, 0.0, z), Vector3(s, s * height, s), yaw)
+
+
+# ------------------------------------------------------- clutter (density) --
+#
+# How messy a room is, is a property of what the room is FOR. That is the whole
+# rule, and it is the difference between "the artist scattered props" and "people
+# worked here".
+#
+#   BUS HALL     the messiest room on the layer. Machinery gets serviced in here
+#                and nobody tidies up after themselves: cable looms down two
+#                walls, pipes overhead, crates that were stacked "temporarily",
+#                spills, and the layer's dead drone if it has one.
+#   NEST         a bus hall that has been let go. Everything above, more rubble,
+#                scorch instead of seep, and the drone that stopped running in
+#                here is still here.
+#   SIPHON       industrial rather than messy — this is a plant room, so it is
+#                mostly pipework, and what is on the floor is coolant.
+#   VAULT        formal. Somebody signs for what happens in a vault. Cable
+#                management along the wall base, no crates, one old stain.
+#   ARRIVAL      light. It is the crew's one moment of orientation and it should
+#                not be a scrapyard.
+#   SANCTUARY    tidy. DESIGN.md makes this the one place you can stop running,
+#                and a room you can breathe in is a room somebody swept.
+const DENSITY: Dictionary = {
+	"bus": {"cables": 3, "pipes": 2, "rubble": 3, "crates": 2, "grime": 3, "husk": 0.34},
+	"nest": {"cables": 3, "pipes": 1, "rubble": 5, "crates": 1, "grime": 4, "husk": 0.5},
+	"siphon": {"cables": 2, "pipes": 3, "rubble": 2, "crates": 1, "grime": 3, "husk": 0.12},
+	"vault": {"cables": 2, "pipes": 1, "rubble": 0, "crates": 0, "grime": 1, "husk": 0.0},
+	"arrival": {"cables": 2, "pipes": 1, "rubble": 1, "crates": 1, "grime": 1, "husk": 0.0},
+	"shaft": {"cables": 2, "pipes": 2, "rubble": 2, "crates": 1, "grime": 2, "husk": 0.2},
+	"backdoor": {"cables": 1, "pipes": 0, "rubble": 0, "crates": 0, "grime": 1, "husk": 0.0},
+}
+
+
+func _density_for(room: Dictionary) -> Dictionary:
+	var archetype: String = String(room["archetype"])
+	if archetype == LayerGraph.BUS and bool(room["unlit"]):
+		return DENSITY["nest"]
+	return DENSITY.get(archetype, DENSITY["bus"]) as Dictionary
+
+
+## Dresses one room. Everything placed here is decoration: the only thing with a
+## collider is a crate stack, and those go against the walls, well outside the
+## doorway-to-doorway crossing every creature and every player uses.
+func _clutter_room(room: Dictionary) -> void:
+	var rect: Rect2 = _rect_of(room)
+	var centre: Vector2 = rect.position + rect.size * 0.5
+	var height: float = _height_of(room)
+	var density: Dictionary = _density_for(room)
+	var index: int = int(room["index"])
+	var doors: Array = room.get("doors", []) as Array
+
+	# --- cable looms along the wall bases -----------------------------------
+	for i: int in int(density["cables"]):
+		var side: int = (index * 2 + i) % 4
+		var run: Dictionary = _wall_run(rect, side, 2.4)
+		if run.is_empty():
+			continue
+		_clutter.cable_run(run["from"], run["to"], run["normal"])
+
+	# --- pipe clusters overhead ---------------------------------------------
+	for i: int in int(density["pipes"]):
+		var side: int = (index * 3 + i + 1) % 4
+		var run: Dictionary = _wall_run(rect, side, 1.8)
+		if run.is_empty():
+			continue
+		_clutter.pipe_cluster(run["from"], run["to"], run["normal"],
+				minf(height - 0.9, 3.15))
+
+	# --- rubble, stains, crates ----------------------------------------------
+	#
+	# All of it in the band between the walls and the central crossing, which is
+	# the same rule `_scatter_blocks` follows and the reason navigation is
+	# untouched by this milestone.
+	for i: int in int(density["rubble"]):
+		var at: Vector3 = _clutter_spot(rect, centre, index * 7 + i, 4001)
+		_clutter.rubble_pile(at, 0.85, 7 + int(_clutter.roll(at, 4051) * 6.0))
+	for i: int in int(density["grime"]):
+		var at: Vector3 = _clutter_spot(rect, centre, index * 11 + i, 4111)
+		# Scorch belongs where something burned out; seep belongs where machinery
+		# is. A nest gets more of the first, a plant room more of the second.
+		var scorch: bool = _clutter.roll(at, 4177) < (
+				0.62 if bool(room["unlit"]) else 0.28)
+		_clutter.grime(at, scorch, lerpf(2.2, 4.4, _clutter.roll(at, 4231)))
+	for i: int in int(density["crates"]):
+		var at: Vector3 = _clutter_spot(rect, centre, index * 13 + i, 4297)
+		if _blocks_a_door(at, doors, rect) or _blocks_a_prop(at):
+			continue
+		var yaw: float = _clutter.roll(at, 4337) * TAU
+		var tall: bool = _clutter.roll(at, 4391) < 0.4
+		var footprint: Vector3 = _clutter.crate_stack(at, yaw, tall)
+		# One box proxy per stack. Crates are the only clutter you can walk into,
+		# and a proxy per crate would be four times the broadphase for a silhouette
+		# the player treats as one object anyway.
+		var shape: CollisionShape3D = CollisionShape3D.new()
+		var box: BoxShape3D = BoxShape3D.new()
+		box.size = Vector3(footprint.x * 1.15, footprint.y, footprint.z * 1.15)
+		shape.shape = box
+		shape.position = at + Vector3(0.0, footprint.y * 0.5, 0.0)
+		shape.rotation.y = yaw
+		_colliders.add_child(shape)
+
+	# --- the dead drone -------------------------------------------------------
+	var husk_at: Vector3 = _clutter_spot(rect, centre, index * 17, 4441)
+	if _clutter.roll(husk_at, 4483) < float(density["husk"]):
+		_clutter.drone_husk(husk_at, _clutter.roll(husk_at, 4519) * TAU)
+
+
+## A run along one wall of a rect, inset from both corners, plus that wall's
+## inward normal. Empty when the wall is too short to be worth dressing.
+func _wall_run(rect: Rect2, side: int, inset: float) -> Dictionary:
+	var horizontal: bool = side % 2 == 0
+	var lo: float = (rect.position.x if horizontal else rect.position.y) + inset
+	var hi: float = (rect.end.x if horizontal else rect.end.y) - inset
+	if hi - lo < 3.0:
+		return {}
+	var fixed: float = rect.position.y if side == 0 else (
+			rect.end.x if side == 1 else (
+			rect.end.y if side == 2 else rect.position.x))
+	var normal: Vector3 = LayerGraph.wall_normal(side)
+	var from: Vector3 = (Vector3(lo, 0.0, fixed) if horizontal
+			else Vector3(fixed, 0.0, lo)) + normal * WALL_PROP_INSET
+	var to: Vector3 = (Vector3(hi, 0.0, fixed) if horizontal
+			else Vector3(fixed, 0.0, hi)) + normal * WALL_PROP_INSET
+	return {"from": from, "to": to, "normal": normal}
+
+
+## A spot for a loose piece of clutter: in the band between the walls and the
+## room's central crossing, hashed rather than rolled.
+func _clutter_spot(rect: Rect2, centre: Vector2, index: int, salt: int) -> Vector3:
+	var probe: Vector3 = Vector3(rect.position.x + float(index) * 1.7, 0.0,
+			rect.position.y + float(index) * 2.3)
+	var angle: float = DecalLib.roll(probe.x, probe.z, salt, graph.layer_seed) * TAU
+	var reach: float = lerpf(0.55, 0.95,
+			DecalLib.roll(probe.x, probe.z, salt + 7, graph.layer_seed))
+	var half: Vector2 = rect.size * 0.5 - Vector2(2.4, 2.4)
+	var at: Vector2 = centre + Vector2(cos(angle), sin(angle)) * half * reach
+	return Vector3(
+			clampf(at.x, rect.position.x + 1.6, rect.end.x - 1.6), 0.0,
+			clampf(at.y, rect.position.y + 1.6, rect.end.y - 1.6))
+
+
+## Whether a solid prop at `at` would stand in a doorway's approach. Crates are
+## the only thing in the clutter pass that collides, so this is the only place
+## navigation can be broken and it is checked once, here.
+func _blocks_a_door(at: Vector3, doors: Array, rect: Rect2) -> bool:
+	for door: Dictionary in doors:
+		var wall: String = String(door.get("wall", ""))
+		var centre: float = snap_slot(float(door.get("at", 0.0)))
+		var gate: Vector3 = Vector3.ZERO
+		match wall:
+			"n":
+				gate = Vector3(centre, 0.0, rect.position.y)
+			"s":
+				gate = Vector3(centre, 0.0, rect.end.y)
+			"w":
+				gate = Vector3(rect.position.x, 0.0, centre)
+			_:
+				gate = Vector3(rect.end.x, 0.0, centre)
+		if Vector2(at.x - gate.x, at.z - gate.z).length() < 5.5:
+			return true
+	return false
+
+
+## Whether a solid piece of decoration here would obstruct something the crew
+## has to use.
+##
+## Found by a tour rather than by reasoning, twice over. First: two of layer 7's
+## three vents refused to weld, because the dressing had stood a crate between
+## the player and the grille and `Player._probe_burnable` was correctly refusing
+## to cut through it. Then: an 18-layer soak descended measurably slower than the
+## M4.7 build, because the shaft pad had picked up furniture and the descent
+## channel — which breaks if you move — kept restarting as the avatar
+## depenetrated off it.
+##
+## So this is not "keep crates off vents", it is **the keep-out list for
+## everything the crew stands at**: the drop shaft's whole muster radius, every
+## tap, Compiler, node, uplink and injection point, and every M4.8 prop.
+## Decoration is not allowed to disable a mechanic and it is not allowed to make
+## one feel broken either.
+func _blocks_a_prop(at: Vector3, _room_index: int = -1) -> bool:
+	for zone: Dictionary in _keep_out:
+		var pos: Vector3 = zone["pos"]
+		if Vector2(at.x - pos.x, at.z - pos.z).length() < float(zone["radius"]):
+			return true
+	return false
+
+
+## Builds that keep-out list. Cheap (a couple of dozen circles, tested against a
+## few dozen candidate placements) and worth every comparison.
+func _build_keep_out() -> void:
+	_keep_out.clear()
+	for spot: Dictionary in _prop_spots:
+		_keep_out.append({"pos": spot["pos"], "radius": CRATE_PROP_CLEAR})
+	# The muster radius, plus a body's width. This is the one that matters most:
+	# the crew stands in it, motionless, for the length of the descent channel.
+	_keep_out.append({"pos": graph.shaft_point,
+			"radius": Balance.SHAFT_MUSTER_RADIUS + 1.5})
+	for point: Vector3 in graph.siphon_points:
+		_keep_out.append({"pos": point, "radius": 4.0})
+	for point: Vector3 in graph.compiler_points:
+		_keep_out.append({"pos": point, "radius": 4.0})
+	for point: Vector3 in graph.spawns:
+		_keep_out.append({"pos": point, "radius": 3.0})
+	if graph.is_backdoor:
+		_keep_out.append({"pos": graph.backdoor_point, "radius": 5.0})
+		_keep_out.append({"pos": graph.uplink_point, "radius": 5.5})
+
+
+## Corridors get cables down both bases, a pipe run overhead and the occasional
+## spill. Never a crate: a corridor is one cell wide, it is the only route between
+## two rooms, and a solid object in one is a navigation decision rather than a
+## piece of decoration.
+func _clutter_corridor(corridor: Dictionary) -> void:
+	var rect: Rect2 = kit_corridor_rect(corridor)
+	if rect.size.x < CELL or rect.size.y < CELL:
+		return
+	var along: bool = String(corridor["axis"]) == "z"
+	var sides: Array[int] = ([3, 1] as Array[int]) if along else ([0, 2] as Array[int])
+	for side: int in sides:
+		var run: Dictionary = _wall_run(rect, side, 1.2)
+		if run.is_empty():
+			continue
+		_clutter.cable_run(run["from"], run["to"], run["normal"])
+	var pipe: Dictionary = _wall_run(rect, sides[0], 1.2)
+	if not pipe.is_empty():
+		_clutter.pipe_cluster(pipe["from"], pipe["to"], pipe["normal"], 3.05)
+
+	# Two or three loose piles down the length, hard against the wall so the
+	# middle of the corridor — which is the line every creature steers along — is
+	# never even visually obstructed.
+	var mid: Vector2 = rect.position + rect.size * 0.5
+	var length: float = rect.size.y if along else rect.size.x
+	var lo: float = rect.position.y if along else rect.position.x
+	var stops: int = maxi(int(length / 7.0), 1)
+	for i: int in stops:
+		var t: float = lo + (float(i) + 0.5) * (length / float(stops))
+		var offset: float = 1.35 if i % 2 == 0 else -1.35
+		var at: Vector3 = Vector3(mid.x + offset, 0.0, t) if along \
+				else Vector3(t, 0.0, mid.y + offset)
+		if DecalLib.roll(at.x, at.z, 4603, graph.layer_seed) < 0.45:
+			_clutter.rubble_pile(at, 0.55, 5)
+		if DecalLib.roll(at.x, at.z, 4657, graph.layer_seed) < 0.3:
+			_clutter.grime(Vector3(mid.x, 0.0, t) if along else Vector3(t, 0.0, mid.y),
+					false, 2.6)
+
+
+# ------------------------------------------------------ clutter (functional) --
+
+## Turns a graph wall anchor into a standing object's transform.
+##
+## The graph chose a point on the wall of the room it *asked* for; the kit built
+## a shell snapped outward onto the 4 m lattice, and the doorframes moved with
+## it. So the point is projected onto the wall that actually exists, clamped
+## inside it, and shuffled along if snapping put a doorframe where the prop was
+## going to go. Returns {ok, pos, yaw}.
+func _wall_prop(room: Dictionary, side: int, anchor: Vector3) -> Dictionary:
+	var rect: Rect2 = _rect_of(room)
+	var horizontal: bool = side % 2 == 0
+	# 3.4 rather than a token margin: `kit_room` stands a RIB_COLUMN two metres in
+	# from each corner, and a vent tucked in beside one is a vent whose grille the
+	# breaker cannot see past.
+	var along: float = anchor.x if horizontal else anchor.z
+	var lo: float = (rect.position.x if horizontal else rect.position.y) + 3.4
+	var hi: float = (rect.end.x if horizontal else rect.end.y) - 3.4
+	if hi <= lo:
+		return {"ok": false}
+	along = clampf(along, lo, hi)
+
+	var wall: String = "n" if side == 0 else ("e" if side == 1 else
+			("s" if side == 2 else "w"))
+	for gate: float in _kit_doors(room.get("doors", []) as Array, wall):
+		if absf(along - float(gate)) >= WALL_PROP_DOOR_CLEAR:
+			continue
+		# Shuffle to whichever side of the doorframe still fits on this wall.
+		var up: float = float(gate) + WALL_PROP_DOOR_CLEAR
+		var down: float = float(gate) - WALL_PROP_DOOR_CLEAR
+		if up <= hi:
+			along = up
+		elif down >= lo:
+			along = down
+		else:
+			return {"ok": false}
+
+	var fixed: float = rect.position.y if side == 0 else (
+			rect.end.x if side == 1 else (
+			rect.end.y if side == 2 else rect.position.x))
+	var normal: Vector3 = LayerGraph.wall_normal(side)
+	var dark: bool = bool(room.get("unlit", false))
+
+	# Onto a slot centre, and preferably onto a SHALLOW module.
+	#
+	# The kit's walls have real depth since M3.7 — raised armour plates stand
+	# 0.465 m proud of the boundary, cable trays 0.20 — so "mount it on the wall
+	# plane" buries the prop in whatever the slot behind it drew. Two rules fix
+	# it: sit on a slot centre (which also lines the prop up with the panel grid
+	# instead of straddling two of them), and walk outward along the wall for a
+	# slot flat enough to hang something on.
+	var wanted: float = snap_slot(along)
+	var chosen: float = wanted
+	var relief: float = 1e9
+	for step: int in 5:
+		for direction: float in ([0.0] if step == 0 else [-1.0, 1.0]):
+			var t: float = wanted + direction * float(step) * CELL
+			if t < lo or t > hi:
+				continue
+			var probe: Vector3 = Vector3(t, 0.0, fixed) if horizontal \
+					else Vector3(fixed, 0.0, t)
+			var blocked: bool = false
+			for gate: float in _kit_doors(room.get("doors", []) as Array, wall):
+				if absf(t - float(gate)) < WALL_PROP_DOOR_CLEAR:
+					blocked = true
+			if blocked:
+				continue
+			var crowded: bool = false
+			for spot: Dictionary in _prop_spots:
+				var other: Vector3 = spot["pos"]
+				if Vector2(probe.x - other.x, probe.z - other.z).length() < PROP_SEPARATION:
+					crowded = true
+					break
+			if crowded:
+				continue
+			var depth: float = wall_relief_at(probe, dark)
+			if depth < relief:
+				relief = depth
+				chosen = t
+			if relief <= WALL_RELIEF_OK:
+				break
+		if relief <= WALL_RELIEF_OK:
+			break
+	if relief > 1e8:
+		return {"ok": false}
+
+	var base: Vector3 = Vector3(chosen, 0.0, fixed) if horizontal \
+			else Vector3(fixed, 0.0, chosen)
+	return {
+		"ok": true,
+		# Flush on the module's own face, plus a millimetre or two. NOT on the
+		# boundary: the boundary is inside the wall now.
+		"pos": base + normal * (relief + WALL_PROP_CLEAR),
+		"yaw": LayerGraph.wall_yaw(side),
+	}
+
+
+## Every functional prop's final transform, resolved before anything is built.
+##
+## Split out from `_place_props` so the density pass can see the answers: a crate
+## stack is the one piece of decoration in this milestone that collides, and a
+## crate in front of a vent is a vent the breaker cannot reach. Pure — it reads
+## the graph and the snapped shells and writes nothing but this list.
+func _resolve_prop_spots() -> void:
+	_prop_spots.clear()
+	for i: int in graph.junction_points.size():
+		_add_prop_spot("junction", i, graph.junction_rooms[i],
+				graph.junction_sides[i], graph.junction_points[i])
+	for i: int in graph.vent_points.size():
+		_add_prop_spot("vent", i, graph.vent_rooms[i],
+				graph.vent_sides[i], graph.vent_points[i])
+	for i: int in graph.cabinet_points.size():
+		_add_prop_spot("cabinet", i, graph.cabinet_rooms[i],
+				graph.cabinet_sides[i], graph.cabinet_points[i])
+	if graph.terminal_room >= 0:
+		_add_prop_spot("terminal", 0, graph.terminal_room,
+				graph.terminal_side, graph.terminal_point)
+
+
+func _add_prop_spot(kind: String, index: int, room_index: int, side: int,
+		anchor: Vector3) -> void:
+	var mount: Dictionary = _wall_prop(graph.rooms[room_index], side, anchor)
+	if not bool(mount.get("ok", false)):
+		return
+	_prop_spots.append({
+		"kind": kind, "index": index, "room": room_index,
+		"pos": mount["pos"], "yaw": mount["yaw"],
+	})
+
+
+## Stands every functional prop from the resolved spots. Nothing here decides
+## anything — the positions, the counts and which nest a vent belongs to are all
+## in the determinism dump; this turns them into objects.
+func _place_props() -> void:
+	var built: Dictionary = {"junction": 0, "vent": 0, "cabinet": 0, "terminal": 0}
+	for spot: Dictionary in _prop_spots:
+		var kind: String = String(spot["kind"])
+		var index: int = int(spot["index"])
+		var room_index: int = int(spot["room"])
+		var at: Vector3 = spot["pos"]
+		var yaw: float = float(spot["yaw"])
+		built[kind] = int(built[kind]) + 1
+		match kind:
+			"junction":
+				var junction: RewireJunction = RewireJunction.create(index, at, yaw)
+				junction.set_meta("room_name", graph.room_name(room_index))
+				_fixtures.add_child(junction)
+				junction.adopt_strips(_emergency_strips(room_index, index),
+						_strip_material(index))
+			"vent":
+				_fixtures.add_child(WeldVent.create(index, at, yaw, room_index))
+			"cabinet":
+				_fixtures.add_child(LootCabinet.create(index, at, yaw))
+			"terminal":
+				_fixtures.add_child(CommandTerminal.create(index, at, yaw, graph))
+				# A console is player-tech and it is the one machine in the layer
+				# that is on your side, so it gets a light of its own — feeble,
+				# warm, and pointed at itself, the same rule the hidden Compiler
+				# follows.
+				LightRig.practical(_fixtures, Vector3(at.x, 2.4, at.z),
+						0.55 * light_scale, 5.0,
+						LightRig.AMBER).name = "Practical_terminal"
+
+	var doors: int = 0
+	if graph.bulkhead_edge.x >= 0:
+		_fixtures.add_child(BulkheadDoor.create(0, graph.bulkhead_point,
+				graph.bulkhead_axis, graph.bulkhead_edge, graph))
+		doors += 1
+
+	for i: int in graph.debris_points.size():
+		_fixtures.add_child(DebrisBody.create(i, graph.debris_points[i],
+				graph.debris_kinds[i]))
+
+	_prop_note = " props=[junction %d, vent %d, cabinet %d, terminal %d, bulkhead %d, debris %d]" % [
+		int(built["junction"]), int(built["vent"]), int(built["cabinet"]),
+		int(built["terminal"]), doors, graph.debris_points.size()]
+
+
+## The shared emissive material for one junction's emergency strips. One per
+## junction rather than one global, so the strips are per-instance and a future
+## per-room routing model does not need a material pass.
+func _strip_material(index: int) -> StandardMaterial3D:
+	if not has_meta("strip_material_%d" % index):
+		var material: StandardMaterial3D = _make_emissive(Color(1.0, 0.86, 0.52), 0.06)
+		# An UNPOWERED strip has to be a dark fixture on a dark wall. `_make_emissive`
+		# derives its albedo from the emission colour, which for a warm white is a
+		# pale grey — and a twenty-metre pale grey bar catching a player's beam
+		# reads as a lit strip somebody forgot to switch off, which is the one thing
+		# this fixture must never look like until the bus is routed to it.
+		material.albedo_color = Color(0.035, 0.032, 0.028)
+		material.roughness = 0.85
+		set_meta("strip_material_%d" % index, material)
+	return get_meta("strip_material_%d" % index) as StandardMaterial3D
+
+
+## Emergency lighting for one junction: a strip run round the room it stands in
+## and one over each corridor mouth leading off that room.
+##
+## Deliberately feeble (Balance.JUNCTION_LIGHT_ENERGY). DESIGN.md pillar 2 says
+## unrendered space is near-black, and a lever that turns the lights ON would
+## renegotiate the darkness the entire game rests on. What ROOM LIGHTING buys you
+## is *a room you can cross without committing your beam* — enough to see the
+## shape of the floor and not enough to see what is stood at the far end of it.
+func _emergency_strips(room_index: int, junction_index: int) -> Array[OmniLight3D]:
+	var lights: Array[OmniLight3D] = []
+	var room: Dictionary = graph.rooms[room_index]
+	var rect: Rect2 = _rect_of(room)
+	var material: StandardMaterial3D = _strip_material(junction_index)
+
+	# A strip along each wall, high, with a lamp at its middle. The bar is the
+	# fixture you can see; the lamp is what it does.
+	for side: int in 4:
+		var run: Dictionary = _wall_run(rect, side, 3.0)
+		if run.is_empty():
+			continue
+		var from: Vector3 = run["from"] + Vector3(0.0, 2.85, 0.0)
+		var to: Vector3 = run["to"] + Vector3(0.0, 2.85, 0.0)
+		var normal: Vector3 = run["normal"]
+		_trace(from, to, material, 0.075)
+		var mid: Vector3 = (from + to) * 0.5 + normal * 0.35
+		lights.append(_strip_lamp(mid, "Strip_r%d_%d" % [room_index, side]))
+
+	# And one over each doorway out of the room, so the approach lights with it —
+	# DESIGN.md's "this room + adjacent corridor".
+	for door: Dictionary in (room.get("doors", []) as Array):
+		var wall: String = String(door.get("wall", ""))
+		var centre: float = snap_slot(float(door.get("at", 0.0)))
+		var at: Vector3 = Vector3.ZERO
+		match wall:
+			"n":
+				at = Vector3(centre, 2.6, rect.position.y - 2.2)
+			"s":
+				at = Vector3(centre, 2.6, rect.end.y + 2.2)
+			"w":
+				at = Vector3(rect.position.x - 2.2, 2.6, centre)
+			_:
+				at = Vector3(rect.end.x + 2.2, 2.6, centre)
+		_trace(at + Vector3(0.0, 0.55, 0.0),
+				at + Vector3(0.0, 0.55, 0.0) + Vector3(0.9, 0.0, 0.0), material, 0.07)
+		lights.append(_strip_lamp(at, "Strip_gate_r%d_%s" % [room_index, wall]))
+	return lights
+
+
+func _strip_lamp(at: Vector3, node_name: String) -> OmniLight3D:
+	var light: OmniLight3D = OmniLight3D.new()
+	light.name = node_name
+	light.position = at
+	light.light_color = Color(1.0, 0.84, 0.5)
+	light.light_energy = 0.0  # dark until the bus is routed to it.
+	light.omni_range = Balance.JUNCTION_LIGHT_RANGE
+	light.omni_attenuation = 1.15
+	light.light_specular = 0.1
+	light.light_volumetric_fog_energy = 0.8
+	light.shadow_enabled = false
+	# Deliberately NOT named Accent/Key/Practical: LightRig.set_alert dispatches
+	# on the name prefix, and an emergency strip is the one fixture on the layer
+	# that must not be recoloured by the alert state. It is not MOTHER's lighting
+	# — it is the lighting she keeps switched off, and the crew turned on.
+	_fixtures.add_child(light)
+	return light
 
 
 func _place_furniture() -> void:

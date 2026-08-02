@@ -5,7 +5,7 @@ config_version=5
 
 [application]
 
-config/name="NULLVOID"
+config/name="LIMBO PROTOCOL"
 config/description="1-4 player co-op first-person roguelite. You are an invading program descending through the security layers of a rogue AI to steal its data."
 run/main_scene="res://src/ui/main_menu.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
@@ -20,6 +20,8 @@ Modules="*res://src/core/modules.gd"
 GameState="*res://src/core/game_state.gd"
 Net="*res://src/core/net.gd"
 Run="*res://src/core/run_state.gd"
+NoiseBus="*res://src/core/noise_system.gd"
+Props="*res://src/core/prop_state.gd"
 Debug="*res://src/core/debug.gd"
 SteamHub="*res://src/core/steam_service.gd"
 Achievements="*res://src/core/achievements.gd"

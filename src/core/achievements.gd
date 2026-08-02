@@ -361,7 +361,7 @@ func _sync_to_steam() -> void:
 	_mirror_stats()
 	print("[Achievements] steam retro-sync: %d accepted, %d refused (app %d)%s" % [
 		pushed, refused, SteamHub.app_id,
-		"  — expected on 480: NULLVOID ids are not in Valve's test app"
+		"  — expected on 480: LIMBO PROTOCOL ids are not in Valve's test app"
 			if refused > 0 else ""])
 
 

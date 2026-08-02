@@ -1,7 +1,11 @@
 [gd_resource type="FontVariation" load_steps=2 format=3]
 
-; Wordmark tracking. NULLVOID is set wide enough that the letters read as a
-; nameplate stencilled on a slab.
+; Wordmark tracking. The name is set wide enough that the letters read as a
+; nameplate stencilled on a slab rather than as a heading.
+;
+; Retuned for LIMBO PROTOCOL: fourteen glyphs and a word space instead of eight,
+; so the per-glyph tracking comes down (22 -> 13) and the label's point size with
+; it. Same nameplate, same slab, one that fits on it.
 
 [ext_resource type="Font" path="res://assets/fonts/ui_font.tres" id="1_base"]
 
@@ -9,4 +13,4 @@
 resource_name = "TitleFont"
 base_font = ExtResource("1_base")
 variation_embolden = 0.08
-spacing_glyph = 22
+spacing_glyph = 13

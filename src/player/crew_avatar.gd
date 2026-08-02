@@ -85,8 +85,12 @@ const HAND_BONE: String = "Right wrist"
 ## expressible as the axis-aligned euler it looks like it should be — and
 ## Godot's `Basis.from_euler` defaults to YXZ, which would silently give a third
 ## wrong answer.
-const HAND_OFFSET: Vector3 = Vector3(0.00200, 0.08282, -0.03931)
-const HAND_ROTATION: Quaternion = Quaternion(0.570398, -0.072270, 0.808570, 0.125055)
+## M4.8 re-measured these against the re-posed hold: the hands moved onto the
+## weapon's ACTUAL grips (the pistol grip, and the foregrip the Surge grew in the
+## same pass), so the rifle's transform in the wrist's frame moved with them.
+## Printed by `tools/build_crew_avatar.py` — never hand-tuned.
+const HAND_OFFSET: Vector3 = Vector3(0.00461, 0.02929, -0.03747)
+const HAND_ROTATION: Quaternion = Quaternion(-0.754992, -0.186312, -0.601213, 0.183897)
 
 ## Everything descended from this bone is "upper body" and takes the rifle-hold
 ## pose; everything below it keeps walking. Computed from the skeleton, so a
@@ -162,8 +166,40 @@ const FP_HOLD_OFFSET: Vector3 = Vector3(0.028, 0.052, -0.030)
 ##
 ## Bone names from the rig (dump them with src/dev/inspect_models.gd):
 ## Hips -> Spine -> Chest -> ChestUp -> {Left,Right} shoulder -> arm -> elbow -> wrist.
+##
+## **The vertical, retuned in M4.8.** M4.7 shipped this with a +5 cm lift, and
+## across a milestone's worth of captures the read was consistently wrong: the
+## receiver rode up under the crosshair and the barrel reached into the top
+## third of the frame, which is the pose of somebody *presenting* a weapon rather
+## than carrying one. Worse, it compounds — the first-person body does not pitch
+## with the lens, so every time the player looks down (which is most of the time
+## in a game about reading the floor) the whole assembly swings further up the
+## frame from an already-high rest.
+##
+## The lift is now a quarter of what it was — effectively the shoulder line. At a
+## level view that puts the muzzle tip just under the centre of the frame with the
+## receiver low and outboard, which is where a carried tool belongs: legible, and
+## not occupying the part of the frame the player is actually looking through.
+##
+## The number was walked in against captures rather than guessed. Two points on
+## the curve, measured off a level-view frame at 1280x720: **+0.052 put the muzzle
+## at 47% of frame height from the top** (above the centre line — the "presenting
+## it" read), **-0.022 put it at 59%** (below centre, but the hands had left the
+## bottom of the frame). Roughly 11 px of travel per centimetre.
+##
+## Re-tuned once more in the same milestone, and the reason is worth writing
+## down: the grip surgery moved the HANDS onto the weapon's real pistol grip and
+## foregrip, several centimetres lower on the model than the M3.7 pose held them.
+## The whole assembly therefore dropped with them and the settled +0.012 put the
+## hold under the bottom edge. This is the value that puts it back where the
+## previous tuning pass left it, against a pose that is now anatomically honest.
+##
+## Translation only, and only on this constant: the pose, the grip, the yaw and
+## the lift are all untouched, so both hands stay ON the weapon by construction
+## (see the rigid-translation argument above) and every state that was tuned
+## against them — rest, fire, look-down, wall-tuck — still resolves the same way.
 const FP_ARM_BONES: Array[String] = ["Right shoulder", "Left shoulder"]
-const FP_ARM_OFFSET: Vector3 = Vector3(0.150, 0.052, -0.010)
+const FP_ARM_OFFSET: Vector3 = Vector3(0.150, 0.105, -0.010)
 ## Chest yaw for the first-person hold, in radians.
 ##
 ## Translating the hold outward alone leaves the barrel parallel to the view axis
@@ -497,6 +533,14 @@ func _track_head(delta: float, heading: Vector3) -> void:
 			# give it back as the weapon tucks: a hold being pulled in to clear a
 			# wall should come toward the body, not stay swung out beside it.
 			var reach: Vector3 = FP_ARM_OFFSET * (1.0 - _tuck * 0.55)
+			# The VERTICAL component is not "reach" and is not given back.
+			#
+			# Scaling it with the tuck moves the hold UP as the player presses into
+			# a wall — the exact opposite of what TUCK_PITCH and TUCK_OFFSET are
+			# doing on the line above, and a fight that only got noticeable once
+			# M4.8 dropped the rest height and left the two effects the same size.
+			# Only the outboard and forward travel comes back in.
+			reach.y = FP_ARM_OFFSET.y
 			for arm: int in _arm_bones:
 				_shift_bone(arm, reach)
 	_aim_bone(_neck_bone, _look * NECK_SHARE)

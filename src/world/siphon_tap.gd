@@ -10,8 +10,14 @@ extends Interactable
 ## without a scene dependency, and so the emissive materials are per-instance
 ## (a spent tap must go dark without dimming every other tap on the layer).
 
-## Emitted on every peer when this tap is drained. M3: the Sentinel/Scrubber
-## director listens here to seed a trace at `global_position`.
+## Emitted on every peer when this tap is drained.
+##
+## M3 wired this straight to the antivirus director. M4.8 moved the fan-out into
+## the `Noise` autoload — five things in the layer are loud now, and M6's Hound is
+## specified as spawned by noise debt — so the director listens to `NoiseBus.heard`
+## instead and this signal is kept for anything that wants to know specifically
+## that *a siphon* went off. Not a rename, not a removal: a stable API with one
+## fewer listener.
 signal antivirus_ping(where: Vector3)
 
 const LIVE_COLOUR: Color = Color(0.34, 1.0, 0.78)
@@ -178,6 +184,10 @@ func _on_siphon_taken(index: int, _pool: float) -> void:
 	_pulse = 1.0
 	_apply_spent()
 	antivirus_ping.emit(global_position)
+	# The loudest thing in the game, and the reference every other noise in
+	# Balance's ladder is set against.
+	NoiseBus.ping(global_position, Balance.TAP_ALERT_ROOMS, "siphon",
+			Balance.TAP_ALERT_TIME)
 
 
 func _apply_spent() -> void:

@@ -337,20 +337,30 @@ func _dark_retreat() -> Vector3:
 
 # -------------------------------------------------------------------- events --
 
-## A siphon tap went off nearby. DESIGN.md: tapping is loud, and this is what
-## "loud" costs you.
-func alert(where: Vector3) -> void:
+## Something was loud nearby. DESIGN.md: tapping a siphon is loud — and since
+## M4.8 so is rewiring a junction, cutting a cabinet open, querying a terminal
+## and kicking a can across a corridor. This is what "loud" costs you.
+##
+## The reach test is in rooms rather than metres on purpose: sound in this
+## building goes down corridors, and a Scrubber the other side of a slab has not
+## heard anything however close it is standing.
+func alert(where: Vector3, rooms: int = Balance.TAP_ALERT_ROOMS,
+		seconds: float = Balance.TAP_ALERT_TIME) -> void:
 	if graph == null:
 		return
-	if graph.room_distance(current_room(), graph.region_of(where)) > Balance.TAP_ALERT_ROOMS:
+	if graph.room_distance(current_room(), graph.region_of(where)) > rooms:
 		return
 	_alert_point = where
-	_alert_time = Balance.TAP_ALERT_TIME
+	# A quieter noise does not overwrite a louder one that is still holding: the
+	# pack does not forget a siphon because somebody kicked a can afterwards.
+	if seconds < _alert_time:
+		return
+	_alert_time = seconds
 	if state == State.LURK:
 		_enter(State.STALK)
 	if Debug.log_ai:
-		print("[AI] scrubber %d converging on tap at %s" % [
-			slot_index, str(where.snapped(Vector3.ONE * 0.1))])
+		print("[AI] scrubber %d converging on noise at %s (%.0fs)" % [
+			slot_index, str(where.snapped(Vector3.ONE * 0.1)), seconds])
 
 
 func _on_hurt() -> void:

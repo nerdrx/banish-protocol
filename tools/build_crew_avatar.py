@@ -189,18 +189,62 @@ AIM_PITCH, AIM_YAW, AIM_ROLL = -8.0, 7.0, 12.0
 # deep at the handguard, with a large open frame amidships).  Attach points
 # therefore sit just OUTSIDE its side faces so the hands wrap the weapon rather
 # than being impaled by the frame cut-out.
-GRIP_ATTACH_R = Vector((0.034, -0.005, -0.015))   # right face of the pistol grip
-FOREGRIP_LOCAL = Vector((-0.033, 0.150, -0.025))  # left face of the handguard
+# M4.8 re-pose. The M3.7 numbers were authored against a guess at where the
+# weapon's grips were and both of them were wrong, which a player noticed
+# immediately: the right hand's fingers passed through the receiver and the left
+# hand closed on empty air beside the frame cut-out.
+#
+# These are measured off the exported mesh (scratchpad m48/probe_surge.py):
+#   pistol grip  a column running (y -0.002, z -0.035) -> (y -0.060, z -0.131),
+#                +-0.014 wide, so its right face is at x = +0.014
+#   foregrip     added in M4.8 by tools/convert_surge.py because the Surge had
+#                nothing to hold there; palm centre (0, 0.2103, -0.1087), half
+#                width 0.019
+# Both attach points sit one PALM THICKNESS (~20 mm) proud of the surface the
+# palm touches, not 2 mm: the attach is the knuckle-line centre, i.e. the middle
+# of a hand that has depth. Two millimetres puts the palm's own flesh inside the
+# grip, which the finger solver then reports as every phalanx starting buried.
+# The fingers are closed onto the grip from there by `fit_fingers`.
+GRIP_ATTACH_R = Vector((0.0340, -0.025, -0.065))     # right face of the pistol grip
+FOREGRIP_LOCAL = Vector((-0.0460, 0.1258, -0.1201))  # left face of the foregrip
 # hand attach point measured out from the wrist head, in the wrist bone's own
 # basis (local Y runs wrist -> knuckles).
 HAND_OFF = Vector((0.0, 0.100, -0.006))
 # hand orientation, expressed in the rifle's frame as
 # (wrist->knuckle direction, back-of-hand normal).
-#   right: knuckles run down the pistol grip, back of the hand outboard
-#   left : support hand under the handguard, palm up, knuckles across the
-#          weapon so the curled fingers close over the far side
-GRIP_HAND_R = (Vector((0.12, 0.26, -0.96)), Vector((0.94, -0.34, 0.03)))
-GRIP_HAND_L = (Vector((0.15, 0.25, -0.96)), Vector((-0.98, 0.05, -0.19)))
+#   right: knuckles run down the pistol grip's own rake, back of the hand
+#          outboard and a little forward
+#   left : knuckles run down the foregrip's rake, back of the hand outboard on
+#          the other side — a thumb-forward support hold on a vertical grip
+GRIP_HAND_R = (Vector((0.06, -0.50, -0.86)), Vector((0.97, 0.24, 0.0)))
+GRIP_HAND_L = (Vector((0.02, 0.29, -0.96)), Vector((-0.97, 0.10, -0.22)))
+
+# --- finger fitting ---------------------------------------------------------
+#
+# Offsets put the PALM on the grip. They cannot put the FINGERS on it, and that
+# is the half a player actually sees: a hand whose palm is right and whose
+# knuckles are 8 mm inside the receiver reads as broken however good the wrist
+# is. So the fingers are closed onto whatever is actually there, phalanx by
+# phalanx, against a BVH of the real weapon mesh.
+#
+# It runs ONCE, at frame 0. The hold sways over the cycle, but the rifle sways
+# WITH the hands — the fingers' relationship to the grip is constant across all
+# 96 frames — so one fit is keyed flat across the clip and the whole solve costs
+# a few hundred depsgraph updates instead of tens of thousands.
+FINGER_NAMES = ("Index", "Middle", "Ring", "Pinky", "Thumb")
+## Radius of a phalanx. Contact means the centreline stops this far off the
+## surface; anything closer is the mesh going through the finger.
+FINGER_RADIUS = 0.0075
+## Degrees per solver step, and the ceiling per phalanx. Fine enough to land
+## within a couple of degrees of contact, coarse enough to stay quick.
+FIT_STEP = 3.0
+FIT_MAX = 96.0
+## The thumb closes less far and from the other side.
+THUMB_MAX = 54.0
+## Extra stand-off the fit solver had to add per hand, in metres, along the palm
+## normal. Filled by `build_aim_idle` at frame 0 and then applied to every frame,
+## so the whole clip holds the weapon exactly the way the fit was verified.
+HAND_PUSH = {}
 
 
 def rifle_basis():
@@ -1028,6 +1072,189 @@ def aim_hands(P, R):
             (RhL, Vector(P) + R @ FOREGRIP_LOCAL))
 
 
+def gun_reference(matrix):
+    """Import surge.glb read-only, park it at `matrix`, hand back (object, bvh).
+
+       Used only while the hold is being fitted; the caller drops it again, so
+       nothing about the weapon can leak into the exported avatar."""
+    from mathutils.bvhtree import BVHTree
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.gltf(filepath=SURGE)
+    new = [o for o in bpy.data.objects if o not in before]
+    root = [o for o in new if o.parent is None][0]
+    root.matrix_world = matrix
+    bpy.context.view_layer.update()
+    meshes = [o for o in new if o.type == 'MESH']
+    dg = bpy.context.evaluated_depsgraph_get()
+    # Built from WORLD-space polygons, not `BVHTree.FromObject`. FromObject
+    # returns a tree in the object's own local space, and the queries here are
+    # world-space pose-bone matrices — mixing the two reports every finger as
+    # being about a metre from the weapon, which is exactly what the first run
+    # of this said and exactly the kind of wrong that looks like a plausible
+    # number in a log.
+    verts = []
+    polys = []
+    for ob in meshes:
+        ev = ob.evaluated_get(dg)
+        me = ev.to_mesh()
+        mw = ob.matrix_world
+        base = len(verts)
+        verts.extend([mw @ v.co for v in me.vertices])
+        for p in me.polygons:
+            idx = [base + i for i in p.vertices]
+            for k in range(1, len(idx) - 1):
+                polys.append((idx[0], idx[k], idx[k + 1]))
+        ev.to_mesh_clear()
+    tree = BVHTree.FromPolygons(verts, polys)
+    # Sanity: a point a long way off must read as OUTSIDE. If the mesh has
+    # inconsistent winding anywhere near the grips this comes back true and every
+    # finger is reported buried, which is a very convincing wrong answer.
+    far = root.matrix_world.translation + Vector((0.0, 0.0, 1.0))
+    _d, ins = _surface(tree, far)
+    if ins:
+        print("[grip] WARNING: inside/outside test is inverted — check winding")
+    return new, tree
+
+
+def _surface(tree, p):
+    """(distance, inside) for a world point against the weapon."""
+    loc, nor, _idx, dist = tree.find_nearest(Vector(p))
+    if loc is None:
+        return 1e9, False
+    return dist, (Vector(p) - loc).dot(nor) < 0.0
+
+
+def _curl_bone(pb, axis, degrees):
+    """Rotate a phalanx about its own head, around `axis` (world), by `degrees`."""
+    head = pb.matrix.translation.copy()
+    R = Matrix.Rotation(D(degrees), 4, axis)
+    pb.matrix = (Matrix.Translation(head) @ R @ Matrix.Translation(-head)
+                 @ pb.matrix)
+    bpy.context.view_layer.update()
+
+
+def finger_axis(arm, fname, side):
+    """The anatomical flexion axis of one finger, in world space.
+
+       Taken from the finger's OWN geometry — the normal of the plane its first
+       two phalanges lie in — rather than from a cross product with the palm
+       normal. The cross-product version is degenerate exactly where it matters
+       (a phalanx pointing along the palm normal gives a zero-length axis and
+       silently refuses to move), which is how the first solve ended up with
+       knuckles that reported ninety degrees of correction and had not turned at
+       all. `rest_relax` has already put a curl in every finger, so the two
+       phalanges are never collinear and this is always well defined."""
+    names = ["%sFinger%d_%s" % (fname, j, side) for j in (1, 2)]
+    if any(n not in arm.pose.bones for n in names):
+        return None
+    dirs = []
+    for n in names:
+        pb = arm.pose.bones[n]
+        dirs.append(pb.matrix.col[1].to_3d().normalized())
+    axis = dirs[0].cross(dirs[1])
+    if axis.length < 1e-4:
+        return None
+    return axis.normalized()
+
+
+def _phalanx_state(pb, tree):
+    """(clearance, inside) for a phalanx, sampled along its centreline.
+
+       Clearance is the WORST (smallest) distance found; `inside` is true if any
+       sample is behind the surface. Sampling the segment rather than only the
+       tip is what stops a knuckle disappearing into a receiver while the
+       fingertip sits politely outside it."""
+    head = pb.matrix.translation.copy()
+    tail = pb.matrix @ Vector((0.0, pb.bone.length, 0.0))
+    worst = 1e9
+    inside = False
+    # Past the tail on purpose: this creature's fingers end in claws that reach
+    # beyond the last bone, and a solver that stops measuring at the joint lets
+    # them pass straight through the far side of a grip.
+    for u in (0.25, 0.55, 0.8, 1.0, 1.22):
+        d, ins = _surface(tree, head.lerp(tail, u))
+        worst = min(worst, d)
+        inside = inside or ins
+    return worst, inside
+
+
+def fit_fingers(arm, tree, side, _palm_normal=None):
+    """Close one hand onto whatever `tree` is, phalanx by phalanx.
+
+       The rule is **contact, not penetration**. For each phalanx:
+
+         1. if it starts inside the mesh, open it until it is out — the palm
+            offset alone cannot guarantee this, and a phalanx that begins buried
+            is the defect this whole pass exists to fix;
+         2. work out which way "closed" is by trying a step each way and keeping
+            whichever one approaches the surface, so a finger can never curl
+            enthusiastically into thin air because a sign was wrong somewhere;
+         3. step that way until the closest sample is one finger-radius off the
+            surface, and stop the step BEFORE anything goes inside.
+
+       Returns a per-phalanx report, because the only honest way to claim a hand
+       does not clip is to print the gap at every joint and let it be read."""
+    report = []
+    for fname in FINGER_NAMES:
+        thumb = fname == "Thumb"
+        limit = THUMB_MAX if thumb else FIT_MAX
+        axis = finger_axis(arm, fname, side)
+        if axis is None:
+            continue
+        for j in (1, 2, 3):
+            bone = "%sFinger%d_%s" % (fname, j, side)
+            if bone not in arm.pose.bones:
+                continue
+            pb = arm.pose.bones[bone]
+            turned = 0.0
+
+            # 1. get out of the mesh, whichever way that is. Both directions get
+            #    a try, because a phalanx buried by its parent can be on either
+            #    side of the surface it is stuck in.
+            for sign in (-1.0, 1.0):
+                _d, inside = _phalanx_state(pb, tree)
+                if not inside:
+                    break
+                escaped = 0.0
+                while escaped < 120.0:
+                    _d, inside = _phalanx_state(pb, tree)
+                    if not inside:
+                        break
+                    _curl_bone(pb, axis, FIT_STEP * sign)
+                    escaped += FIT_STEP
+                    turned += FIT_STEP * sign
+                if not inside:
+                    break
+                # Put it back and try the other way.
+                _curl_bone(pb, axis, -escaped * sign)
+                turned -= escaped * sign
+
+            # 2. which way is "closed"? Measured, not assumed.
+            base_d, _ = _phalanx_state(pb, tree)
+            _curl_bone(pb, axis, FIT_STEP)
+            plus_d, plus_in = _phalanx_state(pb, tree)
+            _curl_bone(pb, axis, -FIT_STEP)
+            direction = 1.0 if (plus_d < base_d and not plus_in) else -1.0
+
+            # 3. close until contact.
+            steps = 0
+            while steps * FIT_STEP < limit:
+                d, inside = _phalanx_state(pb, tree)
+                if inside:
+                    _curl_bone(pb, axis, -FIT_STEP * direction)
+                    turned -= FIT_STEP * direction
+                    break
+                if d <= FINGER_RADIUS:
+                    break
+                _curl_bone(pb, axis, FIT_STEP * direction)
+                turned += FIT_STEP * direction
+                steps += 1
+
+            d, inside = _phalanx_state(pb, tree)
+            report.append((bone, turned, d, inside))
+    return report
+
+
 def build_aim_idle(arm):
     feet = [FootRig(arm, "Left"), FootRig(arm, "Right")]
     hands = [ArmRig(arm, "Right"), ArmRig(arm, "Left")]
@@ -1035,7 +1262,66 @@ def build_aim_idle(arm):
         r.make()
     clear_pose(arm)
     new_action(arm, "aim_idle_src")
+
+    # --- fit the fingers once, on frame 0 ---------------------------------
+    #
+    # The body has to be in its frame-0 pose and the hands on their attach
+    # points before the fingers mean anything, so the first frame is posed
+    # twice: once to fit against, once for real.
+    _pose_aim_frame(arm, hands, feet, 0)
+    P0, R0 = aim_rifle(0)
+    gun_objs, tree = gun_reference(Matrix.Translation(P0) @ R0.to_4x4())
+    print("\n[grip] fitting fingers against the Surge (contact radius %.4f m)"
+          % FINGER_RADIUS)
+    (RhR, aR), (RhL, aL) = aim_hands(P0, R0)
+    # The hold's span, printed because it is a REACH budget rather than a style
+    # choice: past ~0.20 m this creature's left arm locks straight, the IK gives
+    # up and plants the hand somewhere structural.
+    print("[grip] hands %.3f m apart" % (Vector(aR) - Vector(aL)).length)
+    HAND_PUSH.clear()
+    for rig, side, R_hand, attach in ((hands[0], 'R', RhR, aR),
+                                      (hands[1], 'L', RhL, aL)):
+        # The palm faces the opposite way to the back of the hand; backing the
+        # hand off means moving along that normal, away from the weapon.
+        palm = -R_hand.col[2].to_3d().normalized()
+        rest = {pb.name: pb.rotation_euler.copy() for pb in arm.pose.bones
+                if "Finger" in pb.name and pb.name.endswith("_" + side)}
+        push = 0.0
+        rows = []
+        # Up to five 3 mm steps. A hand that still has something buried after
+        # 15 mm is a hand whose ORIENTATION is wrong, not one that is too close,
+        # and that is a number to go and fix rather than to paper over.
+        for _attempt in range(6):
+            for name, euler in rest.items():
+                arm.pose.bones[name].rotation_euler = euler.copy()
+            rig.grip(0, R_hand, Vector(attach) - palm * push)
+            bpy.context.scene.frame_set(0)
+            bpy.context.view_layer.update()
+            rows = fit_fingers(arm, tree, side)
+            if not any(r[3] for r in rows):
+                break
+            push += 0.003
+        HAND_PUSH[side] = push
+        buried = [r[0] for r in rows if r[3]]
+        print("[grip] %s hand: %d phalanges fitted, stand-off +%.3f m, buried=%s"
+              % ("right" if side == 'R' else "left", len(rows), push,
+                 ", ".join(buried) if buried else "none"))
+        for bone, turned, dist, inside in rows:
+            print("[grip]   %-18s curl %+6.1f deg  gap %.4f m%s" % (
+                bone, turned, dist, "  *** INSIDE ***" if inside else ""))
+    for o in gun_objs:
+        bpy.data.objects.remove(o, do_unlink=True)
+    bpy.context.view_layer.update()
+
     for f in range(A_N + 1):
+        _pose_aim_frame(arm, hands, feet, f)
+    return bake_down(arm, feet + hands, "aim_idle", 0, A_N)
+
+
+def _pose_aim_frame(arm, hands, feet, f):
+    """One frame of the aim_idle hold. Split out of `build_aim_idle` so frame 0
+       can be posed before the finger fit and again inside the bake loop."""
+    if True:
         t = TAU * f / A_N
         c, s = math.cos(t), math.sin(t)
         b = math.sin(2 * t)
@@ -1062,12 +1348,20 @@ def build_aim_idle(arm):
                   tail, arml, armr, (rot_w(), rot_w()))
         P, R = aim_rifle(f)
         (RhR, aR), (RhL, aL) = aim_hands(P, R)
-        hands[0].grip(f, RhR, aR)
-        hands[1].grip(f, RhL, aL)
+        # The stand-off the finger fit settled on, carried across the whole clip:
+        # frame 0 is the frame that was verified, and every other frame has to
+        # hold the weapon the same way or the hold is only clean in a screenshot.
+        pR = -RhR.col[2].to_3d().normalized() * HAND_PUSH.get('R', 0.0)
+        pL = -RhL.col[2].to_3d().normalized() * HAND_PUSH.get('L', 0.0)
+        hands[0].grip(f, RhR, Vector(aR) - pR)
+        hands[1].grip(f, RhL, Vector(aL) - pL)
         # bladed foot stance, left foot forward and toed slightly out
         feet[0].place(f, 'ball', feet[0].BALL_Y + 0.105, 0.0, 0.0, x=feet[0].x + 0.012)
         feet[1].place(f, 'ball', feet[1].BALL_Y - 0.070, 0.0, 0.0, x=feet[1].x - 0.014)
-    return bake_down(arm, feet + hands, "aim_idle", 0, A_N)
+        # The IK has to be evaluated before the next frame reads pose matrices,
+        # and the finger fit reads them the moment this returns for frame 0.
+        bpy.context.scene.frame_set(f)
+        bpy.context.view_layer.update()
 
 
 def rifle_socket(arm):

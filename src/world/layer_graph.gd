@@ -153,6 +153,48 @@ var scrubber_nest_rooms: Array[int] = []
 var sentinel_posts: Array[Vector3] = []
 var sentinel_post_rooms: Array[int] = []
 
+## M4.8 functional clutter. Parallel arrays, same contract as the Compilers: all
+## of it is **seeded content**, so a rewire packet carries a mode and a weld
+## packet carries an index, and the host has its own copy of the exact prop the
+## client says it is standing at.
+##
+## Wall-mounted props (junctions, vents, cabinets, terminals) store the point on
+## the **graph** rect's wall plus which side it is. The builder projects that onto
+## the snapped shell it actually built — see ProcLayerBuilder._wall_prop. Storing
+## the graph-space anchor is what keeps `--dumplayer` a statement about the
+## generator rather than about the kit's snapping rules.
+var junction_points: Array[Vector3] = []
+var junction_sides: Array[int] = []
+var junction_rooms: Array[int] = []
+## Weldable vent covers. `vent_rooms[i]` is the nest the vent feeds, which is the
+## room whose reinforcement trickle welding it shuts down.
+var vent_points: Array[Vector3] = []
+var vent_sides: Array[int] = []
+var vent_rooms: Array[int] = []
+var cabinet_points: Array[Vector3] = []
+var cabinet_sides: Array[int] = []
+var cabinet_rooms: Array[int] = []
+## One command terminal per layer. `terminal_room` is -1 when a layer was too
+## small to find it a wall (which cannot happen at the shipped room counts, but a
+## generator that can fail loudly is better than one that can fail silently).
+var terminal_point: Vector3 = Vector3.ZERO
+var terminal_side: int = 0
+var terminal_room: int = -1
+## One sealable bulkhead, always on a **loop** corridor — never on a spanning-tree
+## edge, so sealing it can never be the thing that cuts a player off from the
+## shaft. `bulkhead_edge` is (-1, -1) on the rare layer with no loops at all.
+var bulkhead_point: Vector3 = Vector3.ZERO
+var bulkhead_edge: Vector2i = Vector2i(-1, -1)
+var bulkhead_axis: String = "x"
+## Kickable physics debris: a point and a kind (0 can, 1 rod, 2 plate fragment).
+var debris_points: Array[Vector3] = []
+var debris_kinds: Array[int] = []
+
+## The adjacencies the spanning tree did NOT use. Everything on one of these has
+## an alternative route by construction, which is exactly the property a door the
+## player can shut needs to have.
+var loop_edges: Array[Vector2i] = []
+
 var _rng: RandomNumberGenerator = null
 var _adjacency: Dictionary = {}  # int -> Array[int]
 ## Corridor adjacency (loops included) and the first hop of the shortest path
@@ -160,6 +202,10 @@ var _adjacency: Dictionary = {}  # int -> Array[int]
 var _links: Dictionary = {}      # int -> Array[int]
 var _hops: Dictionary = {}       # int * 100 + int -> int
 var _hop_counts: Dictionary = {} # int * 100 + int -> int
+## Edges a sealed bulkhead is currently closing. Not part of generation — it is
+## runtime state, replicated as "door N is shut" and applied identically on every
+## peer, and `_rebuild_hops` re-solves the routing table around it.
+var _blocked: Dictionary = {}
 
 
 ## Builds the graph for (run_seed, layer_number). Deterministic and total.
@@ -185,7 +231,8 @@ func _generate(run_seed: int, number: int) -> void:
 	var cells: Array[Vector2i] = _grow_cells(int(params["room_count"]))
 	_build_adjacency(cells)
 	var edges: Array[Vector2i] = _spanning_tree(cells.size())
-	edges.append_array(_extra_loops(edges, cells.size()))
+	loop_edges = _extra_loops(edges, cells.size())
+	edges.append_array(loop_edges)
 	# Archetypes before rects: a backdoor layer's shaft room is a different size,
 	# and the corridors carved in the next step have to meet its real walls.
 	var plan: Dictionary = _assign_archetypes(cells.size(), edges)
@@ -565,7 +612,39 @@ func _build_links(edges: Array[Vector2i]) -> void:
 	for edge: Vector2i in edges:
 		(_links[edge.x] as Array[int]).append(edge.y)
 		(_links[edge.y] as Array[int]).append(edge.x)
+	_rebuild_hops()
 
+
+## Seals or unseals the corridor between two rooms and re-solves the routing
+## table around it (M4.8's bulkhead doors).
+##
+## Every peer calls this off the same replicated "door N is shut" packet, so all
+## four routing tables stay identical — the graph is still a pure function of the
+## seed *plus* a replicated set of closed doors, which is the same guarantee with
+## one more input.
+##
+## The rebuild is a hundred BFS entries for a ten-room layer and happens once per
+## seal event, so it is cheaper than the alternative (creatures re-deciding at a
+## door every tick) by orders of magnitude.
+func set_edge_blocked(a: int, b: int, blocked: bool) -> void:
+	var key: int = _edge_key(a, b)
+	if blocked == _blocked.has(key):
+		return
+	if blocked:
+		_blocked[key] = true
+	else:
+		_blocked.erase(key)
+	_rebuild_hops()
+
+
+func is_edge_blocked(a: int, b: int) -> bool:
+	return _blocked.has(_edge_key(a, b))
+
+
+## All-pairs first hop over the corridor graph, minus whatever is sealed.
+func _rebuild_hops() -> void:
+	_hops.clear()
+	_hop_counts.clear()
 	for root: int in rooms.size():
 		var previous: Array[int] = []
 		previous.resize(rooms.size())
@@ -581,6 +660,8 @@ func _build_links(edges: Array[Vector2i]) -> void:
 			head += 1
 			for next: int in (_links[current] as Array[int]):
 				if distance[next] >= 0:
+					continue
+				if _blocked.has(_edge_key(current, next)):
 					continue
 				distance[next] = distance[current] + 1
 				previous[next] = current
@@ -679,6 +760,10 @@ func _place_furniture() -> void:
 	# the determinism dump instead of moving every shard on every layer — the
 	# dump for a given (seed, layer) is unchanged above this point.
 	_place_compilers()
+	# And M4.8 appends after M4, for the same reason and with the same result:
+	# every shard, nest, post and Compiler on every saved seed is exactly where it
+	# was before the functional clutter existed.
+	_place_props()
 
 
 ## Salvage. Vaults are rich, everything else is loose change; the drop-shaft room
@@ -775,6 +860,280 @@ func _place_compilers() -> void:
 	compiler_sanctuary.append(true)
 
 
+# ----------------------------------------------------- M4.8 functional clutter --
+#
+# Five families of prop, all placed here rather than in the builder, all appended
+# to the end of the RNG stream. Two things drive every decision below:
+#
+#   **Nothing may block a route.** Wall props stand on walls, clear of every
+#   doorway by DOOR_CLEAR; debris is scattered like the loose data blocks are,
+#   pushed out of the room's central crossing; and the one prop that genuinely
+#   closes a corridor is only ever allowed on a loop edge.
+#
+#   **Every prop is reachable and usable alone.** There is no two-agent lever in
+#   this milestone and there is not going to be one — DESIGN.md's solo invariant
+#   is a design law, and the place it would be broken is exactly here, in a set
+#   of props that would be *so* satisfying to make co-operative.
+
+## How many of each. Ranges rather than fixed counts, so two layers at the same
+## depth still feel hand-dressed.
+const JUNCTIONS: Vector2i = Vector2i(1, 2)
+const VENTS: Vector2i = Vector2i(2, 4)
+const CABINETS: Vector2i = Vector2i(1, 3)
+const DEBRIS: Vector2i = Vector2i(6, 10)
+
+## Clearance a wall prop keeps from a doorway centre. Half a door (1.6) plus a
+## body's width, so you can never end up welding a vent from inside a corridor.
+const PROP_DOOR_CLEAR: float = 3.4
+## And from a room corner, where the kit stands a rib column.
+const PROP_CORNER_INSET: float = 3.0
+## Tries before a wall prop gives up on a wall. Every attempt draws from `_rng`,
+## so the count is deterministic even though the outcome branches.
+const PROP_WALL_TRIES: int = 6
+
+
+## Wall-facing yaw in radians for a side (0=north/-Z, 1=east/+X, 2=south/+Z,
+## 3=west/-X). Matches GeometryKit's wall-slot convention exactly, so a prop and
+## the module behind it always agree which way is into the room.
+static func wall_yaw(side: int) -> float:
+	match side:
+		0:
+			return 0.0
+		1:
+			return -PI * 0.5
+		2:
+			return PI
+		_:
+			return PI * 0.5
+
+
+## Inward normal of a wall side.
+static func wall_normal(side: int) -> Vector3:
+	var yaw: float = wall_yaw(side)
+	return Vector3(sin(yaw), 0.0, cos(yaw))
+
+
+## A point on one of `room`'s walls with nothing in the way, or ZERO if this wall
+## has no room for a prop. `side` is the caller's; the doorway and corner
+## clearances are this function's.
+func _wall_prop_point(room: Dictionary, side: int) -> Vector3:
+	var lo: Vector2 = room["min"]
+	var hi: Vector2 = room["max"]
+	var doors: Array = room.get("doors", []) as Array
+	var wall: String = "n" if side == 0 else ("e" if side == 1 else
+			("s" if side == 2 else "w"))
+	var horizontal: bool = side % 2 == 0
+	var from: float = (lo.x if horizontal else lo.y) + PROP_CORNER_INSET
+	var to: float = (hi.x if horizontal else hi.y) - PROP_CORNER_INSET
+	if to <= from:
+		return Vector3.ZERO
+	var fixed: float = lo.y if side == 0 else (
+			hi.x if side == 1 else (hi.y if side == 2 else lo.x))
+
+	for _attempt: int in PROP_WALL_TRIES:
+		var t: float = _rng.randf_range(from, to)
+		var clear: bool = true
+		for door: Dictionary in doors:
+			if String(door.get("wall", "")) != wall:
+				continue
+			if absf(float(door.get("at", 0.0)) - t) < PROP_DOOR_CLEAR:
+				clear = false
+				break
+		if not clear:
+			continue
+		return Vector3(t, 0.0, fixed) if horizontal else Vector3(fixed, 0.0, t)
+	return Vector3.ZERO
+
+
+## Mounts one wall prop somewhere on `room`, trying each wall in a rolled order.
+## Returns {ok, point, side}.
+func _mount_wall_prop(room: Dictionary) -> Dictionary:
+	var first: int = _rng.randi_range(0, 3)
+	for step: int in 4:
+		var side: int = (first + step) % 4
+		var point: Vector3 = _wall_prop_point(room, side)
+		if not point.is_equal_approx(Vector3.ZERO):
+			return {"ok": true, "point": point, "side": side}
+	return {"ok": false, "point": Vector3.ZERO, "side": 0}
+
+
+func _place_props() -> void:
+	# --- rewire junctions --------------------------------------------------
+	#
+	# Anywhere but the sanctuary and the trunk. The junction is a decision you
+	# make about the layer you are still in, so putting one in the room you leave
+	# from would be putting it after the decision.
+	var general: Array[int] = []
+	for room: Dictionary in rooms:
+		var archetype: String = String(room["archetype"])
+		if archetype == SHAFT or archetype == BACKDOOR:
+			continue
+		general.append(int(room["index"]))
+	if general.is_empty():
+		general.append(arrival_index)
+
+	var wanted_junctions: int = mini(
+			_rng.randi_range(JUNCTIONS.x, JUNCTIONS.y), general.size())
+	var junction_pool: Array[int] = general.duplicate()
+	for _i: int in wanted_junctions:
+		if junction_pool.is_empty():
+			break
+		var pick: int = _rng.randi_range(0, junction_pool.size() - 1)
+		var index: int = junction_pool[pick]
+		junction_pool.remove_at(pick)
+		var mount: Dictionary = _mount_wall_prop(rooms[index])
+		if not bool(mount["ok"]):
+			continue
+		junction_points.append(mount["point"])
+		junction_sides.append(int(mount["side"]))
+		junction_rooms.append(index)
+
+	# --- weldable vent covers ----------------------------------------------
+	#
+	# On the walls of the nests, because a vent is where the cleaners come in and
+	# the nest is where they live. A layer with one nest gets several vents on it;
+	# a layer with four gets one each. Either way the crew can shut a nest down.
+	var nests: Array[int] = nest_rooms.duplicate()
+	if nests.is_empty():
+		nests.append(shaft_index if vault_index < 0 else vault_index)
+	var wanted_vents: int = _rng.randi_range(VENTS.x, VENTS.y)
+	for i: int in wanted_vents:
+		var index: int = nests[i % nests.size()]
+		var mount: Dictionary = _mount_wall_prop(rooms[index])
+		if not bool(mount["ok"]):
+			continue
+		vent_points.append(mount["point"])
+		vent_sides.append(int(mount["side"]))
+		vent_rooms.append(index)
+
+	# --- lootable cabinets --------------------------------------------------
+	var wanted_cabinets: int = mini(
+			_rng.randi_range(CABINETS.x, CABINETS.y), general.size())
+	var cabinet_pool: Array[int] = general.duplicate()
+	for _i: int in wanted_cabinets:
+		if cabinet_pool.is_empty():
+			break
+		var pick: int = _rng.randi_range(0, cabinet_pool.size() - 1)
+		var index: int = cabinet_pool[pick]
+		cabinet_pool.remove_at(pick)
+		var mount: Dictionary = _mount_wall_prop(rooms[index])
+		if not bool(mount["ok"]):
+			continue
+		cabinet_points.append(mount["point"])
+		cabinet_sides.append(int(mount["side"]))
+		cabinet_rooms.append(index)
+
+	# --- the command terminal ----------------------------------------------
+	#
+	# In a LIT room, and never in the vault. This is the one prop the player
+	# stands at with their back to the room for several seconds at a time, and
+	# putting it in a nest would not be tense, it would be a tax.
+	var console_rooms: Array[int] = []
+	for room: Dictionary in rooms:
+		var archetype: String = String(room["archetype"])
+		if archetype == SHAFT or archetype == BACKDOOR or archetype == VAULT:
+			continue
+		if bool(room["unlit"]):
+			continue
+		console_rooms.append(int(room["index"]))
+	if console_rooms.is_empty():
+		console_rooms.append(arrival_index)
+	var console: int = console_rooms[_rng.randi_range(0, console_rooms.size() - 1)]
+	var console_mount: Dictionary = _mount_wall_prop(rooms[console])
+	if bool(console_mount["ok"]):
+		terminal_point = console_mount["point"]
+		terminal_side = int(console_mount["side"])
+		terminal_room = console
+
+	# --- the bulkhead -------------------------------------------------------
+	#
+	# Loop edges only, and the reason is a design law rather than a preference:
+	# a door on a spanning-tree edge is a door that can cut a player off from the
+	# drop shaft, and a prop that can end a run by being used correctly is not
+	# shippable. On a loop edge the worst case is a longer walk.
+	if not loop_edges.is_empty():
+		var edge: Vector2i = loop_edges[_rng.randi_range(0, loop_edges.size() - 1)]
+		for corridor: Dictionary in corridors:
+			var a: int = int(corridor["a"])
+			var b: int = int(corridor["b"])
+			if (a != edge.x or b != edge.y) and (a != edge.y or b != edge.x):
+				continue
+			var mid: Vector2 = (Vector2(corridor["min"]) + Vector2(corridor["max"])) * 0.5
+			bulkhead_point = Vector3(mid.x, 0.0, mid.y)
+			bulkhead_edge = Vector2i(a, b)
+			bulkhead_axis = String(corridor["axis"])
+			break
+
+	# --- physics debris -----------------------------------------------------
+	#
+	# Six to ten pieces on the whole layer. That number is a performance budget as
+	# much as an art one: every one of these is a live RigidBody3D in the
+	# broadphase, and a layer with fifty of them is a layer that stutters when a
+	# player walks through a doorway.
+	# Never in the sanctuary and never in the trunk room. The sanctuary is the
+	# crew's one safe place and a can rolling across it is a jump scare with no
+	# author; the trunk room is where the whole crew stands still for three
+	# seconds to muster, and a rigid body underfoot there is a descent channel
+	# that keeps breaking for reasons nobody can see.
+	var floor_rooms: Array[int] = []
+	for room: Dictionary in rooms:
+		var archetype: String = String(room["archetype"])
+		if archetype != BACKDOOR and archetype != SHAFT:
+			floor_rooms.append(int(room["index"]))
+	if floor_rooms.is_empty():
+		floor_rooms.append(arrival_index)
+	var wanted_debris: int = _rng.randi_range(DEBRIS.x, DEBRIS.y)
+	for _i: int in wanted_debris:
+		var index: int = floor_rooms[_rng.randi_range(0, floor_rooms.size() - 1)]
+		debris_points.append(_clear_of_centre(rooms[index],
+				_scatter_point(rooms[index], 3.0)))
+		debris_kinds.append(_rng.randi_range(0, 2))
+
+
+# ---------------------------------------------------------------- room names --
+
+## Prefix per archetype. Short, all-caps, and readable as a place rather than as
+## a category — a terminal answering "VAULT-7C" is naming a room, not describing
+## a data structure.
+const ROOM_PREFIX: Dictionary = {
+	ARRIVAL: "GATE",
+	SIPHON: "SIPH",
+	VAULT: "VAULT",
+	BUS: "BUS",
+	SHAFT: "TRUNK",
+	BACKDOOR: "NODE",
+}
+
+
+## MOTHER's own name for a room, e.g. `BUS-7C`. Deterministic by construction —
+## it is a pure function of the archetype, the layer number and the room index —
+## so the command terminal, the wayfinding it prints and any future system that
+## has to say where something is all use the same word for the same place.
+##
+## An unlit bus hall is a NEST regardless of what the archetype table says. The
+## crew learns that word fast, and it is worth a terminal being willing to say it.
+func room_name(index: int) -> String:
+	if index < 0 or index >= rooms.size():
+		return "UNMAPPED"
+	var room: Dictionary = rooms[index]
+	var archetype: String = String(room["archetype"])
+	var prefix: String = String(ROOM_PREFIX.get(archetype, "BUS"))
+	if archetype == BUS and bool(room["unlit"]):
+		prefix = "NEST"
+	# A..Z then wraps; layers cap at ten rooms, so it never does.
+	return "%s-%d%s" % [prefix, layer_number,
+			char(65 + (index % 26))]
+
+
+## The room whose name is `name`, or -1. What `QUERY <ROOM>` resolves against.
+func room_by_name(wanted: String) -> int:
+	var needle: String = wanted.strip_edges().to_upper()
+	for i: int in rooms.size():
+		if room_name(i) == needle:
+			return i
+	return -1
+
+
 ## Pushes a point out of a room's central crossing, the same rule the loose
 ## furniture follows. A siphon junction stands its hero conduit trunk on the room
 ## centre and every room's doorway-to-doorway path runs through it, so a Compiler
@@ -868,7 +1227,7 @@ func spawn_point(index: int) -> Transform3D:
 ## with the Sentinel somewhere else — would still desync a crew.
 func to_text() -> String:
 	var lines: PackedStringArray = PackedStringArray()
-	lines.append("NULLVOID LAYER DUMP")
+	lines.append("LIMBO PROTOCOL LAYER DUMP")
 	lines.append("layer=%d sub_seed=%d backdoor=%s" % [
 		layer_number, layer_seed, str(is_backdoor)])
 	lines.append(LayerParams.describe(layer_number))
@@ -930,5 +1289,41 @@ func to_text() -> String:
 			i, compiler_rooms[i], compiler_tiers[i],
 			1 if compiler_sanctuary[i] else 0,
 			compiler_points[i].x, compiler_points[i].y, compiler_points[i].z])
+
+	# --- M4.8 ---------------------------------------------------------------
+	#
+	# Every functional prop, in the dump, for the same reason the Sentinel posts
+	# are: two peers that disagree about which wall a vent is on disagree about
+	# what a weld packet means. `side` is in here as well as the point because the
+	# builder projects the point onto the snapped shell and the side is what tells
+	# it which way to project.
+	for i: int in junction_points.size():
+		lines.append("  junction %02d room=%d side=%d (%.3f,%.3f,%.3f)" % [
+			i, junction_rooms[i], junction_sides[i],
+			junction_points[i].x, junction_points[i].y, junction_points[i].z])
+	for i: int in vent_points.size():
+		lines.append("  vent %02d room=%d side=%d (%.3f,%.3f,%.3f)" % [
+			i, vent_rooms[i], vent_sides[i],
+			vent_points[i].x, vent_points[i].y, vent_points[i].z])
+	for i: int in cabinet_points.size():
+		lines.append("  cabinet %02d room=%d side=%d (%.3f,%.3f,%.3f)" % [
+			i, cabinet_rooms[i], cabinet_sides[i],
+			cabinet_points[i].x, cabinet_points[i].y, cabinet_points[i].z])
+	lines.append("  terminal room=%d side=%d (%.3f,%.3f,%.3f)" % [
+		terminal_room, terminal_side,
+		terminal_point.x, terminal_point.y, terminal_point.z])
+	lines.append("  bulkhead edge=(%d,%d) axis=%s (%.3f,%.3f,%.3f)" % [
+		bulkhead_edge.x, bulkhead_edge.y, bulkhead_axis,
+		bulkhead_point.x, bulkhead_point.y, bulkhead_point.z])
+	for i: int in debris_points.size():
+		lines.append("  debris %02d kind=%d (%.3f,%.3f,%.3f)" % [
+			i, debris_kinds[i],
+			debris_points[i].x, debris_points[i].y, debris_points[i].z])
+	# Room names last: they are derived rather than rolled, but a dump that prints
+	# them is a dump that catches a rename breaking every terminal answer.
+	var names: PackedStringArray = PackedStringArray()
+	for i: int in rooms.size():
+		names.append(room_name(i))
+	lines.append("  names %s" % " ".join(names))
 
 	return "\n".join(lines)

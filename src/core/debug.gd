@@ -160,6 +160,41 @@ extends Node
 ##       Purchase one tier of TRACK through the real request path (the host
 ##       validates funds, stock and proximity) once the panel is up. Repeatable.
 ##
+## M4.8 flags. The functional clutter is five props with host-validated state
+## between them, and none of it can be photographed or asserted on without being
+## able to walk up to a specific one and use it:
+##   --goto junction|vent|cabinet|terminal|bulkhead|debris
+##       Stand in front of that prop, facing it, at a distance chosen per prop
+##       (see M48_TARGETS). Combines with `--fire` to weld a vent or cut a
+##       cabinet lock, and with `--hold-interact` to seal a bulkhead.
+##   --rewire LOAD [delay]
+##       Walk to the junction, open its panel, and route the bus.
+##       LOAD: lights | doors | fans | none. Drives the panel's own request path,
+##       so the host's proximity check and the noise ping are both real.
+##   --terminal [delay]
+##       Open a command-terminal session.
+##   --query "LIST DATA" [--query "QUERY VAULT-7C" ...]
+##       Type commands into it, in order, waiting out each answer. Repeatable.
+##   --pad [row]
+##       Park the terminal's gamepad command list on a row, so the pad path can
+##       be photographed. Parity is a design law (DESIGN.md's solo invariant has
+##       an accessibility half), and an unphotographable feature is one nobody
+##       checks.
+##   --seal [delay]
+##       Hold the bulkhead's channel until the door is genuinely shut, then let
+##       go. `--hold-interact` cannot do this: the bulkhead is the only
+##       interactable that toggles, so a key held down cycles it forever.
+##   --no-descend
+##       The tour stops when it has used everything instead of riding the shaft
+##       down. What a staged capture wants, and what the reinforcement-trickle
+##       check needs — a layer that has been fully worked over and is still there.
+##   --tour
+##       Use EVERY M4.8 prop on every layer, in the order they are meant to be
+##       used in, then ride the shaft down and do it again. A solo `--tour` from
+##       layer 1 is the milestone's end-to-end proof: it drives real inputs and
+##       waits on replicated state, so a step that stopped working hangs the run
+##       instead of scrolling past. Pair with `--exfil` for the full loop.
+##
 ## M3.5 (Steam) flags:
 ##   --no-steam          never touch the Steam API, even with the client running.
 ##                       The ENet-only regression path on a Steam machine.
@@ -278,6 +313,25 @@ var _compiler_delay: float = -1.0
 ## `--buy` targets, in the order they were given.
 var _buy_tracks: PackedStringArray = PackedStringArray()
 var _buy_delay: float = 1.2
+
+# --- M4.8 functional clutter -------------------------------------------------
+## `--rewire MODE`. -1 means "open the panel and change nothing".
+var _rewire_mode: int = -1
+var _rewire_delay: float = -1.0
+## `--seal`. Holds the bulkhead channel until the door is genuinely shut and then
+## lets go — a plain `--hold-interact` would keep toggling it.
+var _seal_delay: float = -1.0
+## `--tour`. Use every M4.8 prop on every layer, then ride the shaft down.
+var _tour: bool = false
+## `--no-descend`. The tour stays where it is once it has used everything, which
+## is what a staged capture (and the reinforcement-trickle check) needs: both
+## want a layer that has been fully worked over and is still standing.
+var _no_descend: bool = false
+## `--terminal` / `--query CMD` (repeatable) / `--pad ROW`.
+var _terminal_delay: float = -1.0
+var _queries: PackedStringArray = PackedStringArray()
+var _query_delay: float = 1.0
+var _pad_row: int = -1
 
 ## How far back `--goto compiler` stands. Far enough that the lectern and its
 ## cowl both fit in frame, close enough that the readout rows still resolve.
@@ -539,6 +593,47 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
 					i += 1
 					_buy_delay = args[i].to_float()
+			"--rewire":
+				_rewire_delay = 2.6
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_rewire_mode = _power_mode(args[i])
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_rewire_delay = args[i].to_float()
+				if _goto.is_empty():
+					_goto = "junction"
+			"--tour":
+				_tour = true
+			"--no-descend":
+				_no_descend = true
+			"--seal":
+				_seal_delay = 2.6
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_seal_delay = args[i].to_float()
+				if _goto.is_empty():
+					_goto = "bulkhead"
+			"--terminal":
+				_terminal_delay = 2.6
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_terminal_delay = args[i].to_float()
+				if _goto.is_empty():
+					_goto = "terminal"
+			"--query":
+				if i + 1 < args.size():
+					i += 1
+					_queries.append(args[i])
+				if _terminal_delay < 0.0:
+					_terminal_delay = 2.6
+				if _goto.is_empty():
+					_goto = "terminal"
+			"--pad":
+				_pad_row = 6
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_pad_row = maxi(args[i].to_int(), 0)
 			"--no-antivirus":
 				no_antivirus = true
 			"--aim":
@@ -617,6 +712,24 @@ func _parse_args(args: PackedStringArray) -> void:
 		i += 1
 
 
+## `--rewire`'s argument. Named for the loads on the box rather than for the
+## enum, because that is what the panel prints and what a capture command line
+## should read like.
+static func _power_mode(name: String) -> int:
+	match name.strip_edges().to_lower():
+		"lights", "lighting":
+			return Props.Power.LIGHTS
+		"doors", "locks":
+			return Props.Power.DOORS
+		"fans", "vents":
+			return Props.Power.FANS
+		"none", "off", "cut":
+			return Props.Power.NONE
+		_:
+			push_warning("[Debug] --rewire: unknown load '%s'" % name)
+			return -1
+
+
 ## `--hud-state`. The pool presets deliberately drive `--cycles` rather than
 ## poking the HUD: a capture of "the interface at 10%" has to be a capture of the
 ## game genuinely at 10%, or it is documenting something that cannot happen.
@@ -678,7 +791,8 @@ func _boot() -> void:
 		_quit_after(auto_quit_after)
 	if not _goto.is_empty() or _hold_delay >= 0.0 or _decompile_at >= 0.0 \
 			or _fire_delay >= 0.0 or _flare_delay >= 0.0 or _exfil_delay >= 0.0 \
-			or _grab_count > 0 or _compiler_delay >= 0.0:
+			or _grab_count > 0 or _compiler_delay >= 0.0 or _rewire_delay >= 0.0 \
+			or _terminal_delay >= 0.0 or _tour:
 		_arm_automation()
 	if log_modules:
 		# On the roster rather than on the spawn: a client spawns before the crew
@@ -805,6 +919,14 @@ func _on_automation_player_ready(_player: Node) -> void:
 		_run_exfil(_exfil_delay)
 	if _compiler_delay >= 0.0:
 		_run_compiler(_compiler_delay)
+	if _rewire_delay >= 0.0:
+		_run_rewire(_rewire_delay)
+	if _seal_delay >= 0.0:
+		_run_seal(_seal_delay)
+	if _terminal_delay >= 0.0:
+		_run_terminal(_terminal_delay)
+	if _tour:
+		_run_tour()
 
 
 func _decompile_later(seconds: float) -> void:
@@ -833,6 +955,19 @@ func _flare_later(seconds: float) -> void:
 
 
 func _on_automation_layer(number: int) -> void:
+	if _tour:
+		# Same handover `--autodescend` makes: once the tour reaches a backdoor
+		# layer, stop touring and play the endgame out through the real channels.
+		if _exfil_delay >= 0.0 and bool(LayerParams.of(number)["has_backdoor"]):
+			print("[Debug] tour: layer %d has a backdoor, running the exfil" % number)
+			_tour = false
+			hold_interact = false
+			hold_fire = false
+			_run_exfil(1.2)
+			return
+		print("[Debug] tour: now on layer %d" % number)
+		_run_tour()
+		return
 	if not _auto_descend:
 		return
 	# The full loop, in one run: ride the shaft down to the first backdoor layer
@@ -948,6 +1083,8 @@ func _teleport_local(where: String) -> void:
 			pick, str(spot.snapped(Vector3.ONE * 0.1)),
 			str(stand.snapped(Vector3.ONE * 0.1)),
 			"sanctuary" if machine != null and machine.sanctuary else "hidden"])
+	elif M48_TARGETS.has(where):
+		_goto_prop(where, index)
 	elif where == "wallhug":
 		# Nose against a wall, looking straight at it. The only way to photograph
 		# the weapon-collision tuck (Player._update_weapon_tuck): standing back at
@@ -1023,6 +1160,380 @@ func _teleport_local(where: String) -> void:
 		print("[Debug] teleported to siphon tap %d %s" % [pick, str(tap)])
 	else:
 		push_warning("[Debug] unknown --goto target '%s'" % where)
+
+
+# --------------------------------------------------------- M4.8 prop probes --
+
+## `--goto` targets that resolve to one of the milestone's functional props.
+## Each maps to the group the prop registers itself in, plus how far back to
+## stand and what height to look at — a vent is a hole at knee-to-chest height
+## and a bulkhead is four metres of door, and photographing either from the
+## Compiler's standoff would frame the wrong thing.
+const M48_TARGETS: Dictionary = {
+	"junction": {"group": "rewire_junctions", "standoff": 2.4, "aim": 1.5},
+	"vent": {"group": "weld_vents", "standoff": 2.8, "aim": 1.4},
+	"cabinet": {"group": "loot_cabinets", "standoff": 2.6, "aim": 1.3},
+	"terminal": {"group": "command_terminals", "standoff": 2.2, "aim": 1.5},
+	"bulkhead": {"group": "bulkhead_doors", "standoff": 4.2, "aim": 1.8},
+	"debris": {"group": "debris", "standoff": 2.0, "aim": 0.2},
+}
+
+
+## Stands the local avatar in front of one of M4.8's props, facing it.
+##
+## The approach direction is the prop's own facing where it has one (every wall
+## prop's local -Z points into the room, the same convention the Compiler uses),
+## fanned through `_clear_view` so a rib column between the lens and the machine
+## moves the camera rather than ruining the shot. The re-aim after settling is the
+## same fix the Compiler needed: a teleport into a tight spot is depenetrated on
+## the next physics step, and a yaw computed before that points a metre wide.
+func _goto_prop(where: String, index: int) -> void:
+	var spec: Dictionary = M48_TARGETS[where]
+	var nodes: Array[Node] = get_tree().get_nodes_in_group(String(spec["group"]))
+	if nodes.is_empty():
+		push_warning("[Debug] no '%s' on this layer" % where)
+		return
+	var prop: Node3D = nodes[index % nodes.size()] as Node3D
+	if prop == null:
+		return
+	var player: Node = Net.get_player(Net.local_id())
+	var avatar: Player = player as Player
+	if avatar == null or not is_instance_valid(avatar):
+		return
+
+	var spot: Vector3 = prop.global_position
+	# +Z, not -Z. Every M4.8 wall prop is built with its detailed face on local +Z
+	# — the same convention `GeometryKit._wall_slot` uses for the module behind it,
+	# so `LayerGraph.wall_normal` points both of them into the room. The Compiler
+	# is the odd one out (its lectern faces -Z), which is exactly why this is a
+	# separate probe rather than a shared one, and why the first version of it
+	# photographed the wall beside every vent on the layer.
+	var facing: Vector3 = prop.global_transform.basis.z
+	var view: Dictionary = _clear_view(spot, facing, float(spec["standoff"]))
+	var out: Vector3 = view["direction"]
+	var stand: Vector3 = spot + out * float(view["distance"])
+	avatar.teleport_to(Vector3(stand.x, 0.35, stand.z), atan2(out.x, out.z),
+			_pitch_for(-0.12))
+	_look_at_after_settling(avatar, spot + Vector3.UP * float(spec["aim"]))
+	print("[Debug] teleported to %s %d at %s (stand %s)" % [
+		where, index % nodes.size(), str(spot.snapped(Vector3.ONE * 0.1)),
+		str(stand.snapped(Vector3.ONE * 0.1))])
+
+
+## `--rewire`. Opens the junction panel the way holding E does and drives its own
+## selection, so the host's proximity check and the panel's own request path are
+## both exercised rather than bypassed.
+func _run_rewire(delay: float) -> void:
+	await get_tree().create_timer(delay).timeout
+	var player: Node = Net.get_player(Net.local_id())
+	if player == null or not is_instance_valid(player):
+		push_warning("[Debug] --rewire: no local player")
+		return
+	var here: Vector3 = (player as Node3D).global_position
+	var nearest: RewireJunction = null
+	var best: float = Balance.JUNCTION_USE_RANGE
+	for node: Node in get_tree().get_nodes_in_group(Props.GROUP_JUNCTION):
+		var junction: RewireJunction = node as RewireJunction
+		if junction == null or not is_instance_valid(junction):
+			continue
+		var distance: float = junction.global_position.distance_to(here)
+		if distance < best:
+			best = distance
+			nearest = junction
+	if nearest == null:
+		push_warning("[Debug] --rewire: nothing in reach; is --goto junction set?")
+		return
+	var panel: JunctionPanel = JunctionPanel.open_for(nearest)
+	if panel == null or _rewire_mode < 0:
+		return
+	await get_tree().create_timer(0.5).timeout
+	if not is_instance_valid(panel):
+		return
+	print("[Debug] --rewire: routing to %s" % Props.power_name(_rewire_mode))
+	panel.select(_rewire_mode)
+	panel.route_selected()
+
+
+## `--tour`. Use every M4.8 prop on this layer, in order, then ride the shaft
+## down and do it again on the next one.
+##
+## This is the milestone's end-to-end proof and it is deliberately built out of
+## the same pieces a player uses: it teleports to a prop (which is the only thing
+## a `--goto` has ever done), holds the real trigger or the real interact key, and
+## waits on **replicated state** rather than on a timer — so a step that silently
+## stopped working hangs the tour instead of scrolling past in a log.
+##
+## The order is the order the props are meant to be used in. Route the power
+## first, because DOOR LOCKS is what makes the cabinet silent; weld every vent,
+## because a partly-welded nest still trickles; then the cabinet, the terminal,
+## the bulkhead, and finally a kicked can on the way to the shaft.
+func _run_tour() -> void:
+	await get_tree().create_timer(1.4).timeout
+	var layer: int = Run.layer_number
+
+	# --- the junction, routed to DOOR LOCKS ---------------------------------
+	if await _tour_visit("junction", 0):
+		var junction: RewireJunction = _tour_nearest_junction()
+		if junction != null:
+			var panel: JunctionPanel = JunctionPanel.open_for(junction)
+			if panel != null:
+				await get_tree().create_timer(0.5).timeout
+				panel.select(Props.Power.DOORS)
+				panel.route_selected()
+				await _wait_until(func() -> bool:
+					return Props.power == Props.Power.DOORS, 5.0)
+				panel.close()
+				print("[Tour] L%d junction: power routed to %s" % [
+					layer, Props.power_name(Props.power)])
+
+	# --- every vent on the layer, welded ------------------------------------
+	var vents: int = get_tree().get_nodes_in_group(Props.GROUP_VENT).size()
+	for i: int in vents:
+		if not await _tour_visit("vent", i):
+			break
+		hold_fire = true
+		var welded: bool = await _tour_hold("vent", i, func() -> bool:
+			return Props.is_welded(i))
+		hold_fire = false
+		if not welded:
+			_diagnose("vent", i)
+		print("[Tour] L%d vent %d: %s" % [layer, i, "welded" if welded else "FAILED"])
+
+	# --- a cabinet, which the junction has just unlocked --------------------
+	if await _tour_visit("cabinet", 0):
+		hold_interact = true
+		var opened: bool = await _tour_hold("cabinet", 0, func() -> bool:
+			return Props.is_cabinet_open(0))
+		hold_interact = false
+		if not opened:
+			_diagnose("cabinet", 0)
+		print("[Tour] L%d cabinet 0: %s (silent path)" % [
+			layer, "opened" if opened else "FAILED"])
+
+	# --- the terminal -------------------------------------------------------
+	if await _tour_visit("terminal", 0):
+		var console: CommandTerminal = _tour_nearest_terminal()
+		if console != null:
+			var session: TerminalPanel = TerminalPanel.open_for(console)
+			if session != null:
+				await get_tree().create_timer(0.4).timeout
+				session.submit("LIST DATA")
+				await get_tree().create_timer(
+						Balance.TERMINAL_QUERY_SECONDS + 1.4).timeout
+				if is_instance_valid(session):
+					session.close()
+				print("[Tour] L%d terminal: query answered" % layer)
+
+	# --- the bulkhead -------------------------------------------------------
+	if await _tour_visit("bulkhead", 0):
+		hold_interact = true
+		var sealed: bool = await _wait_until(func() -> bool:
+			return Props.is_sealed(0), 8.0)
+		hold_interact = false
+		print("[Tour] L%d bulkhead: %s" % [layer, "sealed" if sealed else "FAILED"])
+
+	# --- kick something -----------------------------------------------------
+	if await _tour_visit("debris", 0):
+		hold_forward = true
+		await get_tree().create_timer(1.2).timeout
+		hold_forward = false
+		print("[Tour] L%d debris: kicked" % layer)
+
+	# --- and down ------------------------------------------------------------
+	if _no_descend:
+		print("[Tour] L%d complete; holding position (--no-descend)" % layer)
+		return
+	_teleport_local("shaft")
+	await get_tree().create_timer(0.6).timeout
+	hold_interact = true
+	await _wait_until(func() -> bool: return Run.layer_number != layer, 20.0)
+	hold_interact = false
+
+
+## One stop on the tour: stand at the prop and give the physics a moment to
+## settle. False when the layer has none of that prop, which is legitimate — not
+## every ring rolls a bulkhead.
+func _tour_visit(target: String, index: int) -> bool:
+	if Run.run_over:
+		return false
+	var spec: Dictionary = M48_TARGETS.get(target, {}) as Dictionary
+	if spec.is_empty():
+		return false
+	if get_tree().get_nodes_in_group(String(spec["group"])).is_empty():
+		print("[Tour] L%d %s: none on this layer" % [Run.layer_number, target])
+		return false
+	_goto_prop(target, index)
+	await get_tree().create_timer(0.9).timeout
+	# And aim once more from wherever the body actually settled. `_goto_prop` has
+	# already done this, but a second pass after a full second of physics costs
+	# nothing and is the difference between a tour that reliably uses a prop and
+	# one that reliably reports it broken.
+	var player: Node = Net.get_player(Net.local_id())
+	var avatar: Player = player as Player
+	var nodes: Array[Node] = get_tree().get_nodes_in_group(String(spec["group"]))
+	if avatar != null and is_instance_valid(avatar) and index < nodes.size():
+		var prop: Node3D = nodes[index] as Node3D
+		if prop != null:
+			_look_at_after_settling(avatar,
+					prop.global_position + Vector3.UP * float(spec["aim"]))
+			await get_tree().create_timer(0.35).timeout
+	return true
+
+
+## Holds whatever is already being held until `test` passes, re-aiming at the
+## prop between attempts.
+##
+## A single aim is not enough and the reason is the physics: a teleport that
+## lands a capsule near a wall depenetrates over a second or so, and by the time
+## it has stopped the yaw written on arrival is pointing at where the prop *was*
+## relative to the body. Re-aiming from wherever it actually ended up converges
+## in one or two passes and costs a few tenths of a second.
+func _tour_hold(target: String, index: int, test: Callable) -> bool:
+	for _attempt: int in 3:
+		_face_prop(target, index)
+		if await _wait_until(test, 3.0):
+			return true
+	return false
+
+
+## Points the lens at a prop from wherever the avatar currently is. Immediate —
+## no awaits, so it can be called inside a polling loop.
+func _face_prop(target: String, index: int) -> void:
+	var spec: Dictionary = M48_TARGETS.get(target, {}) as Dictionary
+	if spec.is_empty():
+		return
+	var nodes: Array[Node] = get_tree().get_nodes_in_group(String(spec["group"]))
+	if index >= nodes.size():
+		return
+	var prop: Node3D = nodes[index] as Node3D
+	var player: Node = Net.get_player(Net.local_id())
+	var avatar: Player = player as Player
+	if prop == null or avatar == null or not is_instance_valid(avatar):
+		return
+	var eye: Vector3 = avatar.global_position + Vector3.UP * 1.62
+	var to_prop: Vector3 = prop.global_position + Vector3.UP * float(spec["aim"]) - eye
+	if to_prop.length_squared() < 0.04:
+		return
+	avatar.teleport_to(avatar.global_position, atan2(-to_prop.x, -to_prop.z),
+			_pitch_for(atan2(to_prop.y, Vector2(to_prop.x, to_prop.z).length())))
+
+
+## Why a tour step could not reach its prop. Temporary-feeling but permanent:
+## every failure this milestone had was a line-of-sight problem, and a log line
+## that says which ray missed is worth an afternoon of guessing.
+func _diagnose(target: String, index: int) -> void:
+	var spec: Dictionary = M48_TARGETS.get(target, {}) as Dictionary
+	var nodes: Array[Node] = get_tree().get_nodes_in_group(String(spec["group"]))
+	if nodes.is_empty() or index >= nodes.size():
+		return
+	var prop: Node3D = nodes[index] as Node3D
+	var player: Node = Net.get_player(Net.local_id())
+	if prop == null or player == null:
+		return
+	var avatar: Node3D = player as Node3D
+	var eye: Vector3 = avatar.global_position + Vector3.UP * 1.62
+	var space: PhysicsDirectSpaceState3D = avatar.get_world_3d().direct_space_state
+	var forward: Vector3 = Vector3(-sin(avatar.rotation.y), 0.0, -cos(avatar.rotation.y))
+	var to_prop: Vector3 = (prop.global_position + Vector3.UP * 1.0) - eye
+	var probe: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+			eye, eye + to_prop.normalized() * 7.0)
+	probe.collision_mask = 4
+	probe.collide_with_areas = true
+	probe.collide_with_bodies = false
+	var area: Dictionary = space.intersect_ray(probe)
+	var wall: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+			eye, eye + to_prop * 0.96)
+	wall.collision_mask = 1
+	var solid: Dictionary = space.intersect_ray(wall)
+	print("[Tour] diagnose %s %d: dist=%.2f facing=%.2f area=%s wall=%s" % [
+		target, index, to_prop.length(), forward.dot(to_prop.normalized()),
+		"none" if area.is_empty() else String((area["collider"] as Node).get_parent().name),
+		"clear" if solid.is_empty() else String((solid["collider"] as Node).name)])
+
+
+func _tour_nearest_junction() -> RewireJunction:
+	var player: Node = Net.get_player(Net.local_id())
+	if player == null or not is_instance_valid(player):
+		return null
+	var here: Vector3 = (player as Node3D).global_position
+	for node: Node in get_tree().get_nodes_in_group(Props.GROUP_JUNCTION):
+		var junction: RewireJunction = node as RewireJunction
+		if junction != null and is_instance_valid(junction) \
+				and junction.global_position.distance_to(here) <= Balance.JUNCTION_USE_RANGE:
+			return junction
+	return null
+
+
+func _tour_nearest_terminal() -> CommandTerminal:
+	var player: Node = Net.get_player(Net.local_id())
+	if player == null or not is_instance_valid(player):
+		return null
+	var here: Vector3 = (player as Node3D).global_position
+	for node: Node in get_tree().get_nodes_in_group(Props.GROUP_TERMINAL):
+		var console: CommandTerminal = node as CommandTerminal
+		if console != null and is_instance_valid(console) \
+				and console.global_position.distance_to(here) <= Balance.TERMINAL_USE_RANGE:
+			return console
+	return null
+
+
+## `--seal`. Holds the bulkhead's channel through the real input path and lets go
+## the moment the door is actually shut.
+##
+## `--hold-interact` cannot do this job: the bulkhead is the only interactable in
+## the game that toggles, so a key held down past the completed channel seals it,
+## re-arms and unseals it, forever. That is correct behaviour for the prop and
+## useless behaviour for a capture.
+func _run_seal(delay: float) -> void:
+	await get_tree().create_timer(delay).timeout
+	print("[Debug] --seal: holding the bulkhead channel")
+	hold_interact = true
+	if not await _wait_until(func() -> bool: return Props.is_sealed(0), 20.0):
+		push_warning("[Debug] --seal gave up waiting for the door")
+	hold_interact = false
+
+
+## `--terminal` / `--query`. Opens a session and types commands into it through
+## the panel's own submit path — the same one a keypress takes, so the noise ping
+## and the host's proximity check are both real.
+func _run_terminal(delay: float) -> void:
+	await get_tree().create_timer(delay).timeout
+	var player: Node = Net.get_player(Net.local_id())
+	if player == null or not is_instance_valid(player):
+		push_warning("[Debug] --terminal: no local player")
+		return
+	var here: Vector3 = (player as Node3D).global_position
+	var nearest: CommandTerminal = null
+	var best: float = Balance.TERMINAL_USE_RANGE
+	for node: Node in get_tree().get_nodes_in_group(Props.GROUP_TERMINAL):
+		var console: CommandTerminal = node as CommandTerminal
+		if console == null or not is_instance_valid(console):
+			continue
+		var distance: float = console.global_position.distance_to(here)
+		if distance < best:
+			best = distance
+			nearest = console
+	if nearest == null:
+		push_warning("[Debug] --terminal: nothing in reach; is --goto terminal set?")
+		return
+	var panel: TerminalPanel = TerminalPanel.open_for(nearest)
+	if panel == null:
+		return
+	if _pad_row >= 0:
+		# Parks the gamepad command list on a specific row, which is the only way
+		# to photograph the pad path — a shutter will not land on a selection
+		# somebody happened to scroll to.
+		panel._selected = _pad_row % maxi(panel._commands.size(), 1)
+	for command: String in _queries:
+		await get_tree().create_timer(_query_delay).timeout
+		if not is_instance_valid(panel):
+			return
+		print("[Debug] --query: %s" % command)
+		panel.submit(command)
+		# Wait out the processing beat plus the type-out, or the next query lands
+		# on a busy machine and the capture photographs "BUSY."
+		await get_tree().create_timer(
+				Balance.TERMINAL_QUERY_SECONDS + 1.6).timeout
 
 
 ## A decal to photograph: the one nearest the crew's spawn, so the probe lands
@@ -1164,8 +1675,16 @@ func _wait_until(test: Callable, limit: float) -> bool:
 ## depenetration happens on the physics callback and the yaw has to be written
 ## after it.
 func _look_at_after_settling(avatar: Player, target: Vector3) -> void:
-	await get_tree().physics_frame
-	await get_tree().physics_frame
+	# Six frames, not two.
+	#
+	# Two was enough for the Compiler, which stands in open floor. M4.8's props are
+	# on walls, and a teleport that lands a capsule partly inside a wall, a crate
+	# or a rib column depenetrates over *several* physics steps — so a yaw written
+	# after two of them is a yaw computed from a body that is still moving. The
+	# symptom was a tour standing 49 degrees off a vent it could see perfectly
+	# well, which reads as a broken weld rather than as a broken camera.
+	for _i: int in 6:
+		await get_tree().physics_frame
 	if not is_instance_valid(avatar):
 		return
 	var eye: Vector3 = avatar.global_position + Vector3.UP * 1.62

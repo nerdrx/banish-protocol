@@ -204,6 +204,10 @@ var focus_available: bool = false
 
 var _focus: Interactable = null
 var _channel_elapsed: float = 0.0
+## M4.8: whatever the breaker is currently cutting on (a vent, a cabinet lock).
+## Separate from `_focus` because the two are held with different buttons and can
+## legitimately be different objects.
+var _burn_target: Interactable = null
 
 # --- kit (present on every peer's copy; only the owner pulls the trigger) ----
 var _breaker: Breaker = null
@@ -614,6 +618,7 @@ func _simulate_local(delta: float) -> void:
 	_was_on_floor = is_on_floor()
 	_fall_speed = velocity.y
 	move_and_slide()
+	_push_debris()
 
 	if not _was_on_floor and is_on_floor():
 		_land(_fall_speed)
@@ -640,7 +645,28 @@ func _simulate_local(delta: float) -> void:
 	if Debug.aim_antivirus:
 		_track_nearest_antivirus(delta)
 	_update_breaker(frozen)
+	_update_burn(delta, frozen)
 	_update_interaction(delta)
+
+
+## M4.8: a CharacterBody3D does not push RigidBody3Ds in Godot 4 — it slides off
+## them like a wall — so the avatar hands out the impulse itself.
+##
+## This is the entire input side of "physics debris that betrays you": walk into
+## a can and it goes skittering, the clatter pings the room, and something in the
+## dark turns around. The impulse is deliberately small (Balance.DEBRIS_PUSH) and
+## its vertical component is clamped to zero-or-up, because a downward kick
+## drives a piece into the deck and CCD then has to save it.
+func _push_debris() -> void:
+	for i: int in get_slide_collision_count():
+		var contact: KinematicCollision3D = get_slide_collision(i)
+		var body: RigidBody3D = contact.get_collider() as RigidBody3D
+		if body == null or not is_instance_valid(body):
+			continue
+		var push: Vector3 = -contact.get_normal() * Balance.DEBRIS_PUSH
+		push.y = maxf(push.y, 0.0)
+		body.sleeping = false
+		body.apply_impulse(push, contact.get_position() - body.global_position)
 
 
 ## `--aim`. An automated run has no mouse, and the breaker is a short-range tool
@@ -706,6 +732,75 @@ func _update_breaker(frozen: bool) -> void:
 ## same announced tiers when it decides what actually died.
 func _breaker_range() -> float:
 	return float(Modules.loadout(peer_id)["range"])
+
+
+## M4.8: the breaker used on the *building* rather than on the things in it.
+##
+## Holding the trigger on a weldable vent or a cabinet lock accumulates a burn on
+## that prop (Interactable.apply_burn), and at full it fires a host-validated
+## request. Deliberately separate from `_update_breaker`: the cutter's cadence and
+## its heat ceiling govern how often it *shoots*, and a weld is a continuous
+## thing you hold — gating it on the firing cooldown would make the weld time a
+## function of the heat curve, which is a coupling nobody wants to debug later.
+##
+## Local only, and it costs one ray per frame while the trigger is down.
+func _update_burn(delta: float, frozen: bool) -> void:
+	var holding: bool = Debug.hold_fire or (not frozen
+			and Input.is_action_pressed("fire"))
+	var target: Interactable = null
+	if holding and Run.local_running():
+		target = _probe_burnable()
+
+	if target != _burn_target:
+		if _burn_target != null and is_instance_valid(_burn_target):
+			_burn_target.apply_burn(-delta)
+		_burn_target = target
+	if target == null:
+		return
+	target.apply_burn(delta)
+
+
+## What the cutter is currently pointed at that it can work on. Same interact
+## layer the E-channel probe uses, out to the burn reach rather than to REACH:
+## you weld a vent from arm's length or from across a small room, not from a
+## doorway you cannot see it through.
+func _probe_burnable() -> Interactable:
+	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
+	if space == null:
+		return null
+	var from: Vector3 = camera.global_position
+	var reach: float = maxf(Balance.VENT_WELD_RANGE, Balance.CABINET_CUT_RANGE)
+	var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+			from, from - camera.global_transform.basis.z * reach)
+	query.collision_mask = INTERACT_MASK
+	query.collide_with_areas = true
+	query.collide_with_bodies = false
+	var hit: Dictionary = space.intersect_ray(query)
+	if hit.is_empty():
+		return null
+	var collider: Node = hit["collider"] as Node
+	if collider == null:
+		return null
+	var prop: Interactable = collider.get_parent() as Interactable
+	if prop == null or not prop.burnable():
+		return null
+
+	# A wall between you and the vent means no weld, for the same reason it means
+	# no kill: the cutter is a beam, and beams stop at masonry.
+	#
+	# Tested against the point the probe ray actually touched, pulled a hair back
+	# toward the lens — NOT against the prop's origin. Every wall prop's origin
+	# sits exactly on the wall's inner face, which is exactly coplanar with the
+	# wall collider, so a ray aimed at it lands knife-edge on a surface and
+	# whether it reports a hit is down to floating point. That is not a
+	# theoretical objection: it made two of layer 7's three vents unweldable and
+	# the third one fine, which is the most confusing possible symptom.
+	var contact: Vector3 = hit["position"]
+	var wall: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+			from, from + (contact - from) * 0.96)
+	wall.collision_mask = 1
+	wall.exclude = [get_rid()]
+	return null if not space.intersect_ray(wall).is_empty() else prop
 
 
 ## Where the lash leaves the avatar. The Surge's own emitter when we are holding

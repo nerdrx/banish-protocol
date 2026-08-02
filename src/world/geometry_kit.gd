@@ -844,6 +844,53 @@ func _make_hologram(color: Color, alpha: float) -> StandardMaterial3D:
 # by less than 4 m, and the result is a multiple of 4, so the gap is always at
 # least 8 m of corridor. Rooms can never be snapped into each other.
 
+# --------------------------------------------------------- wall relief (M4.8) --
+#
+# How far each wall module stands PROUD of the boundary it is placed on, in
+# metres, measured off the kit .glb (scratchpad m48/probe_kit.py reports each
+# module's bounds; the module's detailed face is its local +Z in Godot).
+#
+# M3.7's walls stopped being flat planes and became modules with real depth —
+# raised armour plates, cable trays, recessed panels. Anything mounted at the
+# old boundary plane therefore buries itself in whatever relief the slot behind
+# it happens to have drawn, which is exactly what M4.8's first vents did.
+#
+# Two things use this: `wall_relief_at` tells a caller how far out the surface
+# actually is at a given point, and `flattest_wall_slot` finds the nearest slot
+# whose module is shallow enough to hang something on in the first place.
+const WALL_RELIEF: Dictionary = {
+	"WALL_4x4_PANEL": 0.355,
+	"WALL_4x4_ARMOR": 0.465,
+	"WALL_4x4_TRACE": 0.200,
+	"WALL_2x4_CABLE": 0.200,
+	"WALL_2x4_VENT": 0.220,
+	"DOORFRAME_HERO": 0.370,
+}
+## Relief a wall prop is happy to be mounted on. Above this the module's own
+## geometry is deep enough that a flush prop would stand visibly off the wall,
+## so `flattest_wall_slot` goes looking for a neighbour instead.
+const WALL_RELIEF_OK: float = 0.24
+## Clearance left between a prop's back and the module face it hangs on.
+const WALL_PROP_CLEAR: float = 0.015
+
+
+## Which module the variant table puts at a given slot centre. Exactly the choice
+## `_wall_slot` makes, factored out so a prop can ask the same question.
+static func wall_variant_at(centre: Vector3, dark: bool) -> String:
+	var options: Array = ["WALL_4x4_PANEL", "WALL_4x4_ARMOR", "WALL_2x4_CABLE"] if dark \
+			else WALL_VARIANTS
+	var variant: String = _pick(centre.x, centre.z, 11, options)
+	if variant == "SPLIT_2M":
+		# Two 2 m service modules; take the deeper of the pair.
+		return "WALL_2x4_VENT"
+	return variant
+
+
+## How far the wall stands proud of its boundary at this slot centre.
+static func wall_relief_at(centre: Vector3, dark: bool) -> float:
+	return float(WALL_RELIEF.get(wall_variant_at(centre, dark), 0.36))
+
+
 ## Round a low edge down and a high edge up onto the lattice: a snapped room is
 ## never smaller than the room the generator asked for.
 static func snap_lo(v: float) -> float:

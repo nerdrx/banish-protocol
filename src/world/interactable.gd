@@ -74,6 +74,18 @@ func prompt_visible() -> bool:
 	return true
 
 
+## Whether the prompt draws in its READY colour or its warning one.
+##
+## Defaults to `available()`, which is right for everything held with E. M4.8's
+## burn props are the exception and the reason this exists: a weldable vent
+## deliberately refuses the E channel, so an `available()`-driven prompt drew a
+## red "this is not usable" ring on a prop whose entire purpose is that you can
+## do something about it. What the ring means is "can I act on this", and the
+## answer for a vent is yes — with the trigger.
+func prompt_ready() -> bool:
+	return available()
+
+
 ## Called by Player when the crosshair arrives on or leaves this.
 func set_focused(on: bool) -> void:
 	focused = on
@@ -111,6 +123,70 @@ func complete() -> void:
 
 ## Called every frame the local player is channelling this, 0..1. Cosmetic only.
 func set_channel_visual(_progress: float) -> void:
+	pass
+
+
+# ------------------------------------------------------- the cutting channel --
+#
+# M4.8 adds a second way to operate a thing in the world: **holding the breaker
+# on it**. Welding a vent shut and cutting a cabinet lock open are not "hold E"
+# actions — they are the crew's one tool being used as a tool, and giving them
+# the interact key would have made the breaker a prop you carry rather than
+# something you use on the building.
+#
+# It is the same split of responsibility as the E channel and deliberately so:
+# the burn accumulates **locally** (instant feedback, the prompt ring fills, the
+# weld seam heats up) and the *effect* is a host-validated request. A client that
+# fakes a finished weld still has to be stood in front of the vent when the host
+# checks. Player drives it from `_update_burn`; nothing here polls input.
+
+## Seconds of focused breaker this needs. Zero means the cutter does nothing to
+## it, which is the answer for everything that is not a vent or a cabinet.
+func burn_seconds() -> float:
+	return 0.0
+
+
+## Whether the cutter may work on this *right now* — a welded vent is finished, a
+## cabinet somebody already opened is finished.
+func burnable() -> bool:
+	return false
+
+
+## Progress of the local burn, 0..1. Read by the prop's own visuals.
+var burn: float = 0.0
+
+
+## Driven by Player. A negative delta resets — that is how "you looked away" and
+## "you let go of the trigger" both arrive.
+func apply_burn(delta: float) -> void:
+	var total: float = burn_seconds()
+	if total <= 0.0:
+		return
+	if delta < 0.0:
+		if burn <= 0.0:
+			return
+		# Cools fast but not instantly, so a burn interrupted for two frames by a
+		# Scrubber crossing the crosshair does not start again from nothing.
+		burn = maxf(burn - (-delta) * 2.0, 0.0)
+	else:
+		burn = minf(burn + delta, total)
+
+	var fill: float = clampf(burn / total, 0.0, 1.0)
+	if _prompt != null and is_instance_valid(_prompt):
+		_prompt.set_progress(fill)
+	set_burn_visual(fill)
+	if burn >= total:
+		burn = 0.0
+		burn_complete()
+
+
+## Local burn reached full. Ask the host to make it real.
+func burn_complete() -> void:
+	pass
+
+
+## Called with the local burn fill, 0..1. Cosmetic only.
+func set_burn_visual(_fill: float) -> void:
 	pass
 
 

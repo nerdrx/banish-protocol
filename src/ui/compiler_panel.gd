@@ -25,7 +25,7 @@ extends CanvasLayer
 ## "is a panel up" without holding a reference to one.
 static var _open: CompilerPanel = null
 
-const WIDTH: float = 780.0
+const WIDTH: float = 880.0
 const ROW_HEIGHT: float = 52.0
 const PAD: float = 26.0
 
@@ -329,6 +329,12 @@ func _cell(parent: Control, text: String, size: int, colour: Color,
 	label.custom_minimum_size = Vector2(width, 0.0)
 	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# M4.8 clipping sweep: the effect column carries the longest strings in the
+	# game ("SHARE 100 -> 112 CYCLES  ·  DRAIN 0.60 -> 0.56 /s") and a tier-5
+	# price is four digits wider than a tier-1 one. Clipped rather than allowed
+	# to push the price cell out through the plate and the tube's curved edge.
+	label.clip_text = true
+	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	parent.add_child(label)
 	return label
 
@@ -339,6 +345,8 @@ func _text(parent: Control, text: String, size: int, colour: Color) -> Label:
 	label.add_theme_font_size_override("font_size", size)
 	label.add_theme_color_override("font_color", colour)
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.clip_text = true
+	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	parent.add_child(label)
 	return label
 

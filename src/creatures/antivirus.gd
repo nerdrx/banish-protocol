@@ -509,9 +509,17 @@ func _tell_crew(method: StringName) -> void:
 			rpc_id(peer, method)
 
 
-## Subclass hook: something loud happened at `where` — a drained siphon tap, by
-## default. Host only.
-func alert(_where: Vector3) -> void:
+## Subclass hook: something loud happened at `where`. Host only.
+##
+## `rooms` is how far the sound carried, in rooms of the layer graph, and
+## `seconds` is how long it should hold this creature's attention. M2's siphon
+## ping was the only caller and hard-coded both; M4.8 routes five different
+## noises through `Noise` (rewires, welds, cabinet cuts, terminal queries, kicked
+## debris) at three different reaches, so the numbers travel with the sound.
+##
+## The defaults are the siphon's, which keeps every existing call site honest.
+func alert(_where: Vector3, _rooms: int = Balance.TAP_ALERT_ROOMS,
+		_seconds: float = Balance.TAP_ALERT_TIME) -> void:
 	pass
 
 

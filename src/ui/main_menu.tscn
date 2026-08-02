@@ -120,12 +120,12 @@ theme_override_colors/font_color = Color(0.88, 0.95, 1, 1)
 theme_override_colors/font_outline_color = Color(0.24, 0.62, 0.95, 0.28)
 theme_override_constants/outline_size = 10
 theme_override_fonts/font = ExtResource("3_title")
-theme_override_font_sizes/font_size = 58
-text = "NULLVOID"
+theme_override_font_sizes/font_size = 42
+text = "LIMBO PROTOCOL"
 horizontal_alignment = 1
 
 [node name="AccentBar" type="ColorRect" parent="Margin/Column"]
-custom_minimum_size = Vector2(420, 2)
+custom_minimum_size = Vector2(560, 2)
 layout_mode = 2
 size_flags_horizontal = 4
 color = Color(0.36, 0.78, 1, 0.75)
@@ -352,7 +352,7 @@ grow_vertical = 0
 mouse_filter = 2
 theme_override_colors/font_color = Color(0.22, 0.27, 0.34, 1)
 theme_override_font_sizes/font_size = 11
-text = "M4 // THE LONG GAME"
+text = "M4.8 // FUNCTIONAL CLUTTER"
 horizontal_alignment = 2
 
 [node name="Post" type="ColorRect" parent="."]

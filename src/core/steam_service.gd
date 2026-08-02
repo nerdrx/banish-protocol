@@ -47,7 +47,7 @@ const KEY_HOST: String = "nv_host"
 const KEY_CREW: String = "nv_crew"
 const KEY_LAYER: String = "nv_layer"
 const KEY_VERSION: String = "nv_version"
-const GAME_TAG: String = "NULLVOID"
+const GAME_TAG: String = "LIMBO PROTOCOL"
 
 ## True when the GDExtension is present *and* the API initialised.
 var live: bool = false

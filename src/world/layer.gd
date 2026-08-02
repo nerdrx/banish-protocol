@@ -67,6 +67,8 @@ var _stress: float = 0.0
 ## HUD does to itself. Decays over `UiFx.GLITCH_TIME` rather than over a second,
 ## so the two land together and let go together.
 var _glitch: float = 0.0
+## Wall-clock start of the current build, for the census line's `build=` figure.
+var _build_started_usec: int = 0
 
 
 func _ready() -> void:
@@ -119,6 +121,7 @@ func _rebuild() -> void:
 		_builder = authored
 		_adopt_test_layer_furniture()
 	else:
+		_build_started_usec = Time.get_ticks_usec()
 		var graph: LayerGraph = LayerGraph.generate(Rng.run_seed, Run.layer_number)
 		var procedural: ProcLayerBuilder = ProcLayerBuilder.create(graph)
 		_builder = procedural
@@ -165,11 +168,23 @@ func _rebuild() -> void:
 			total += kind
 		decay = " decay=%d(displaced %d, shimmer %d, dead %d, arcing %d)" % [
 			total, census[1], census[2], census[3], census[4]]
-	print("[Layer] built %s  nodes=%d lights=%d shadowed=%d decals=%d%s" % [
+	# M4.8's density pass is the single biggest perf risk in the project, so its
+	# instance counts and the number of draw calls it was batched into go in the
+	# same line the light and decal census have been in since M3.7.
+	var clutter: String = ""
+	if built != null and is_instance_valid(built):
+		clutter = built.clutter_note
+	# Build time, in the same line, since M4.8: a descent hides the build behind a
+	# 1.8 s fade, and a density pass that quietly pushed generation past that
+	# would turn every drop shaft in the game into a hitch. This is the number
+	# that says whether it did.
+	var elapsed: float = 0.0 if _build_started_usec <= 0 \
+			else float(Time.get_ticks_usec() - _build_started_usec) / 1000.0
+	print("[Layer] built %s  nodes=%d lights=%d shadowed=%d decals=%d build=%.0fms%s%s" % [
 		"layer %d: hand-authored test layer" % Run.layer_number if Run.use_test_layer
 				else LayerParams.describe(Run.layer_number),
 		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)), lights, shadowed,
-		decals, decay])
+		decals, elapsed, decay, clutter])
 
 
 ## The longest corridor on the layer, entered from one end looking down it.

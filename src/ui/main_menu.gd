@@ -843,7 +843,7 @@ func _fill_lobby_list(lobbies: Array) -> void:
 		_lobby_select.add_item(String(entry.get("name", "CREW")).to_upper())
 	var empty: bool = lobbies.is_empty()
 	if empty:
-		_lobby_select.add_item("NO FRIENDS RUNNING NULLVOID")
+		_lobby_select.add_item("NO FRIENDS RUNNING LIMBO PROTOCOL")
 	_lobby_select.disabled = empty
 	_steam_join_button.disabled = empty
 

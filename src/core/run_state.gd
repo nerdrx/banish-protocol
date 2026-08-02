@@ -762,6 +762,30 @@ func spend_buffer(peer_id: int, amount: int) -> void:
 	buffers_changed.emit()
 
 
+## Host-side. Hands `peer_id` flares out of something they found — M4.8's
+## lootable cabinets, and whatever restocks after them. Clamped to the carrier's
+## own Cache tier: a cabinet cannot put a fourth flare in a program that only
+## compiled three, or the track stops being a purchase.
+func grant_flares(peer_id: int, count: int) -> void:
+	if not multiplayer.is_server() or count <= 0 or not is_running(peer_id):
+		return
+	var ceiling: int = int(Modules.loadout(peer_id)["flares"])
+	var before: int = flares_of(peer_id)
+	var after: int = mini(before + count, ceiling)
+	if after == before:
+		return
+	flares[peer_id] = after
+	_dirty_buffers = true
+	_flare_granted.rpc_id(peer_id, after - before)
+	if peer_id == 1:
+		notice.emit("FLARE RECOVERED  ·  %d IN CACHE" % after)
+
+
+@rpc("authority", "call_remote", "reliable")
+func _flare_granted(count: int) -> void:
+	notice.emit("FLARE RECOVERED  ·  +%d" % count)
+
+
 ## Host-side, called by a bundle a player has walked over.
 func take_bundle(bundle_id: int, peer_id: int) -> void:
 	if not multiplayer.is_server() or not is_running(peer_id):

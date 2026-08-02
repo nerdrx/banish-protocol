@@ -12,7 +12,7 @@ You are an invading program. The dungeon is a rogue AI. Its antivirus is hunting
 [![Language](https://img.shields.io/badge/GDScript-static%20typed-355570)](#architecture)
 [![Multiplayer](https://img.shields.io/badge/multiplayer-Steam%20%C2%B7%20ENet%20%C2%B7%201–4%20players-1de9b6)](#multiplayer)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows-2e4f63)](#getting-started)
-[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M4.8%20in%20development-ff2d78)](#roadmap)
+[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M4.8%20complete-ff2d78)](#roadmap)
 [![Interface](https://img.shields.io/badge/interface-CRT%20cassette%20futurism-ffb454)](#features)
 
 [The Pitch](#the-pitch) · [Features](#features) · [The Loop](#the-loop) ·
@@ -143,8 +143,10 @@ useless."* What you cannot delete is the **process** — she recompiles it.
 ## Getting Started
 
 > ⚠️ **Pre-alpha.** A full intrusion is playable, Steamworks is wired (M3.5),
-> and the art overhaul has landed (M3.7) — authored creatures, a modular
-> architecture kit, the four-layer lighting rig and first-person embodiment.
+> the art overhaul has landed (M3.7) — authored creatures, a modular
+> architecture kit, the four-layer lighting rig and first-person embodiment —
+> and as of M4.8 the world is dense and answers back: levers, weldable ingress
+> points, physics that gives you away, and terminals you type at.
 > No packaged releases yet — for now you run from source.
 
 **Requirements:** [Godot 4.7+](https://godotengine.org/download) · Linux or Windows
@@ -290,7 +292,8 @@ fiction-earns-the-mechanics reasoning, art direction language.
 > post-production. Everything below is the M3.7 art pass: authored creature
 > models, a beveled modular architecture kit on a 4 m lattice, a four-layer
 > light rig firing through gobo projectors, screen-space reflections on wet
-> deck plating, and MOTHER's own signage on the walls.
+> deck plating, and MOTHER's own signage on the walls — now dressed with M4.8's
+> density pass and the props that do something.
 >
 > The interface is the M3.8 pass: the shell compiles itself in when you are
 > injected, hangs a few pixels behind your lens, flinches and corrupts your own

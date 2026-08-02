@@ -222,7 +222,7 @@ func _refresh_text(delta: float) -> void:
 		return
 	_text_clock = TEXT_REFRESH
 
-	_ready_state = _owner.available()
+	_ready_state = _owner.prompt_ready()
 	var title: String = _owner.prompt_title()
 	if title != _last_title:
 		_last_title = title
