@@ -52,6 +52,8 @@ var _shut: float = 0.0
 ## Seconds since the weld landed, for the cool-down.
 var _cooled: float = 99.0
 var _was_welded: bool = false
+## The looping arc sound while the cutter is on it (M5), a child freed with the node.
+var _weld_loop: AudioStreamPlayer3D = null
 
 
 static func create(index: int, where: Vector3, yaw: float, room: int) -> WeldVent:
@@ -204,6 +206,14 @@ func set_burn_visual(fill: float) -> void:
 	_seam_material.emission_energy_multiplier = fill * 4.0
 	_light.light_color = WELD_HOT
 	_light.light_energy = fill * 2.6
+	# The saturated arc while the cutter holds on it (M5). Local to the welder —
+	# the burn only runs where the trigger is held; the completed seal below is
+	# heard by everyone off the replicated state.
+	if fill > 0.01 and _weld_loop == null:
+		_weld_loop = Audio.attach_loop(&"weld_loop", self)
+	elif fill <= 0.01 and _weld_loop != null:
+		Audio.detach_loop(_weld_loop)
+		_weld_loop = null
 
 
 # ------------------------------------------------------------------ visuals --
@@ -213,6 +223,12 @@ func _process(delta: float) -> void:
 	if welded and not _was_welded:
 		_was_welded = true
 		_cooled = 0.0
+		# Sealed, on every peer (this edge reads the replicated Props state): arc
+		# cut-out, cooling ticks, the confirm pips. Stop the welder's arc loop too.
+		if _weld_loop != null:
+			Audio.detach_loop(_weld_loop)
+			_weld_loop = null
+		Audio.play_3d(&"weld_complete", global_position)
 	if welded:
 		_cooled += delta
 

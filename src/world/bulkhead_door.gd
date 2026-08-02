@@ -69,6 +69,9 @@ var _channel: float = 0.0
 ## 0..1 how far the leaves have driven. Eased, and the collider follows it.
 var _closed: float = 0.0
 var _applied_block: bool = false
+## True once the door is standing, so a seal/reopen sounds only real state
+## changes, not the state a joiner adopts on arrival (M5).
+var _audio_ready: bool = false
 ## Seconds until this will accept another channel. See TOGGLE_LOCK.
 var _lock: float = 0.0
 
@@ -163,6 +166,8 @@ func _ready() -> void:
 	if Props.is_sealed(prop_index):
 		_closed = 1.0
 	_on_state_changed()
+	# Everything after the initial adopt is a real seal/reopen worth a sound.
+	_audio_ready = true
 
 
 func _on_state_changed() -> void:
@@ -173,6 +178,12 @@ func _on_state_changed() -> void:
 	_applied_block = sealed
 	_lock = TOGGLE_LOCK
 	graph.set_edge_blocked(edge.x, edge.y, sealed)
+	# On every peer, off the one packet: the seal slam when the crew shuts it, or
+	# MOTHER's warning-then-hydraulics when it comes back open. Two different
+	# authors, so two different sounds — and the reopen's caption is a THREAT (she
+	# is coming through your barricade). Guarded against the adopted initial state.
+	if _audio_ready:
+		Audio.play_3d(&"bulkhead_seal" if sealed else &"bulkhead_reopen", global_position)
 	# The routing consequence, in the log, on the same line as the cause. "The
 	# antivirus cannot path through a sealed door" is a claim, and the honest form
 	# of it is the first hop the graph now hands a creature that wants to cross:

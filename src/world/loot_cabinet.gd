@@ -38,6 +38,10 @@ var _lock_material: StandardMaterial3D = null
 var _interior_material: StandardMaterial3D = null
 var _light: OmniLight3D = null
 var _channel: float = 0.0
+## M5 audio: the arc loop while cutting (child, freed with the node) and a latch
+## so the door creaks exactly once when it opens.
+var _cut_loop: AudioStreamPlayer3D = null
+var _was_open: bool = false
 ## 0..1 how far the door has swung.
 var _swing: float = 0.0
 
@@ -184,6 +188,13 @@ func burn_complete() -> void:
 func set_burn_visual(fill: float) -> void:
 	if Props.is_cabinet_open(prop_index):
 		return
+	# The arc-and-rising-heat loop while the lock is being cut (M5). Local to the
+	# cutter; the creak when the door actually swings is on every peer (below).
+	if fill > 0.01 and _cut_loop == null:
+		_cut_loop = Audio.attach_loop(&"cabinet_cut", self)
+	elif fill <= 0.01 and _cut_loop != null:
+		Audio.detach_loop(_cut_loop)
+		_cut_loop = null
 	_lock_material.emission = LOCK_LOCKED.lerp(CUT_HOT, fill)
 	_lock_material.emission_energy_multiplier = 0.9 + fill * 5.0
 	_light.light_color = LOCK_LOCKED.lerp(CUT_HOT, fill)
@@ -194,6 +205,14 @@ func set_burn_visual(fill: float) -> void:
 
 func _process(delta: float) -> void:
 	var open: bool = Props.is_cabinet_open(prop_index)
+	# The stick-slip creak as the door swings, once, when it first opens — on every
+	# peer, off the replicated Props state. Stop any cutter's arc loop with it.
+	if open and not _was_open:
+		_was_open = true
+		if _cut_loop != null:
+			Audio.detach_loop(_cut_loop)
+			_cut_loop = null
+		Audio.play_3d(&"cabinet_creak", global_position)
 	_swing = move_toward(_swing, 1.0 if open else 0.0, delta * 2.6)
 	# Eased, and it overshoots a hair: a heavy door on a spring hinge.
 	var eased: float = 1.0 - pow(1.0 - _swing, 3.0)

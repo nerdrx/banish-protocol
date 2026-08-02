@@ -19,6 +19,9 @@ var _ring_material: StandardMaterial3D = null
 var _rings: Array[MeshInstance3D] = []
 var _light: OmniLight3D = null
 var _channel: float = 0.0
+## The rooting-sequence sound while the node is being channelled (M5), a child
+## freed with the node; cut cleanly on release.
+var _rooting: AudioStreamPlayer3D = null
 ## Eases 0 -> 1 the moment the node roots, driving the flare-up.
 var _install: float = 0.0
 
@@ -122,6 +125,15 @@ func complete() -> void:
 
 func set_channel_visual(progress: float) -> void:
 	_channel = clampf(progress, 0.0, 1.0)
+	# The rooting duet — analogue solenoids asking, digital tones answering (the
+	# authorship law as a handshake). Held while the channel runs on this peer and
+	# cut on release; the consonant install stack that lands when the host confirms
+	# the root is `backdoor_root_complete`, fired centrally off Run.
+	if _channel > 0.001 and _rooting == null and not Run.backdoor_rooted:
+		_rooting = Audio.attach_loop(&"backdoor_rooting", self)
+	elif _channel <= 0.001 and _rooting != null:
+		Audio.detach_loop(_rooting)
+		_rooting = null
 
 
 func _process(delta: float) -> void:
@@ -129,6 +141,12 @@ func _process(delta: float) -> void:
 	if rooted:
 		_install = minf(_install + delta * 0.8, 1.0)
 		_channel = 0.0
+		# The node is installed; the rooting duet resolved into the install stack
+		# (played centrally). Stop the channel loop here since set_channel_visual
+		# will not be called again to do it.
+		if _rooting != null:
+			Audio.detach_loop(_rooting)
+			_rooting = null
 
 	var t: float = float(Time.get_ticks_msec()) / 1000.0
 	var colour: Color = DORMANT_COLOUR.lerp(ROOTED_COLOUR, _install)

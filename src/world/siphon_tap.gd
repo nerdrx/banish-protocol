@@ -37,6 +37,8 @@ var _pulse: float = 0.0
 ## but not loud enough to light the whole room and undo the layer's darkness.
 var _base_energy: float = 2.4
 var _channel: float = 0.0
+## The looping channel sound while a draw is in progress on this peer (M5).
+var _channel_loop: AudioStreamPlayer3D = null
 
 
 ## Assembles a tap at `where`, facing `yaw`. The node is returned unparented so
@@ -148,6 +150,15 @@ func complete() -> void:
 
 func set_channel_visual(progress: float) -> void:
 	_channel = clampf(progress, 0.0, 1.0)
+	# The channel loop — valve breathing, and the noise that pings the antivirus.
+	# Its caption is THREAT ("pinging hunters"), the crew's own risk made legible.
+	# Started when a draw begins on this peer and stopped when it releases; the
+	# host validating the tap is a separate, replicated event (the surge below).
+	if _channel > 0.001 and _channel_loop == null and not spent:
+		_channel_loop = Audio.attach_loop(&"siphon_channel", self)
+	elif _channel <= 0.001 and _channel_loop != null:
+		Audio.detach_loop(_channel_loop)
+		_channel_loop = null
 
 
 func _process(delta: float) -> void:
@@ -188,6 +199,13 @@ func _on_siphon_taken(index: int, _pool: float) -> void:
 	# Balance's ladder is set against.
 	NoiseBus.ping(global_position, Balance.TAP_ALERT_ROOMS, "siphon",
 			Balance.TAP_ALERT_TIME)
+	# The channel is done; stop its loop and fire the surge — the loudest good
+	# news in the game. Runs on every peer (`_on_siphon_taken` off the replicated
+	# `_apply_siphon`), so the whole crew hears the pool refill.
+	if _channel_loop != null:
+		Audio.detach_loop(_channel_loop)
+		_channel_loop = null
+	Audio.play_3d(&"siphon_surge", global_position)
 
 
 func _apply_spent() -> void:

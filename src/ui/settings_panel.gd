@@ -1,0 +1,223 @@
+class_name SettingsPanel
+extends CanvasLayer
+## The audio-comfort settings surface — the M5 slice of the full accessibility
+## menu (limbo-a11y 06-settings-menu.md), shipped now because M5 is the milestone
+## that gives the game things to turn down.
+##
+## CRT-styled to extend the console language, but deliberately UNDER-tubed: this
+## is the one screen where legibility beats flavour, because a menu you cannot
+## read cannot fix the thing you opened it to fix. High-contrast phosphor text on
+## a calm dark plate, no glitch drivers.
+##
+## It is a thin VIEW: every control reads and writes the single stores that own
+## the state (AudioService → user://settings.cfg, A11y → user://a11y.cfg) through
+## their setters, which persist atomically. The panel holds no state of its own,
+## so it is always correct even if something else changed a value while it was
+## closed. Reachable from the main menu and the in-run pause overlay — someone
+## mid-run who needs the spikes softened must not have to quit.
+##
+## The full IA (photosensitivity, colour, captions detail, controls, comfort,
+## cognitive) is a later pass; this ships the audio + captions rows the sound
+## milestone is responsible for.
+
+const TITLE: String = "AUDIO  ·  COMFORT"
+
+
+## Build the panel over `host` and return it. One live at a time — a second call
+## while one is open just focuses the existing one.
+static func open(host: Node) -> SettingsPanel:
+	var existing: SettingsPanel = host.get_tree().root.find_child(
+			"SettingsPanel", true, false) as SettingsPanel
+	if existing != null and is_instance_valid(existing):
+		return existing
+	var panel: SettingsPanel = SettingsPanel.new()
+	panel.name = "SettingsPanel"
+	host.add_child(panel)
+	return panel
+
+
+func _ready() -> void:
+	layer = 80
+	_build()
+	Audio.play_2d(&"ui_selftest")  # the instrument surfacing.
+
+
+func _build() -> void:
+	var dim: ColorRect = ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.72)
+	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP  # swallow clicks behind it.
+	add_child(dim)
+
+	var center: CenterContainer = CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	dim.add_child(center)
+
+	var plate: PanelContainer = PanelContainer.new()
+	var box: StyleBoxFlat = StyleBoxFlat.new()
+	box.bg_color = Color(0.03, 0.035, 0.045, 0.98)
+	box.border_color = UiFx.DIM
+	box.set_border_width_all(1)
+	box.set_corner_radius_all(2)
+	box.set_content_margin_all(26)
+	plate.add_theme_stylebox_override("panel", box)
+	plate.custom_minimum_size = Vector2(560.0, 0.0)
+	center.add_child(plate)
+
+	var column: VBoxContainer = VBoxContainer.new()
+	column.add_theme_constant_override("separation", 14)
+	plate.add_child(column)
+
+	_header(column, TITLE)
+	_rule(column)
+
+	# --- volumes ---
+	_section(column, "LEVELS")
+	_slider(column, "MASTER", Audio.vol_master,
+			func(v: float) -> void: Audio.set_volume(&"master", v))
+	_slider(column, "MUSIC", Audio.vol_music,
+			func(v: float) -> void: Audio.set_volume(&"music", v))
+	_slider(column, "SFX", Audio.vol_sfx,
+			func(v: float) -> void: Audio.set_volume(&"sfx", v))
+	_slider(column, "VOICE", Audio.vol_voice,
+			func(v: float) -> void: Audio.set_volume(&"voice", v))
+
+	_rule(column)
+	_section(column, "COMFORT")
+	# Captions — the deaf/HoH threat telegraph. Lives in A11y (accessibility
+	# store), surfaced here because this is where players look for audio.
+	_toggle(column, "SOUND CAPTIONS", A11y.sound_captions,
+			"Directional captions for threats and world sounds.",
+			func(on: bool) -> void: A11y.set_sound_captions(on))
+	_toggle(column, "CRT WHINE (15.7 kHz)", Audio.crt_whine,
+			"The tube's flyback whine. Off notches it out — kill it if it hurts.",
+			func(on: bool) -> void: Audio.set_crt_whine(on))
+	_toggle(column, "REDUCED AUDIO SPIKES", Audio.reduced_spikes,
+			"Soft-limits sudden loud events (shrieks, klaxons) without changing the threat.",
+			func(on: bool) -> void: Audio.set_reduced_spikes(on))
+
+	_rule(column)
+	var close: Button = _button(column, "CLOSE")
+	close.pressed.connect(_close)
+
+
+# ------------------------------------------------------------- row builders --
+
+func _header(parent: Control, text: String) -> void:
+	var label: Label = Label.new()
+	label.text = text
+	label.add_theme_font_override("font", _font())
+	label.add_theme_font_size_override("font_size", 22)
+	label.add_theme_color_override("font_color", UiFx.SYSTEM)
+	parent.add_child(label)
+
+
+func _section(parent: Control, text: String) -> void:
+	var label: Label = Label.new()
+	label.text = text
+	label.add_theme_font_override("font", _font())
+	label.add_theme_font_size_override("font_size", 13)
+	label.add_theme_color_override("font_color", UiFx.DIM)
+	parent.add_child(label)
+
+
+func _rule(parent: Control) -> void:
+	var line: ColorRect = ColorRect.new()
+	line.custom_minimum_size = Vector2(0.0, 1.0)
+	line.color = Color(UiFx.DIM.r, UiFx.DIM.g, UiFx.DIM.b, 0.4)
+	parent.add_child(line)
+
+
+## A labelled 0–100 % slider. Shows the live value; writes through `apply` on
+## every drag (the store persists), so there is no separate save step.
+func _slider(parent: Control, name: String, value: float, apply: Callable) -> void:
+	var row: HBoxContainer = HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	parent.add_child(row)
+
+	var label: Label = Label.new()
+	label.text = name
+	label.custom_minimum_size = Vector2(120.0, 0.0)
+	label.add_theme_font_override("font", _font())
+	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_color_override("font_color", UiFx.TEXT)
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(label)
+
+	var slider: HSlider = HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 1.0
+	slider.step = 0.01
+	slider.value = value
+	slider.custom_minimum_size = Vector2(300.0, 0.0)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	slider.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(slider)
+
+	var readout: Label = Label.new()
+	readout.text = "%3d%%" % int(round(value * 100.0))
+	readout.custom_minimum_size = Vector2(56.0, 0.0)
+	readout.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	readout.add_theme_font_override("font", _font())
+	readout.add_theme_font_size_override("font_size", 16)
+	readout.add_theme_color_override("font_color", UiFx.SYSTEM)
+	readout.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(readout)
+
+	slider.value_changed.connect(func(v: float) -> void:
+		readout.text = "%3d%%" % int(round(v * 100.0))
+		apply.call(v))
+
+
+## A labelled on/off with a one-line plain-language gloss under it.
+func _toggle(parent: Control, name: String, on: bool, gloss: String, apply: Callable) -> void:
+	var wrap: VBoxContainer = VBoxContainer.new()
+	wrap.add_theme_constant_override("separation", 1)
+	parent.add_child(wrap)
+
+	var check: CheckButton = CheckButton.new()
+	check.text = name
+	check.button_pressed = on
+	check.add_theme_font_override("font", _font())
+	check.add_theme_font_size_override("font_size", 16)
+	check.add_theme_color_override("font_color", UiFx.TEXT)
+	check.add_theme_color_override("font_pressed_color", UiFx.SYSTEM)
+	wrap.add_child(check)
+
+	var note: Label = Label.new()
+	note.text = gloss
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_font_override("font", _font())
+	note.add_theme_font_size_override("font_size", 12)
+	note.add_theme_color_override("font_color", UiFx.DIM)
+	wrap.add_child(note)
+
+	check.toggled.connect(func(pressed: bool) -> void:
+		Audio.play_2d(&"ui_select")
+		apply.call(pressed))
+
+
+func _button(parent: Control, text: String) -> Button:
+	var button: Button = Button.new()
+	button.text = text
+	button.add_theme_font_override("font", _font())
+	button.add_theme_font_size_override("font_size", 16)
+	button.mouse_entered.connect(func() -> void: Audio.play_2d(&"ui_hover"))
+	parent.add_child(button)
+	return button
+
+
+func _font() -> Font:
+	return load("res://assets/fonts/ui_font.tres") as Font
+
+
+func _close() -> void:
+	Audio.play_2d(&"ui_back")
+	queue_free()
+
+
+## Esc closes it, wherever it was opened from.
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_cancel"):
+		get_viewport().set_input_as_handled()
+		_close()

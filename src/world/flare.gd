@@ -43,6 +43,8 @@ var _material: StandardMaterial3D = null
 var _shell: Node3D = null
 var _smoke: CPUParticles3D = null
 var _noise: FastNoiseLite = null
+## The looping burn sound, a child so it follows the flare and frees with it (M5).
+var _burn_loop: AudioStreamPlayer3D = null
 
 
 static func create(id: int, peer_id: int, origin: Vector3, velocity: Vector3) -> Flare:
@@ -153,6 +155,11 @@ func _assemble() -> void:
 
 func _ready() -> void:
 	add_to_group("flares")
+	# Struck and caught. The ignite is a one-shot; the burn loop rides the whole
+	# life and is a child, so it is freed with the flare — its position IS the
+	# flare's. Both spatial, so the crew hears a flare thrown across the room.
+	Audio.play_3d(&"flare_ignite", global_position)
+	_burn_loop = Audio.attach_loop(&"flare_burn", self)
 
 
 ## Whether this flare is still throwing enough light to scare a Scrubber.
@@ -163,6 +170,12 @@ func is_burning() -> bool:
 func _physics_process(delta: float) -> void:
 	_life -= delta
 	if _life <= 0.0:
+		# The burn loop dies with the node; the die one-shot comes off the pool so
+		# it outlives the flare and plays the downward filter collapse.
+		if _burn_loop != null:
+			Audio.detach_loop(_burn_loop)
+			_burn_loop = null
+		Audio.play_3d(&"flare_die", global_position)
 		queue_free()
 		return
 

@@ -42,6 +42,9 @@ var prop_index: int = 0
 var strips: Array[Node3D] = []
 var _strip_lights: Array[OmniLight3D] = []
 var _strip_material: StandardMaterial3D = null
+## True once the junction is standing, so the switch clunk sounds only real
+## throws, not the routing a joiner adopts on arrival (M5).
+var _audio_ready: bool = false
 
 var _lamps: Array[MeshInstance3D] = []
 var _lamp_materials: Array[StandardMaterial3D] = []
@@ -129,10 +132,18 @@ func _ready() -> void:
 	Props.power_changed.connect(_on_power_changed)
 	_lit = 1.0 if Props.power == Props.Power.LIGHTS else 0.0
 	_apply_strips(_lit)
+	# Only sound power changes that happen after we are standing, not the adopted
+	# initial state.
+	_audio_ready = true
 
 
 func _on_power_changed() -> void:
-	pass  # the eased visuals in _process read Props directly.
+	# The knife-switch clunk, on every peer (Props.power_changed fires on all of
+	# them off the one validated request), positioned at the junction. Guarded so
+	# a joiner adopting the layer's current routing does not hear a phantom throw.
+	if _audio_ready:
+		Audio.play_3d(&"rewire_clunk", global_position)
+	# The eased visuals in _process read Props directly.
 
 
 ## Adopts the emergency strips the builder made for this junction: their lights

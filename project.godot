@@ -26,6 +26,9 @@ Props="*res://src/core/prop_state.gd"
 Debug="*res://src/core/debug.gd"
 SteamHub="*res://src/core/steam_service.gd"
 Achievements="*res://src/core/achievements.gd"
+Captions="*res://src/core/caption_bus.gd"
+Audio="*res://src/core/audio_service.gd"
+Music="*res://src/core/music_director.gd"
 
 [shader_globals]
 

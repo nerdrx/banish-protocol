@@ -32,6 +32,13 @@ const GLOW_ENERGY: float = 4.0
 var heat: float = 0.0
 var locked: bool = false
 
+## Last heat graduation a warning tick fired on, so the thermal relay clicks as
+## the heat climbs past each step and never twice on the same one. Only ever
+## moves on the local shooter's own breaker (a remote copy never pulls a trigger,
+## so its heat stays zero — the audio follows for free).
+const HEAT_GRAD: float = 0.2
+var _heat_grad: int = 0
+
 var _cooldown: float = 0.0
 var _lash: MeshInstance3D = null
 var _lash_mesh: BoxMesh = null
@@ -115,8 +122,16 @@ func ready_to_fire() -> bool:
 func pull_trigger() -> void:
 	_cooldown = Balance.BREAKER_COOLDOWN
 	heat = minf(heat + Balance.BREAKER_HEAT_PER_SHOT, 1.0)
-	if heat >= 1.0:
+	# The thermal relay warns as the heat climbs past each graduation — quiet, a
+	# warning not an event (AUDIO_GUIDE), and denser the hotter it gets because the
+	# graduations are fixed-width and the shots come at a fixed cadence.
+	var grad: int = int(heat / HEAT_GRAD)
+	if grad > _heat_grad:
+		_heat_grad = grad
+		Audio.play_2d(&"breaker_heat")
+	if heat >= 1.0 and not locked:
 		locked = true
+		Audio.play_2d(&"breaker_lockout")
 
 
 ## The visible shot, on every peer that can see this avatar.
@@ -134,6 +149,13 @@ func show_lash(from: Vector3, to: Vector3) -> void:
 	_sparks.restart()
 	_glow.global_position = to
 	_glow.light_energy = GLOW_ENERGY
+
+	# The shot itself, spatialised at the muzzle. `show_lash` runs exactly once per
+	# peer per shot (locally as prediction for the shooter, via the host echo for a
+	# crewmate's), so every peer hears the cut come from where it happened. The
+	# shooter's dry 2D copy that puts the tool in their own hands is added in
+	# Player._update_breaker — this is the world's copy of it.
+	Audio.play_3d(&"breaker_shot", from)
 
 	# Below a couple of centimetres there is no streak worth orienting, and
 	# `look_at` on a near-zero vector errors — but the impact above has already
@@ -156,8 +178,12 @@ func _process(delta: float) -> void:
 	_cooldown = maxf(_cooldown - delta, 0.0)
 
 	heat = maxf(heat - Balance.BREAKER_HEAT_COOL * delta, 0.0)
+	var grad: int = int(heat / HEAT_GRAD)
+	if grad < _heat_grad:
+		_heat_grad = grad  # let the warning ticks re-arm as it cools back down.
 	if locked and heat <= Balance.BREAKER_HEAT_RESET:
 		locked = false
+		Audio.play_2d(&"breaker_ready")  # 'you may continue'.
 
 	if _lash_time > 0.0:
 		_lash_time -= delta

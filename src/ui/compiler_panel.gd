@@ -460,6 +460,9 @@ func _on_purchased(peer_id: int, track: String, _tier: int,
 	_beat_track = track
 	_pip_row = _beat_row
 	_pip_fill = 0.0
+	# Module compiled into your source — permanent, so it is made to feel physical:
+	# a press, a low thud, a rising consonant confirm (M5).
+	Audio.play_2d(&"ui_purchase")
 	_confirm = CONFIRM_TIME + UiFx.COMPILE_BEAT
 	_confirm_row = _row_of(track)
 	# The whole refusal, not just its glitch weight. The footer reads `_refuse_row`
@@ -475,6 +478,9 @@ func _on_refused(track: String, reason: String) -> void:
 	_refuse = REFUSE_TIME
 	_refuse_row = _row_of(track)
 	_refuse_reason = reason
+	# The crew's own hardware saying no — an ANALOGUE refusal buzz + tape tear, not
+	# MOTHER (M5). The panel's own glitch vocabulary, in sound.
+	Audio.play_2d(&"ui_refusal")
 
 
 func _row_of(track: String) -> int:

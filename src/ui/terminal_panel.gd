@@ -301,10 +301,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_ESCAPE:
 				close()
 			KEY_ENTER, KEY_KP_ENTER:
+				Audio.play_2d(&"terminal_send")
 				submit(_typed)
 			KEY_BACKSPACE:
 				if not _typed.is_empty():
 					_typed = _typed.substr(0, _typed.length() - 1)
+					Audio.play_2d(&"terminal_key")
 			KEY_TAB:
 				_complete()
 			_:
@@ -314,6 +316,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				# nobody typed.
 				if key.unicode >= 32 and key.unicode < 127 and _typed.length() < 40:
 					_typed += glyph.to_upper()
+					# One clunky solenoid key per keystroke — the navigator heads-down
+					# while the crew holds the dark (M5). Shuffle-bagged and
+					# pitch-varied so a fast typist reads as a person, not a machine.
+					Audio.play_2d(&"terminal_key")
 		return
 
 	# --- gamepad: the list ---------------------------------------------------
@@ -363,6 +369,8 @@ func submit(command: String) -> void:
 	_pending = CommandTerminal.answer(terminal.graph, line,
 			terminal.global_position)
 	_process_left = Balance.TERMINAL_QUERY_SECONDS
+	# MOTHER resolving the query — bitcrushed rising chirps over tape transport.
+	Audio.play_2d(&"terminal_processing")
 	Props.request_query(terminal.prop_index, line)
 
 

@@ -728,6 +728,10 @@ func _update_breaker(frozen: bool) -> void:
 	var muzzle: Vector3 = _muzzle_point(from, basis)
 
 	_breaker.pull_trigger()
+	# The shooter's own dry 2D copy over the spatial one the lash plays — it puts
+	# the tool in your hands (AUDIO_GUIDE −8 dB). The 3D shot everyone hears is in
+	# Breaker.show_lash; this is the extra close copy only the shooter gets.
+	Audio.play_2d(&"breaker_shot_dry")
 	# Light the barrel on the same frame as the lash, before the host round-trip.
 	_fire_muzzle()
 	# Predicted endpoint, drawn this frame. The host re-casts the same ray and
@@ -1449,9 +1453,21 @@ func _check_footstep(bob_vertical: float, speed: float) -> void:
 		on_footstep(speed > WALK_SPEED * 1.05)
 
 
+## M5 audio. Runs on every copy of every avatar (the bob that drives the step
+## advances from the replicated pose on a remote one), so each peer plays its OWN
+## avatar's steps as a quiet 2D copy that sits close, and every crewmate's steps
+## spatialised from where they are — exactly the split AUDIO_GUIDE asks for. The
+## surface is grate-only for now (the one footstep set shipped); the argument
+## exists for a future stone/panel set to slot in here.
 func on_footstep(_sprinting: bool) -> void:
-	pass  # M4: positional footstep audio + subtle dust puff.
+	if _is_local:
+		Audio.play_2d(&"footstep_self")
+	else:
+		Audio.play_3d(&"footstep", global_position)
 
 
 func on_landed(_strength: float) -> void:
-	pass  # M4: landing thud + screen shake.
+	if _is_local:
+		Audio.play_2d(&"land_self")
+	else:
+		Audio.play_3d(&"land", global_position)

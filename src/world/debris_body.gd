@@ -156,6 +156,13 @@ func _physics_process(delta: float) -> void:
 		# debris" is a claim that should be a log entry rather than a vibe.
 		NoiseBus.ping(global_position, Balance.NOISE_ROOMS_DEBRIS,
 				"debris:" + KIND_NAMES[kind], Balance.NOISE_TIME_DEBRIS)
+		# The clatter, at the same instant and the same reach as the ping — the
+		# audio guide matches this source's max_distance to the AI noise radius on
+		# purpose, so what you hear and what the antivirus heard are the same event.
+		# Pings locally on whichever peer's physics kicked it, which is exactly the
+		# peer that should hear it; its THREAT caption ("Debris clatter") tells a
+		# deaf player they just gave themselves away.
+		Audio.play_3d(&"debris", global_position)
 
 	# Hand-parked. Godot's own sleep threshold lets a settled piece tremble for a
 	# long time, and eight trembling pieces is eight broadphase pairs a layer does

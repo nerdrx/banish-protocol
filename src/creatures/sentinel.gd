@@ -115,6 +115,15 @@ var _hurt_flash: float = 0.0
 ## 0 -> 1 collapse once it goes down.
 var _death: float = 0.0
 
+## M5 audio, per-peer off the replicated `sync_state` and `_stutter`. The
+## presence drone is the dread telegraph — it loops for the creature's whole life
+## with a generous max_distance so you hear it rooms away; the klaxon loops while
+## it purges and ducks the music. Owned here, freed with the creature.
+var _drone: AudioStreamPlayer3D = null
+var _klaxon: AudioStreamPlayer3D = null
+var _audio_state: int = -1
+var _stutter_armed: bool = false
+
 
 func _extra_sync_properties() -> Array[String]:
 	return [".:sync_sweep"]
@@ -176,6 +185,12 @@ func _assemble() -> void:
 	_build_sweep()
 	_last_seen = home
 	_last_heading = Vector3(-sin(rotation.y), 0.0, -cos(rotation.y))
+
+	# The presence drone: 30.5 Hz mass that says "walk away", fading in over 1.5 s
+	# on spawn and running for the creature's whole life. Attached here because the
+	# director has already parented the Sentinel by the time setup() runs, so the
+	# 3D player has a place in the world and a listener to attenuate against.
+	_drone = Audio.attach_loop(&"sentinel_drone", self, 1.5)
 
 
 ## The body, repainted to the enemy palette: everything structural swallows light
@@ -536,6 +551,12 @@ func _on_hurt() -> void:
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _hit() -> void:
 	_hurt_flash = 1.0
+	# The 'yes, that worked' crunch when the shot lands on the exposed core. Fired
+	# on every peer while the shielding is down (SCAN/PURGE) — the same window the
+	# bonus damage lives in. A back-shot on a plated body has no dedicated asset;
+	# the breaker-shot report already carries it.
+	if core_exposed():
+		Audio.play_3d(&"sentinel_core_hit", global_position)
 
 
 ## Everything the vault was holding falls out of it. DESIGN.md puts the haul in
@@ -551,6 +572,14 @@ func kill() -> void:
 	super()
 
 
+## Silent removal on descent (the layer is being rewritten). The drone and
+## klaxon are children and go with the node; the music duck is not, so it is
+## lifted here or it would ride into the next layer's mix.
+func despawn() -> void:
+	Audio.set_music_duck(_duck_key(), 0.0)
+	super()
+
+
 ## It topples. Slower and heavier than a Scrubber's shatter, with the core
 ## blowing out first — three metres of architecture coming down.
 func _play_death() -> void:
@@ -558,6 +587,17 @@ func _play_death() -> void:
 	set_physics_process(false)
 	if _sweep != null and is_instance_valid(_sweep):
 		_sweep.set_intensity(0.0)
+	# Stop the presence drone and any alarm on the same frame the shell shatters,
+	# and lift the music duck — then the 5 s collapse, which is left to breathe
+	# before the room tone returns (AUDIO_GUIDE).
+	if _drone != null:
+		Audio.detach_loop(_drone)
+		_drone = null
+	if _klaxon != null:
+		Audio.detach_loop(_klaxon)
+		_klaxon = null
+	Audio.set_music_duck(_duck_key(), 0.0)
+	Audio.play_3d(&"sentinel_death", global_position)
 
 	var burst: CPUParticles3D = CPUParticles3D.new()
 	burst.name = "Collapse"
@@ -653,6 +693,9 @@ func _purge_swing(landed: bool = false) -> void:
 	# Every peer runs the shimmer, whether or not the swing connected on theirs.
 	# A purge you dodged has to look exactly like a purge you did not.
 	_arc_sweep = 0.0001
+	# The heavy attack release (0.33 s charge tell baked into the sound), on every
+	# peer, connected or not.
+	Audio.play_3d(&"sentinel_purge", global_position)
 
 
 ## The shimmer, on every peer. Costs a screen fetch on one quad for four tenths
@@ -696,6 +739,7 @@ func _process(delta: float) -> void:
 	_spin_halo(delta)
 	_track_head(delta)
 	_apply_stutter(delta)
+	_update_audio()
 
 	var t: float = float(Time.get_ticks_msec()) / 1000.0
 	var breath: float = 0.85 + sin(t * 1.1) * 0.15
@@ -725,6 +769,40 @@ func _process(delta: float) -> void:
 	_core_light.light_energy = core * breath
 	if _sweep != null and is_instance_valid(_sweep):
 		_sweep.set_intensity((sweep_scale + _alarm_flash) * breath)
+
+
+## Creature audio, per-peer off the replicated state. The scan sweep announces
+## the damage window opening; the klaxon loops while it purges and ducks the
+## music (two klaxons, two authors — this is MOTHER's, distinct from the crew's
+## exfil horn); the glide-stutter clicks on every direction change.
+func _update_audio() -> void:
+	var s: int = int(sync_state)
+	if s != _audio_state:
+		# Entering SCAN: the shielding drops, the sweep begins, the core is exposed.
+		if s == int(State.SCAN) and _audio_state != int(State.PURGE):
+			Audio.play_3d(&"sentinel_scan", global_position)
+		# The alarm loops for the whole PURGE (the layer's alert), ducking music.
+		if s == int(State.PURGE) and _klaxon == null:
+			_klaxon = Audio.attach_loop(&"sentinel_alarm", self)
+			Audio.set_music_duck(_duck_key(), -6.0)
+		elif s != int(State.PURGE) and _klaxon != null:
+			Audio.detach_loop(_klaxon)
+			_klaxon = null
+			Audio.set_music_duck(_duck_key(), 0.0)
+		_audio_state = s
+
+	# The glide-stutter click, on the rising edge of a direction change.
+	if _stutter > 0.0 and not _stutter_armed:
+		_stutter_armed = true
+		Audio.play_3d(&"sentinel_glide", global_position)
+	elif _stutter <= 0.0:
+		_stutter_armed = false
+
+
+## A per-instance music-duck key so two purging Sentinels do not lift each other's
+## duck; the deepest active duck wins, so overlapping −6 s still net −6.
+func _duck_key() -> StringName:
+	return StringName("sentinel_alarm_%d" % slot_index)
 
 
 ## The quarantine halo turns slowly and independently of the body, which is the

@@ -100,6 +100,21 @@ var _warmup: float = 0.0
 var _diving: bool = false
 
 
+## Walk the tree and give every button the console's mechanical voice: a near-
+## subliminal hover tick as focus moves, a solenoid clack on press. Recursive so
+## it covers the built-in-code panels (phosphor picker, program panel) too.
+func _wire_menu_audio(node: Node) -> void:
+	for child: Node in node.get_children():
+		var button: Button = child as Button
+		if button != null:
+			button.mouse_entered.connect(func() -> void: Audio.play_2d(&"ui_hover"))
+			button.pressed.connect(func() -> void: Audio.play_2d(&"ui_select"))
+		var option: OptionButton = child as OptionButton
+		if option != null:
+			option.item_selected.connect(func(_i: int) -> void: Audio.play_2d(&"ui_select"))
+		_wire_menu_audio(child)
+
+
 func _ready() -> void:
 	if DisplayServer.get_name() != "headless":
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -134,6 +149,21 @@ func _ready() -> void:
 	_build_program_panel()
 	_build_terminal()
 	_wire_focus()
+
+	# M5: the 144 s menu theme, and the CRT menu/terminal room tone (the ambient
+	# bed AudioService picks when no run is live). Every button gets the analogue
+	# hover tick and select clack.
+	Music.enter_menu()
+	# A SETTINGS entry beside QUIT, built in code so no scene surgery is needed.
+	# Opens the M5 audio-comfort slice (SettingsPanel); the full IA is a later pass.
+	var settings_button: Button = Button.new()
+	settings_button.text = "SETTINGS"
+	var quit_parent: Node = _quit_button.get_parent()
+	if quit_parent != null:
+		quit_parent.add_child(settings_button)
+		quit_parent.move_child(settings_button, _quit_button.get_index())
+		settings_button.pressed.connect(func() -> void: SettingsPanel.open(self))
+	_wire_menu_audio(self)
 
 	var carried: String = GameState.consume_status()
 	if carried.is_empty():

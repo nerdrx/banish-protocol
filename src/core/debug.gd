@@ -268,6 +268,15 @@ var forced_backdoor: int = -1
 var no_antivirus: bool = false
 ## Read by the director and both state machines.
 var log_ai: bool = false
+## `--log-audio`. Read by AudioService and CaptionBus: print one line per sound
+## trigger and per caption, so a scripted solo run can prove every source fires
+## with no missing streams — the M5 audio soak's verification, without ears.
+var log_audio: bool = false
+## `--captions`. Turn on directional sound captions for this session (default
+## OFF). Drives the real `A11y.set_sound_captions`, which persists to
+## user://a11y.cfg — so this both stages the caption capture and exercises the
+## settings write path end to end.
+var force_captions: bool = false
 
 # --- M3.5 Steam / achievements (read by SteamHub and Achievements) ----------
 ## Hard off switch for the Steam API: the game runs its ENet paths untouched.
@@ -371,6 +380,10 @@ func _ready() -> void:
 	# instant it hosts or joins, and a forced build that arrives after that
 	# announcement is a build the host never hears about.
 	_apply_program_overrides()
+	# `--captions`: flip the accessibility toggle on through its real setter, which
+	# persists it. A11y is the first autoload, so it is standing by the time we run.
+	if force_captions:
+		A11y.set_sound_captions(true)
 	# Before any interface exists: the phosphor is a palette-wide token and
 	# something built earlier than this would bake the default into itself.
 	if _has_forced_color:
@@ -576,6 +589,10 @@ func _parse_args(args: PackedStringArray) -> void:
 				hud_debug = true
 			"--log-ai":
 				log_ai = true
+			"--log-audio":
+				log_audio = true
+			"--captions":
+				force_captions = true
 			"--log-fps":
 				_fps_window = 5.0
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):

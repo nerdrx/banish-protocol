@@ -70,6 +70,17 @@ var _last_position: Vector3 = Vector3.ZERO
 var _measured_speed: float = 0.0
 var _hurt_flash: float = 0.0
 var _death: float = 0.0
+
+## M5 audio, driven per-peer off the replicated `sync_state` (never the host-only
+## `_enter`), so every client hears the creature it can see with no extra wire.
+## The skitter loop is owned here and freed with the creature; the idle chitter
+## uses its OWN rng — NOT the sim's `_rng`, which drives patrol points and whose
+## sequence a sound draw would perturb (a determinism break). This one is
+## cosmetic and seeded off wall time.
+var _skitter: AudioStreamPlayer3D = null
+var _audio_state: int = -1
+var _chitter_timer: float = 0.0
+var _chitter_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 ## The dying coal left at the point of deletion. See `_play_death`.
 var _ember: OmniLight3D = null
 
@@ -111,6 +122,8 @@ func _assemble() -> void:
 	_shell.add_child(_light)
 
 	_rng.seed = hash(str(slot_index, ":scrubber:", layer_number))
+	_chitter_rng.randomize()
+	_chitter_timer = _chitter_rng.randf_range(1.0, 4.0)
 	_patrol = home
 	_last_position = position
 
@@ -381,6 +394,9 @@ func _on_hurt() -> void:
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _hit() -> void:
 	_hurt_flash = 1.0
+	# Runs on every peer (host directly, clients via `_tell_crew`), so the cut is
+	# heard wherever the creature is on each screen.
+	Audio.play_3d(&"scrubber_hurt", global_position)
 
 
 # --------------------------------------------------------------------- death --
@@ -390,6 +406,11 @@ func _hit() -> void:
 func _play_death() -> void:
 	_death = 1.0
 	set_physics_process(false)
+	# Stop the skitter on the same frame the shell shatters; play the death.
+	if _skitter != null:
+		Audio.detach_loop(_skitter)
+		_skitter = null
+	Audio.play_3d(&"scrubber_death", global_position)
 	# The clip does the coming-apart; the particles are the spray it throws off.
 	# Playing one without the other reads either as a puff of dust with a corpse
 	# still standing in it, or as a mesh quietly folding up in silence.
@@ -473,6 +494,37 @@ func _process(delta: float) -> void:
 
 	_hurt_flash = maxf(_hurt_flash - delta * 4.0, 0.0)
 	_apply_state_visual()
+	_update_audio(delta)
+
+
+## Creature audio, entirely a function of the replicated `sync_state` this copy
+## can see — so a client hears exactly what it is watching. The skitter loop runs
+## while it moves; the alert fires when it first has your signal; the lunge shriek
+## fires with the windup, ~180 ms before the claws — and its caption is the single
+## most important one in the game (spec 03), the deaf player's dodge cue.
+func _update_audio(delta: float) -> void:
+	var s: int = int(sync_state)
+	if s != _audio_state:
+		var want_skitter: bool = s == int(State.STALK) or s == int(State.FLEE)
+		if want_skitter and _skitter == null:
+			_skitter = Audio.attach_loop(&"scrubber_skitter", self)
+		elif not want_skitter and _skitter != null:
+			Audio.detach_loop(_skitter)
+			_skitter = null
+		# Idle -> trace: it has seen you (pack aggro tell).
+		if s == int(State.STALK) and _audio_state == int(State.LURK):
+			Audio.play_3d(&"scrubber_alert", global_position)
+		# The windup. Fired on entering LUNGE, before the strike lands.
+		if s == int(State.LUNGE):
+			Audio.play_3d(&"scrubber_lunge", global_position)
+		_audio_state = s
+
+	# The 'in the walls' chitter while it drifts, every 2–6 s.
+	if s == int(State.LURK):
+		_chitter_timer -= delta
+		if _chitter_timer <= 0.0:
+			_chitter_timer = _chitter_rng.randf_range(2.0, 6.0)
+			Audio.play_3d(&"scrubber_chitter", global_position)
 
 
 ## State -> clip, plus the time scale that keeps the feet planted.

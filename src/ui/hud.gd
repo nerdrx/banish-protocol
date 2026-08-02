@@ -251,6 +251,17 @@ func _ready() -> void:
 	Run.damaged.connect(_on_damaged)
 	_resume_button.pressed.connect(_set_paused.bind(false))
 	_leave_button.pressed.connect(_on_leave_pressed)
+	# A SETTINGS entry in the pause overlay, so a player mid-run can soften the
+	# audio spikes or turn on captions without leaving the intrusion (spec 06:
+	# accessibility must be reachable at the worst moment). Built in code beside
+	# the existing pause buttons.
+	var settings_button: Button = Button.new()
+	settings_button.text = "SETTINGS"
+	var leave_parent: Node = _leave_button.get_parent()
+	if leave_parent != null:
+		leave_parent.add_child(settings_button)
+		leave_parent.move_child(settings_button, _leave_button.get_index())
+		settings_button.pressed.connect(func() -> void: SettingsPanel.open(self))
 	_invite_button.pressed.connect(func() -> void: SteamHub.open_invite_overlay())
 	_summary_button.pressed.connect(_on_leave_pressed)
 
@@ -570,6 +581,10 @@ func _begin_boot() -> void:
 
 	_boot_line.text = "INSTANCE 0x%04X  ·  RUNTIME OK" % _instance_hash()
 	_boot_line.visible_ratio = 0.0
+
+	# M5: the tube warming up — contactor, degauss whump, tube warm-up, scanline
+	# sweeps, self-test pips. The instrument booting as you compile into the layer.
+	Audio.play_2d(&"ui_boot")
 
 	# Automation never waits on the shell compiling: a capture armed for frame N
 	# must photograph the HUD settled, and a soak must not spend a second of
