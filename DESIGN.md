@@ -46,6 +46,12 @@ Steal the data. Reach a backdoor. Exfiltrate before the system decompiles you.
    multiplies the haul. The game constantly asks: *one more ring?*
 4. **Expensive feel.** Dynamic light and shadow, volumetric haze, bloom/grain/
    glitch, positional audio, screen shake, buttery multiplayer.
+5. **The intricacy law.** Everything reads as intricately worked-on, even when
+   procedural. Procgen assembles an authored vocabulary — it never excuses
+   sparseness. Big volumes need midground (islands, catwalks, overhead runs);
+   empty floor plazas are a failure mode; surfaces hold up at 30cm; the only
+   permitted emptiness is deliberate dread. If a space looks generated, the
+   generator has failed.
 
 ## Gameplay Loop — descent through the rings (one intrusion ≈ 15–30 min)
 
