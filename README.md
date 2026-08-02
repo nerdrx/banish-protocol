@@ -1,6 +1,6 @@
 <div align="center">
 
-![NULLVOID](.github/assets/banner.svg)
+![LIMBO PROTOCOL](.github/assets/banner.svg)
 
 **A 1–4 player co-op first-person roguelite.**
 You are an invading program. The dungeon is a rogue AI. Its antivirus is hunting you.
@@ -55,7 +55,9 @@ something you can see. And the data only counts if you make it out.
 | 🚪 **Backdoors, not checkpoints** | Every 5th layer hides a dormant maintenance node. Root it and you've *permanently compromised* MOTHER — future runs inject straight to it. Facing layer-16 security the second you spawn is the price. |
 | 🧬 **You are software** | Modules compiled into your source survive deletion, extraction, everything. Dying costs the data in your buffers — never your build. |
 | 💾 **Bank it or lose it** | Buffered data spends at Compilers mid-run, banks to your archive on exfiltration, and evaporates on a wipe. One more ring? |
-| 👥 **1–4 player co-op** | Host-authoritative multiplayer over Steam lobbies *or* direct ENet. One player hosts, the crew joins by invite or IP. Solo diving is fully supported (and terrifying). |
+| 🔧 **The world fights back** | Rewire junctions with one bus and three loads (lights *or* door locks *or* vent fans — never two). Vents you weld shut with the breaker to stop a nest refilling. Cabinets you cut open loudly or unlock silently. Bulkheads you seal to break a pursuit, until MOTHER forces them. Kick a can in the dark and something turns around. |
+| ⌨️ **Terminals you actually type at** | GTFO-style CRT consoles wired into MOTHER's own indices. `LIST DATA`. `LOCATE COMPILER`. `QUERY VAULT-7C`. Every query is loud, takes a couple of seconds to process, and comes back with more of its glyphs missing the deeper you are. |
+| 👥 **1–4 player co-op** | Host-authoritative multiplayer over Steam lobbies *or* direct ENet. One player hosts, the crew joins by invite or IP. Solo diving is fully supported (and terrifying) — **no mechanic in this game ever needs a second pair of hands**. |
 | 🎛️ **Expensive feel** | Volumetric haze, real-time shadows, bloom/grain/glitch post stack, positional audio, screen shake. Pre-alpha, but the mood ships first. |
 
 ## The Loop
@@ -133,7 +135,7 @@ useless."* What you cannot delete is the **process** — she recompiles it.
 **Requirements:** [Godot 4.7+](https://godotengine.org/download) · Linux or Windows
 
 ```bash
-git clone https://github.com/nerdrx/nullvoid.git
+git clone https://github.com/nerdrx/limbo-protocol.git
 cd nullvoid
 godot --path .
 ```
@@ -199,8 +201,8 @@ DIRECT and the game plays exactly as it did before M3.5.
   mirrored to Steam and the whole set is retro-synced at boot when the API is
   live. An in-game toast fires either way.
 - **Dev app ID: 480** (Valve's Spacewar). Lobbies, P2P sockets, presence and the
-  stats pipe all work on it; NULLVOID's *achievement IDs* do not exist in Valve's
-  test app, so `SetAchievement` is refused server-side until NULLVOID has its own
+  stats pipe all work on it; LIMBO PROTOCOL's *achievement IDs* do not exist in Valve's
+  test app, so `SetAchievement` is refused server-side until LIMBO PROTOCOL has its own
   Steam Direct page. That is expected, logged, and harmless — the local file
   already holds the truth, and uploading the definitions makes it all catch up.
   `steam_appid.txt` is dev-only and git-ignored; the game passes its app ID to
@@ -264,6 +266,7 @@ fiction-earns-the-mechanics reasoning, art direction language.
 - [x] **M3.5 — Steamworks** · GodotSteam GDExtension, SteamMultiplayerPeer beside ENet, friends-only lobbies + overlay invites + join-in-progress, rich presence, local-first achievements (dev app 480)
 - [x] **M3.7 — Embodiment & Overhaul** · authored Scrubber + Sentinel, beveled modular architecture kit on a 4 m lattice, four-layer light rig with gobo projectors, SSR/SSIL WorldEnvironment, post v2, the Surge breaker in your hands, crew avatars, and MOTHER's signage on the walls
 - [x] **M4 — The long game** · Compiler terminals in the world + a diegetic purchase panel, eight permanent module tracks resolved per player and applied host-side, the per-player program file (versioned, atomic writes, migrated from M3), the backdoor injection gate, the archive economy with depth-scaled data value, and the threat/power curve tuned across layers 1–18
+- [x] **M4.8 — Functional clutter** · the density pass (cable looms, pipe runs, rubble, spills and scorch, crate stacks, dead maintenance drones — all MultiMesh-batched) plus five props that *do* things: rewire junctions, weldable vent covers that shut down a nest's reinforcement trickle, lootable cabinets with two ways in, kickable physics debris the antivirus hears, sealable bulkheads that re-route its pathing, and typed command terminals. One shared noise API underneath all of it
 - [ ] **M5 — Expensive** · glitch post stack, positional audio, kill cams, low-Cycles presentation, menu polish, Linux + Windows exports
 
 ## Screenshots

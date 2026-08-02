@@ -1,4 +1,4 @@
-# NULLVOID — Design Document
+# LIMBO PROTOCOL — Design Document
 
 > 1–4 player co-op first-person roguelite. You are an invading program descending
 > through the security layers of a rogue AI to steal its data. Its antivirus is

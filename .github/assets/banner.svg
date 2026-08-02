@@ -1,4 +1,4 @@
-<svg width="1200" height="320" viewBox="0 0 1200 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="NULLVOID">
+<svg width="1200" height="320" viewBox="0 0 1200 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="LIMBO PROTOCOL">
   <defs>
     <radialGradient id="glow" cx="50%" cy="45%" r="65%">
       <stop offset="0%" stop-color="#0e1a24"/>
@@ -42,10 +42,10 @@
   </g>
 
   <!-- glitch title: offset ghost copies then main -->
-  <g font-family="'Courier New', Courier, monospace" font-weight="bold" font-size="96" letter-spacing="14" text-anchor="middle">
-    <text x="597" y="172" fill="#ff2d78" opacity="0.55">NULLVOID</text>
-    <text x="605" y="178" fill="#00e5ff" opacity="0.55">NULLVOID</text>
-    <text x="601" y="175" fill="#e8f4ff">NULLVOID</text>
+  <g font-family="'Courier New', Courier, monospace" font-weight="bold" font-size="72" letter-spacing="8" text-anchor="middle">
+    <text x="597" y="172" fill="#ff2d78" opacity="0.55">LIMBO PROTOCOL</text>
+    <text x="605" y="178" fill="#00e5ff" opacity="0.55">LIMBO PROTOCOL</text>
+    <text x="601" y="175" fill="#e8f4ff">LIMBO PROTOCOL</text>
   </g>
 
   <!-- glitch slice bars through the title -->
@@ -60,6 +60,6 @@
     <text x="600" y="232" fill="#5f7f93">DESCEND · DECRYPT · EXFILTRATE</text>
   </g>
   <g font-family="'Courier New', Courier, monospace" font-size="14" letter-spacing="2" text-anchor="middle">
-    <text x="600" y="286" fill="#2e4f63">[ intrusion protocol v0.1 — MOTHER is listening ]</text>
+    <text x="600" y="286" fill="#2e4f63">[ limbo protocol v0.1 — MOTHER is listening ]</text>
   </g>
 </svg>
