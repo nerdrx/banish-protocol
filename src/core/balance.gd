@@ -324,6 +324,16 @@ static func sentinel_health(layer_number: int) -> float:
 	return SENTINEL_HEALTH * (1.0 + 0.08 * float(over))
 
 
+## Hunter hit points on `layer_number` (M6). Same shape as the Sentinel's armour:
+## flat at and below the depth floor, +6% per layer past it, so the deepest
+## hunters do not get easier in real terms as the crew's Breaker climbs. `base` is
+## the class's own HOUND_/MOTH_/AUDITOR_HEALTH. Pure sim-time; never touches
+## generation, so a determinism dump cannot see it.
+static func hunter_health(base: float, layer_number: int) -> float:
+	var over: int = maxi(layer_number - LayerParams.DEPTH_FLOOR, 0)
+	return base * (1.0 + 0.06 * float(over))
+
+
 # --- modules (M4) -----------------------------------------------------------
 #
 # The eight permanent tracks from DESIGN.md's meta-progression section. Every
@@ -591,3 +601,188 @@ const TRICKLE_INTERVAL: float = 45.0
 ## Only nests with an unwelded vent trickle at all, and each welded vent in the
 ## room multiplies that room's rate by this. Weld them all and the nest is shut.
 const TRICKLE_WELD_PENALTY: float = 0.45
+
+# --- M6 the haunting: hunters ------------------------------------------------
+#
+# Three hunter processes, each hunting by a different sense. Every one of them
+# dies to the breaker (the killability law is not negotiable) and every one is
+# solo-survivable (the solo invariant): a lone agent must be able to complete a
+# haunted run, so a hunter HAUNTS — costs integrity and Cycles when it catches
+# you — but never erases the run (DESIGN.md's mercy layer). Injection depth is
+# the only difficulty knob; there is no difficulty menu.
+#
+# The health numbers sit deliberately between the Scrubber (100, disposable) and
+# the Sentinel (1800, a wall): a hunter is a fight you commit to and can finish
+# alone with focused fire, not a bullet-sponge and not a pushover. All three
+# scale past the depth floor exactly like the Sentinel's armour (Balance.
+# hunter_health), so the deepest hunters do not get *easier* in real terms as the
+# crew's Breaker climbs to tier 5.
+
+## Escalation by depth (DESIGN.md): layers 1-5 have no hunters; from 6 the
+## Director may run one class; the Auditor is a deep-layer process; past the
+## double threshold the Director may run TWO at once (always Hound + one other).
+const HUNT_START_LAYER: int = 6
+const HUNT_AUDITOR_LAYER: int = 13
+const HUNT_DOUBLE_LAYER: int = 15
+
+## --- the Hound: hears ---
+## Persistent stalker spawned by NOISE DEBT (NoiseBus). Relentless pursuit
+## through the room graph; at low HP it breaks for the dark to recompile.
+const HOUND_HEALTH: float = 300.0
+const HOUND_PROWL_SPEED: float = 2.6
+const HOUND_CHASE_SPEED: float = 5.6
+const HOUND_LUNGE_SPEED: float = 9.4
+const HOUND_FLEE_SPEED: float = 7.2
+## How far it hears a running player once it is on the layer, and how far it will
+## follow a scent before giving up and prowling.
+const HOUND_HEAR_RANGE: float = 30.0
+const HOUND_LOSE_RANGE: float = 44.0
+const HOUND_LUNGE_RANGE: float = 3.2
+const HOUND_LUNGE_DAMAGE: float = 12.0
+const HOUND_LUNGE_TIME: float = 0.5
+const HOUND_RECOVER_TIME: float = 1.2
+## Noise debt (NoiseBus.debt) needed before the Director will vector the Hound at
+## a fresh noise, and how long a noise event holds it on that scent.
+const HOUND_NOISE_HOLD: float = 14.0
+## Below this fraction of health it flees to darkness (the wounded-animal window).
+const HOUND_FLEE_FRACTION: float = 0.30
+## Once fleeing, this long unexposed in a dark room and it "recompiles" — slinks
+## off (despawns) with no reward. Chasing it down inside the window is the choice.
+const HOUND_FLEE_ESCAPE_TIME: float = 6.0
+## What a finished Hound spills (the "large data burst" reward for the kill), and
+## how long the layer stays quiet before the Director recompiles the process.
+const HOUND_DROP_SHARDS: int = 10
+const HOUND_DROP_PIECES: int = 4
+const HOUND_SILENCE_TIME: float = 14.0
+## Recompile delay after a kill (DESIGN.md: "minutes later ... its howl announces
+## the timer restarting"). Tuned to gameplay minutes, not the dossier's nine.
+const HOUND_RECOMPILE_TIME: float = 135.0
+## A Hound that slinks off (escaped, not killed) recompiles sooner and quieter —
+## you did not buy the silence.
+const HOUND_SLINK_RECOMPILE_TIME: float = 70.0
+
+## --- the Moth: sees light ---
+## The inverse of the Scrubber: drawn to active beams, flares and muzzle flash.
+## Fast and fragile-ish; shooting it makes muzzle light that excites it.
+const MOTH_HEALTH: float = 150.0
+const MOTH_DRIFT_SPEED: float = 2.2
+const MOTH_SURGE_SPEED: float = 7.8
+## How far the Moth senses light. A beam or flare inside this pulls it in.
+const MOTH_LIGHT_RANGE: float = 34.0
+## Strike reach and damage when it reaches the light you are holding.
+const MOTH_STRIKE_RANGE: float = 2.6
+const MOTH_STRIKE_DAMAGE: float = 10.0
+const MOTH_STRIKE_COOLDOWN: float = 1.4
+## A breaker shot is a muzzle flash: a light pulse at the shooter this long,
+## which the Moth is drawn to even if the beam then goes dark.
+const MOTH_MUZZLE_PULSE: float = 0.55
+## With no light anywhere it loses interest and drifts; this long dark and it
+## gives up the layer (despawns) so going dark genuinely loses it.
+const MOTH_DARK_GIVEUP_TIME: float = 12.0
+const MOTH_DROP_SHARDS: int = 5
+const MOTH_DROP_PIECES: int = 3
+const MOTH_RECOMPILE_TIME: float = 80.0
+
+## --- the Auditor: has the schedule ---
+## Deep-layer only, methodical, NOT reactive: walks the layer checking rooms in a
+## fixed seeded order at a fixed rate. Tanky but killable; deleting it ENDS audits
+## for that layer (the most earnable safety of the three).
+const AUDITOR_HEALTH: float = 620.0
+const AUDITOR_WALK_SPEED: float = 2.3
+## How long it inspects each room before moving to the next on its route.
+const AUDITOR_INSPECT_TIME: float = 3.2
+## Strike reach and damage. It does not chase — it strikes whoever is beside it
+## when it inspects, then walks on. Being on its route is the danger.
+const AUDITOR_STRIKE_RANGE: float = 3.6
+const AUDITOR_STRIKE_DAMAGE: float = 16.0
+const AUDITOR_STRIKE_COOLDOWN: float = 2.0
+const AUDITOR_DROP_SHARDS: int = 8
+const AUDITOR_DROP_PIECES: int = 4
+
+# --- M6 the Director: pacing + stress ---------------------------------------
+#
+# Host-authoritative. Tracks crew STRESS in [0,1] and paces the hunt: quiet
+# dread, spike, mercy (L4D's AI director, MOTHER's two-brain knowledge from
+# Alien: Isolation). When the crew is broken it WITHHOLDS — the predator toys
+# with dying prey — invisible rubber-banding that reads as lore, not difficulty.
+
+## Director decision tick. Slow: pacing is a mood, not a physics problem.
+const HAUNT_TICK: float = 0.5
+## Stress inputs, blended and clamped to [0,1]. Proximity and combat lead; a low
+## pool and a crowded room push it over into terror.
+const HAUNT_STRESS_PROX: float = 0.55
+const HAUNT_STRESS_COMBAT: float = 0.35
+const HAUNT_STRESS_CROWD: float = 0.24
+const HAUNT_STRESS_STARVING: float = 0.26
+## A hunter merely existing is a floor of dread even across the room.
+const HAUNT_STRESS_HUNT_FLOOR: float = 0.22
+## Seconds a hit or a kill keeps combat stress pinned before it decays.
+const HAUNT_COMBAT_DECAY: float = 8.0
+## How close a hunter is "on top of you" (stress 1) and how far is "gone" (0).
+const HAUNT_PROX_NEAR: float = 4.0
+const HAUNT_PROX_FAR: float = 30.0
+
+## Withhold: the crew is broken when the pool is under this fraction, or average
+## integrity is under this, or anyone is corrupted. While broken the Director
+## stops pressing — no new spawns, and active hunters ease off.
+const HAUNT_BROKEN_CYCLES: float = 0.12
+const HAUNT_BROKEN_INTEGRITY: float = 0.30
+
+## Spawn pacing. Pressure accrues per second and per unit of noise debt; when it
+## crosses the threshold (and depth allows and a slot is free) the Director
+## vectors a hunter in. Withholding freezes the accrual.
+const HAUNT_PRESSURE_THRESHOLD: float = 100.0
+const HAUNT_PRESSURE_PER_SEC: float = 3.4
+const HAUNT_PRESSURE_PER_NOISE: float = 2.2
+## A grace period after arriving on a layer before the first spawn can land, so a
+## descent is not immediately a jump scare.
+const HAUNT_FIRST_DELAY: float = 18.0
+## After a hunter leaves (killed/slunk) the pressure resets to this fraction of
+## threshold, so the next one is paced, not instant.
+const HAUNT_PRESSURE_AFTER_SPAWN: float = 0.15
+
+# --- M6 MOTHER barks (the corpus budget) ------------------------------------
+#
+# 183 barks in limbo-lore/corpus.json, categorised, depth-gated and pre-rendered
+# at three corruption tiers. The Director speaks them by context, and the budget
+# is the whole discipline — MOTHER noticing is rare on purpose (DESIGN.md: "she
+# addresses players by callsign. Rarely."). Over-speaking her is the one way to
+# make the money moments cheap.
+
+## Callsign address lines: at most one per layer, three per intrusion. The
+## rarest, highest-impact category — the "she has always known" beat.
+const BARK_ADDRESS_PER_LAYER: int = 1
+const BARK_ADDRESS_PER_RUN: int = 3
+## Minimum seconds between ANY two barks, so she never chatters.
+const BARK_MIN_GAP: float = 9.0
+## Minimum seconds between two address lines specifically — even rarer.
+const BARK_ADDRESS_MIN_GAP: float = 45.0
+## Corruption tier by depth (matches the depth bands): tier 0 clean on the
+## surface, tier 1 through the working rings, tier 2 in the legacy deep. The
+## renderings are pre-baked in the corpus; this only picks which one.
+const BARK_CORRUPT_TIER1_LAYER: int = 6
+const BARK_CORRUPT_TIER2_LAYER: int = 15
+
+# --- M6 glitch-proximity sense + Dampened Protocol --------------------------
+#
+# The HUD's corruption static rises as a hunter nears — your screen breaking IS
+# the radar. It is a NEW flash source, so it is bounded by the A11y flash caps
+# (the safety law) exactly like every other glitch: the ceiling below is the
+# unconditional cap, scaled further down by A11y.flash_scale and by Dampened
+# Protocol. It is an amplitude ramp, never a strobe — no term added here flashes.
+
+## Range over which a hunter drives the HUD static (1 on top of you, 0 beyond).
+const HAUNT_GLITCH_NEAR: float = 3.0
+const HAUNT_GLITCH_FAR: float = 26.0
+## Unconditional ceiling on the proximity static, well under the shaders' own
+## caps. Dampened Protocol lowers it further.
+const HAUNT_GLITCH_CEILING: float = 0.62
+## How fast the static ramps toward its target, so it breathes rather than snaps.
+const HAUNT_GLITCH_RATE: float = 1.8
+
+## Dampened Protocol (DESIGN.md mercy layer): softens PRESENTATION, not
+## difficulty. The single settings toggle ties the audio comfort M5 shipped to
+## these visual softeners — jumpscare sharpness, hunter-reveal intensity and the
+## glitch-proximity ceiling all multiply by this when it is on.
+const DAMPENED_REVEAL_SCALE: float = 0.55
+const DAMPENED_GLITCH_SCALE: float = 0.5

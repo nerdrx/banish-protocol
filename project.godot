@@ -29,6 +29,7 @@ Achievements="*res://src/core/achievements.gd"
 Captions="*res://src/core/caption_bus.gd"
 Audio="*res://src/core/audio_service.gd"
 Music="*res://src/core/music_director.gd"
+Haunt="*res://src/core/haunt_director.gd"
 
 [shader_globals]
 

@@ -14,7 +14,7 @@ You are an invading program. The dungeon is a rogue AI. Its antivirus is hunting
 [![Language](https://img.shields.io/badge/GDScript-static%20typed-355570)](#architecture)
 [![Multiplayer](https://img.shields.io/badge/multiplayer-Steam%20%C2%B7%20ENet%20%C2%B7%201–4%20players-1de9b6)](#multiplayer)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%C2%B7%20Windows-2e4f63)](#getting-started)
-[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M5%20%C2%B7%20The%20Sound-ff2d78)](#roadmap)
+[![Status](https://img.shields.io/badge/status-pre--alpha%20%C2%B7%20M6%20%C2%B7%20The%20Haunting-ff2d78)](#roadmap)
 [![Interface](https://img.shields.io/badge/interface-CRT%20cassette%20futurism-ffb454)](#features)
 
 [The Pitch](#the-pitch) · [Features](#features) · [The Loop](#the-loop) ·
@@ -137,12 +137,26 @@ who and why. No account, no server, your character is yours.
 |---|---|---|
 | **Scrubber** | Disposable cleaner | Fast pack hunters. Weak, numerous, allergic to decryption beams — they swarm from exactly where you aren't looking. |
 | **Sentinel** | Quarantine process | Slow, heavy, armored — but killable: its core drops shielding exactly when it attacks. Guards data vaults, announces itself with a red scan sweep, and pays out a shard burst if your crew wins the argument. |
-| *…deeper processes* | `[REDACTED]` | The bottom rings run code MOTHER wrote for herself. Nobody has exfiltrated footage. |
+| **Hound** *(M6)* | Pursuit | *Hears.* Spawned by the noise you make — siphons, breaker fire, sprinting. Relentless through the room graph; at low HP it flees to the dark to recompile (chase it down for a data burst and real silence, or let it slink off). Kill it and MOTHER recompiles the process minutes later — its howl is the timer restarting. |
+| **Moth** *(M6)* | Inspection | *Sees light.* The Scrubber inverted: drawn to beams, flares and muzzle flash. Shooting it makes more light, which excites it — delete it fast or go fully dark and let it lose you. Its iris dilates when it has your light. |
+| **Auditor** *(M6, deep)* | `[REDACTED]` | *Has the schedule.* Not reactive — it walks the ring checking rooms in a fixed order, audible door by door. Tanky, but a deleted Auditor **ends the audit for that ring**: the most earnable safety in the game. |
 
 Every one of them dies to the breaker. That is a design invariant, not a
 balance number: nothing in MOTHER is immune, because terror has to read as
 *"shooting is one of several competing options"* and never as *"your gun is
 useless."* What you cannot delete is the **process** — she recompiles it.
+
+**The Director** *(M6).* MOTHER is the horror director. She always knows where
+you are — you run inside her — and she paces the hunt: quiet dread, a spike, and
+mercy when the crew is broken and limping (a predator toys with dying prey). The
+three hunters each hunt by a different sense, so their counters *conflict* — the
+light discipline that holds a Scrubber pack off is the dinner bell that calls a
+Moth in. She addresses you by callsign through the glyph panels. Rarely. And the
+haunt is never hardcore: getting caught costs integrity and Cycles, never the run
+(builds are never lost); backdoor sanctuaries are absolutely sacred (no hunter
+enters, ever); and a **Dampened Protocol** toggle softens the presentation —
+jumpscare sharpness, hunter reveals, audio spikes — without touching the
+difficulty. Injection depth is the only difficulty slider there is.
 
 ## Getting Started
 
@@ -290,6 +304,7 @@ fiction-earns-the-mechanics reasoning, art direction language.
 - [x] **M4.8 — Functional clutter** · the density pass (cable looms, pipe runs, rubble, spills and scorch, crate stacks, dead maintenance drones — all MultiMesh-batched) plus five props that *do* things: rewire junctions, weldable vent covers that shut down a nest's reinforcement trickle, lootable cabinets with two ways in, kickable physics debris the antivirus hears, sealable bulkheads that re-route its pathing, and typed command terminals. One shared noise API underneath all of it
 - [x] **M4.95 — The Expensive Pass** · the filmic graphics tier, integrated: baked-PBR tiling surfaces with a close-up detail octave, AgX tonemap, per-room reflection probes, depth-band 3D-LUT grade (surface cold → mid teal-drain → deep warm-wrong) and a cinematic post pass, kit trim/corner modules killing the wall-floor seam, and **god-ray hero shafts** — a real ceiling aperture, slatted, dropping one authored volumetric shaft into every two-storey vault, drop shaft and backdoor. The density pass gets the motivation law in geometry: cables hang on **true catenaries**, routed *from* a source *to* a load, with real fixings and coiled floor ends, and they only move where something makes them — a fine tremor on a running machine, a slow sway in a shaft's draught, dead-still everywhere else. Two shipping renderer bugs fixed on the way (the kit's dead vertex-colour wear masks; sRGB decode on custom-shader samplers). Held 60 fps with a comfortable margin across an 18-layer soak and a two-instance run; darkness law measured, not asserted
 - [~] **M5 — Expensive** · *in progress.* **The Sound** has landed: the full synthesized audio palette wired to every trigger (121 SFX + 15 adaptive music stems, pure-synthesis, zero licensing), a runtime bus mixer (Master → Music·World·Creatures·Player·UI with the sub-buses), an **adaptive score** that stacks stress stems over a depth-band floor (driven now by a proxy, `MusicDirector.set_stress()` ready for M6's Director), **directional sound captions** as the deaf/HoH threat telegraph (the Scrubber-lunge caption fires with its 180 ms telegraph), an audio-comfort settings surface (per-family volumes, kill-the-CRT-whine, soften-audio-spikes), and **Linux + Windows release exports** with the GodotSteam libraries bundled per platform. Determinism held byte-identical (audio is local/cosmetic — never touches the RNG stream or the wire). Still to come this milestone: the glitch post stack, kill cams, low-Cycles presentation and menu polish
+- [x] **M6 — The Haunting** · MOTHER becomes the horror director. A host-authoritative **HauntDirector** tracks crew stress and paces the hunt — spike, dread, and mercy that withholds when the crew is broken — seizing `Music.set_stress()` from the M5 proxy and speaking her authored corpus (183 barks, depth-scaled corruption, callsign address lines through a red glyph panel, budget-enforced). Three killable, solo-survivable **hunters**, each hunting by a different sense: the **Hound** (hears — noise debt spawns it; flees wounded to recompile; its howl restarts the timer), the **Moth** (sees light — the Scrubber inverted, drawn to your beam and muzzle flash), and the **Auditor** (deep rings — a fixed seeded room-sweep; deleting it ends the ring's audit). All three ride the M3 antivirus replication (existence directed like the trickle, pose/state streamed, death-as-state; mid-run joiners reconcile them, descent despawns them). The **glitch-HUD proximity sense** turns your screen breaking into the radar (routed through the A11y flash caps), and a single **Dampened Protocol** toggle softens presentation on both senses — never difficulty. Backdoor sanctuaries stay absolutely hunter-free. Determinism held byte-identical (hunter placement + the Auditor route are seeded and in the dump; spawns are host-authoritative runtime); 60 fps held on the deep two-hunter + Sentinel case
 
 ## Screenshots
 
@@ -314,6 +329,18 @@ fiction-earns-the-mechanics reasoning, art direction language.
 *A Scrubber in its nest, caught in a beam — the only warning you get is its sensor:*
 
 ![Scrubber](.github/assets/screenshots/scrubber.png)
+
+*The **Hound** (M6) — it hears you, and it does not tire. Noise debt spawns it; its howl is the timer restarting:*
+
+![Hound](.github/assets/screenshots/hound.png)
+
+*The **Moth** (M6) — the Scrubber inverted. It comes to your light. Its iris dilates when it has you:*
+
+![Moth](.github/assets/screenshots/moth.png)
+
+*The **Auditor** (M6, deep rings) — it does not react. It has the schedule, and it is checking the rooms in order:*
+
+![Auditor](.github/assets/screenshots/auditor.png)
 
 *Layer architecture: chamfered panel modules under a grazing wall wash, hanging duct runs, a hero doorframe at the end of the dark, and the floor mirroring all of it. Your instrument is amber phosphor; MOTHER's world is not:*
 

@@ -33,6 +33,20 @@ var _log_clock: float = 0.0
 ## Host-side: names of everything killed on this layer, replayed to joiners.
 var _dead: Array[String] = []
 
+# --- directed spawns (trickle + M6 hunters) ---------------------------------
+#
+# Most creatures' existence is a pure function of the seed. Two are not: the M4.8
+# reinforcement trickle (a function of the clock and of what the crew has welded)
+# and the M6 hunters (a function of the Director's pacing). Both are *directed* —
+# the host decides they exist and tells the crew — and both must be seen by a peer
+# that JOINS after they spawned (the M3 mid-run join gauntlet). So the host keeps
+# one record of every LIVING directed spawn and replays the whole set on a roster
+# change (which is also the moment a joining peer's world comes up): build the ones
+# you are missing, delete the ones I have killed. Before M6 the trickle had no such
+# replay and was silently invisible to joiners; folding it in here fixed that.
+## Host-side: {name, kind: "scrubber"|"hound"|"moth"|"auditor", nest, serial}.
+var _directed: Array[Dictionary] = []
+
 # --- reinforcement trickle (M4.8) -------------------------------------------
 #
 # Before this milestone a layer's antivirus was a single fixed purchase: kill it
@@ -68,8 +82,12 @@ func _ready() -> void:
 func _on_crew_changed() -> void:
 	for creature: Antivirus in _creatures():
 		creature.refresh_visibility()
-	if multiplayer.has_multiplayer_peer() and multiplayer.is_server() and not _dead.is_empty():
-		_reconcile.rpc(_dead)
+	# A roster change is also a peer's world coming up: replay the directed spawns
+	# (living hunters to build, dead ones to delete) so a mid-run joiner sees
+	# exactly what the crew is being hunted by, and a re-hosted layer stays honest.
+	if multiplayer.has_multiplayer_peer() and multiplayer.is_server() \
+			and (not _dead.is_empty() or not _directed.is_empty()):
+		_reconcile.rpc(_directed, _dead)
 
 
 # -------------------------------------------------------------------- layer --
@@ -80,6 +98,7 @@ func begin(layout: LayerGraph, layer_number: int) -> void:
 	graph = layout
 	_layer_number = layer_number
 	_dead.clear()
+	_directed.clear()
 	_trickle_clock = Balance.TRICKLE_FIRST_DELAY
 	_trickle_serial = 0
 	_scrubber_cap = 0
@@ -148,7 +167,7 @@ func _purchase() -> void:
 		_layer_number, scrubbers, placed_sentinels, int(params["antivirus_budget"]), reserved])
 
 
-func _build(is_sentinel: bool, slot: int, suffix: String = "") -> void:
+func _build(is_sentinel: bool, slot: int, suffix: String = "") -> Antivirus:
 	var creature: Antivirus = Sentinel.new() if is_sentinel else Scrubber.new()
 	# The layer number is in the name so a creature from the layer above can
 	# never collide with one from the layer below during a rebuild, and so the
@@ -162,6 +181,7 @@ func _build(is_sentinel: bool, slot: int, suffix: String = "") -> void:
 	creature.setup(slot, points[slot], rooms[slot], _layer_number, graph)
 	creature.died.connect(_on_creature_died.bind(String(creature.name)))
 	_container.add_child(creature)
+	return creature
 
 
 # ----------------------------------------------------------------- trickle --
@@ -241,21 +261,30 @@ func _pick_trickle_slot() -> int:
 	return candidates[candidates.size() - 1]
 
 
-## The one creature in the game whose *existence* crosses the wire. Everything
-## else is a pure function of the seed; a reinforcement is a function of the
-## clock and of what the crew has welded, so it has to be told.
+## A reinforcement's existence crosses the wire (M4.8) — it is a function of the
+## clock and of what the crew has welded, not of the seed. Like the M6 hunters it
+## is a *directed* spawn, so it is recorded in `_directed` and replayed to a
+## mid-run joiner by `_reconcile` — the two used to be separate mechanisms with
+## different join semantics (the trickle silently invisible to joiners); they are
+## one now.
 @rpc("authority", "call_local", "reliable")
 func _trickle(slot: int, serial: int) -> void:
 	if graph == null or _container == null:
 		return
 	if slot < 0 or slot >= graph.scrubber_nests.size():
 		return
-	_build(false, slot, "_t%d" % serial)
+	var creature: Antivirus = _build(false, slot, "_t%d" % serial)
+	_record_directed(String(creature.name), "scrubber", slot, serial)
 	print("[AI] reinforcement %d pushed into %s" % [
 		serial, graph.room_name(graph.scrubber_nest_rooms[slot])])
 
 
 func _on_creature_died(creature_name: String) -> void:
+	# A directed spawn that dies drops out of the living set so a joiner never
+	# rebuilds a dead hunter; runs on every peer so each keeps its own set honest.
+	for i: int in range(_directed.size() - 1, -1, -1):
+		if String(_directed[i]["name"]) == creature_name:
+			_directed.remove_at(i)
 	if not multiplayer.has_multiplayer_peer() or not multiplayer.is_server():
 		return
 	if not _dead.has(creature_name):
@@ -263,16 +292,99 @@ func _on_creature_died(creature_name: String) -> void:
 
 
 ## Host-side catch-up for a peer that built this layer after the crew had already
-## cut through some of it. Idempotent, and sent to everyone rather than tracking
-## who is new — it is a few strings.
+## cut through some of it — now carrying the living directed spawns as well as the
+## dead, so a joiner both builds the hunters it is missing and deletes the ones the
+## crew already deleted. Idempotent, and sent to everyone rather than tracking who
+## is new — it is a handful of records.
 @rpc("authority", "call_remote", "reliable")
-func _reconcile(dead: Array) -> void:
-	if _container == null:
+func _reconcile(alive: Array, dead: Array) -> void:
+	if _container == null or graph == null:
 		return
+	for record: Dictionary in alive:
+		var kind: String = String(record["kind"])
+		var slot: int = int(record["nest"])
+		var serial: int = int(record["serial"])
+		if kind == "scrubber":
+			# A trickled Scrubber: rebuild it if this peer is missing it. Same
+			# idempotency guard `_build_hunter` uses, since a live trickle packet and
+			# a reconcile can race.
+			var nm: String = "Scrubber_L%d_%d_t%d" % [_layer_number, slot, serial]
+			if _container.get_node_or_null(NodePath(nm)) == null \
+					and slot >= 0 and slot < graph.scrubber_nests.size():
+				var built: Antivirus = _build(false, slot, "_t%d" % serial)
+				_record_directed(String(built.name), "scrubber", slot, serial)
+		else:
+			_build_hunter(StringName(kind), slot, serial)
 	for entry: String in dead:
 		var node: Node = _container.get_node_or_null(NodePath(entry))
 		if node != null and is_instance_valid(node):
 			node.queue_free()
+
+
+# ----------------------------------------------------------------- hunters --
+
+## Build a directed hunter and replicate it. Called by the HauntDirector on the
+## host; returns the host's own copy so the Director can vector a fresh Hound at
+## the noise that drew it. The build itself goes out reliably to the crew, exactly
+## like a trickled Scrubber's existence.
+func spawn_hunter(kind: StringName, nest: int, serial: int) -> Hunter:
+	var node: Hunter = _build_hunter(kind, nest, serial)
+	if multiplayer.has_multiplayer_peer() and multiplayer.is_server():
+		_spawn_hunter_net.rpc(String(kind), nest, serial)
+	return node
+
+
+## Remote half of a directed hunter spawn — build only, no reply.
+@rpc("authority", "call_remote", "reliable")
+func _spawn_hunter_net(kind: String, nest: int, serial: int) -> void:
+	_build_hunter(StringName(kind), nest, serial)
+
+
+## Builds one hunter at a seeded nest, idempotently (a reconcile and a live spawn
+## packet can race). Records it in the living set so a later joiner is told about
+## it. The `serial` is the creature's slot index too, so its per-instance RNG seed
+## and its music-duck key are unique across a layer.
+func _build_hunter(kind: StringName, nest: int, serial: int) -> Hunter:
+	if graph == null or _container == null or Debug.no_antivirus:
+		return null
+	if graph.hunter_nests.is_empty():
+		return null
+	var slot: int = clampi(nest, 0, graph.hunter_nests.size() - 1)
+	var label: String = ""
+	var creature: Hunter = null
+	match kind:
+		&"hound":
+			creature = Hound.new()
+			label = "Hound"
+		&"moth":
+			creature = Moth.new()
+			label = "Moth"
+		&"auditor":
+			creature = Auditor.new()
+			label = "Auditor"
+		_:
+			return null
+	var creature_name: String = "%s_L%d_%d_d%d" % [label, _layer_number, slot, serial]
+	var existing: Node = _container.get_node_or_null(NodePath(creature_name))
+	if existing != null and is_instance_valid(existing):
+		return existing as Hunter
+	creature.name = creature_name
+	creature.setup(serial, graph.hunter_nests[slot], graph.hunter_nest_rooms[slot],
+			_layer_number, graph)
+	creature.died.connect(_on_creature_died.bind(creature_name))
+	_container.add_child(creature)
+	_record_directed(creature_name, String(kind), slot, serial)
+	return creature as Hunter
+
+
+## Record a directed spawn (trickle or hunter) in the living set, once. Kept on
+## every peer so each has its own honest set, and the host has the authoritative
+## copy to replay to a joiner in `_reconcile`.
+func _record_directed(creature_name: String, kind: String, slot: int, serial: int) -> void:
+	for record: Dictionary in _directed:
+		if String(record["name"]) == creature_name:
+			return
+	_directed.append({"name": creature_name, "kind": kind, "nest": slot, "serial": serial})
 
 
 # ----------------------------------------------------------------- teardown --
@@ -292,6 +404,7 @@ func clear() -> void:
 		creature.despawn()
 		removed += 1
 	_dead.clear()
+	_directed.clear()
 	if removed > 0:
 		print("[AI] despawned %d processes" % removed)
 
@@ -321,6 +434,16 @@ func _process(delta: float) -> void:
 		return
 	_log_clock = 1.0
 
+	# Sanctuary safety (M6 mercy law): backdoor rooms are sacred, no hunter enters,
+	# ever. This is enforced structurally (hunters never target a player in the
+	# sanctuary, the Auditor's route and the hunter nests exclude it, and a wounded
+	# Hound never retreats into it) — this is the cheap assertion that says so out
+	# loud, so a regression that let one in is caught in a log rather than in play.
+	if graph != null and graph.is_backdoor:
+		for creature: Antivirus in _creatures():
+			if creature is Hunter and creature.current_room() == graph.shaft_index:
+				printerr("[AI] SANCTUARY BREACH: %s entered the backdoor room" % creature.name)
+
 	var census: Dictionary = {}
 	var total: int = 0
 	for creature: Antivirus in _creatures():
@@ -330,6 +453,12 @@ func _process(delta: float) -> void:
 			label = "S." + String(Scrubber.State.keys()[int(creature.sync_state)])
 		elif creature is Sentinel:
 			label = "V." + String(Sentinel.State.keys()[int(creature.sync_state)])
+		elif creature is Hound:
+			label = "H." + String(Hound.State.keys()[int(creature.sync_state)])
+		elif creature is Moth:
+			label = "M." + String(Moth.State.keys()[int(creature.sync_state)])
+		elif creature is Auditor:
+			label = "A." + String(Auditor.State.keys()[int(creature.sync_state)])
 		census[label] = int(census.get(label, 0)) + 1
 	if total == 0:
 		return

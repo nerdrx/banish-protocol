@@ -266,6 +266,14 @@ var forced_backdoor: int = -1
 # --- M3 world/AI selection ---------------------------------------------------
 ## Generate the layer with no antivirus in it, for isolating everything else.
 var no_antivirus: bool = false
+
+## `--haunt <hound|moth|auditor|all>`: force the named hunter(s) standing on the
+## first layer, past the depth and pacing gates, for a capture or a behaviour
+## test. Read by the HauntDirector on `begin`.
+var haunt_force: String = ""
+## `--stress N` (0..1): pin the Director's stress value, so a capture can drive the
+## music and the glitch-proximity to a known intensity. Negative = off.
+var stress_force: float = -1.0
 ## Read by the director and both state machines.
 var log_ai: bool = false
 ## `--log-audio`. Read by AudioService and CaptionBus: print one line per sound
@@ -310,6 +318,9 @@ var _dump_layer: int = 1
 ## `--tailprobe WHICH`. Which creature the spring-tail inspection stages.
 var _tail_which: String = "sentinel"
 var _last_probe_t: float = 0.0
+## `--hunterprobe <hound|moth|auditor>`: stage one hunter on a lit turntable
+## facing the camera for a clean bestiary portrait. AI frozen so it holds its idle.
+var _hunter_which: String = "hound"
 ## `--steamjoin` target.
 var _lobby_id: int = 0
 
@@ -401,6 +412,9 @@ func _ready() -> void:
 		return
 	if _mode == "tailprobe":
 		_run_tail_probe.call_deferred()
+		return
+	if _mode == "hunterprobe":
+		_run_hunter_probe.call_deferred()
 		return
 	if _mode.is_empty() and screenshot_path.is_empty() and auto_quit_after <= 0.0 \
 			and not steam_selftest:
@@ -669,6 +683,16 @@ func _parse_args(args: PackedStringArray) -> void:
 					_pad_row = maxi(args[i].to_int(), 0)
 			"--no-antivirus":
 				no_antivirus = true
+			"--haunt":
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					haunt_force = args[i].strip_edges().to_lower()
+				else:
+					haunt_force = "all"
+			"--stress":
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					stress_force = clampf(args[i].to_float(), 0.0, 1.0)
 			"--aim":
 				aim_antivirus = true
 			"--grab":
@@ -701,6 +725,13 @@ func _parse_args(args: PackedStringArray) -> void:
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
 					i += 1
 					_tail_which = args[i]
+			"--hunterprobe":
+				# M6 bestiary portraits: stage one hunter on a lit floor facing the
+				# camera, AI frozen on its idle. Pair with `--screenshot PATH`.
+				_mode = "hunterprobe"
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_hunter_which = args[i].strip_edges().to_lower()
 			"--dumplayer":
 				_mode = "dump"
 				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
@@ -987,6 +1018,85 @@ func _balance_selftest() -> void:
 			printerr("[SelfTest] FAIL  flash-rate %-5s: peak %.2f Hz > 3.0 Hz (WCAG 2.3.1)" % [
 				String(probe["n"]), hz])
 
+	# --- M6 the haunting -----------------------------------------------------
+
+	# The killability law, as a number: every hunter must die to the breaker in a
+	# finite, solo-payable number of shots. Checked at the DEEPEST scaling (a
+	# layer-25 hunter) against a bare tier-0 cutter — the worst case a lone agent
+	# with no modules faces. Anything that comes out "never dies" is a law break.
+	var tier0: float = float(Balance.MODULES["breaker"]["damage"][0])
+	for probe: Dictionary in [
+			{"n": "HOUND", "hp": Balance.HOUND_HEALTH},
+			{"n": "MOTH", "hp": Balance.MOTH_HEALTH},
+			{"n": "AUDITOR", "hp": Balance.AUDITOR_HEALTH}]:
+		var deep_hp: float = Balance.hunter_health(float(probe["hp"]), 25)
+		var shots: int = int(ceil(deep_hp / tier0))
+		# 40 tier-0 shots is the Sentinel's own body-shot budget (~43); a hunter must
+		# come in under that, or it is a wall wearing a hunter's name.
+		if deep_hp > 0.0 and shots <= 40:
+			print("[SelfTest] PASS  killable %-7s: layer-25 hp %.0f = %d tier-0 shots (<= 40)" % [
+				String(probe["n"]), deep_hp, shots])
+		else:
+			failures += 1
+			printerr("[SelfTest] FAIL  killable %s: %d tier-0 shots (> 40) — killability law" % [
+				String(probe["n"]), shots])
+
+	# The escalation gates must be ordered (start < auditor < double) or the depth
+	# curve is incoherent — a layer could offer two hunters before it offers one.
+	if Balance.HUNT_START_LAYER < Balance.HUNT_AUDITOR_LAYER \
+			and Balance.HUNT_AUDITOR_LAYER <= Balance.HUNT_DOUBLE_LAYER:
+		print("[SelfTest] PASS  hunt escalation: none<6=%d, auditor=%d, double=%d ordered" % [
+			Balance.HUNT_START_LAYER, Balance.HUNT_AUDITOR_LAYER, Balance.HUNT_DOUBLE_LAYER])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  hunt escalation gates out of order")
+
+	# Bark corruption must scale with depth: clean surface, corrupt deep.
+	if MotherBarks.tier_for(3) == 0 and MotherBarks.tier_for(9) == 1 \
+			and MotherBarks.tier_for(18) == 2:
+		print("[SelfTest] PASS  bark corruption: tier 0 @L3, 1 @L9, 2 @L18 (scales with depth)")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  bark corruption tiers do not scale with depth")
+
+	# SAFETY (a11y): the glitch-proximity sense is a NEW flash source, so it must be
+	# bounded by the caps like every other. Assert its ceiling stays well under the
+	# unconditional shader caps at full intensity, and that Reduced Flashing zeroes
+	# it. It is an amplitude (not a FlickerLight curve), so this bounds the ceiling
+	# rather than measuring Hz — the sustained ramp cannot itself strobe.
+	var lit: float = A11y.flash_scale
+	A11y.flash_scale = 1.0
+	var ceil_on: float = A11y.glitch_proximity_ceiling()
+	A11y.flash_scale = 0.0
+	var ceil_reduced: float = A11y.glitch_proximity_ceiling()
+	A11y.flash_scale = lit
+	if ceil_on <= 0.75 and ceil_reduced <= 0.001:
+		print("[SelfTest] PASS  glitch-proximity cap: %.2f at full, %.2f under Reduced Flashing" % [
+			ceil_on, ceil_reduced])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  glitch-proximity cap: %.2f full / %.2f reduced (safety law)" % [
+			ceil_on, ceil_reduced])
+
+	# Dampened Protocol (M6 mercy): the single comfort switch must soften the
+	# PRESENTATION on both axes without touching difficulty. Assert the visual
+	# scales drop when it is on and restore when off; the audio half is
+	# Audio.reduced_spikes, wired to the same toggle in the settings panel.
+	var was_damp: bool = A11y.dampened_protocol
+	A11y.dampened_protocol = false
+	var reveal_off: float = A11y.hunter_reveal_scale()
+	var glitch_off: float = A11y.glitch_proximity_ceiling()
+	A11y.dampened_protocol = true
+	var reveal_on: float = A11y.hunter_reveal_scale()
+	var glitch_on: float = A11y.glitch_proximity_ceiling()
+	A11y.dampened_protocol = was_damp
+	if reveal_on < reveal_off and glitch_on < glitch_off and reveal_off == 1.0:
+		print("[SelfTest] PASS  dampened protocol: reveal %.2f->%.2f, glitch ceil %.2f->%.2f (softer, not easier)" % [
+			reveal_off, reveal_on, glitch_off, glitch_on])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  dampened protocol did not soften the presentation")
+
 	print("[SelfTest] %d check(s) failed" % failures)
 	get_tree().quit(1 if failures > 0 else 0)
 
@@ -1146,6 +1256,120 @@ func _run_tail_probe() -> void:
 			else "user://tailprobe.png"
 	img.save_png(path)
 	print("[Debug] tailprobe saved %s" % path)
+	get_tree().quit(0)
+
+
+# --------------------------------------------------------------- hunterprobe --
+
+## `--hunterprobe <hound|moth|auditor>`: one hunter on a lit floor, facing the
+## camera, its AI frozen on its idle so it holds a clean portrait pose. The near-
+## black + red-emissive enemy palette reads against a dark backdrop. Boots through
+## the normal path so autoloads are live; pair with `--screenshot PATH`.
+func _run_hunter_probe() -> void:
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var current: Node = get_tree().current_scene
+	if current != null:
+		current.queue_free()
+	await get_tree().process_frame
+
+	var root: Window = get_tree().root
+	root.size = Vector2i(1280, 720)
+
+	var env: WorldEnvironment = WorldEnvironment.new()
+	var e: Environment = Environment.new()
+	e.background_mode = Environment.BG_COLOR
+	# Near-black, like a real layer — the enemy palette is meant to be a hole in the
+	# room that the red emissive burns out of, so the backdrop must be dark.
+	e.background_color = Color(0.006, 0.008, 0.012)
+	e.ambient_light_color = Color(0.10, 0.13, 0.20)
+	# Kept low so the void stays a void (the darkness law) and the red emissive is
+	# what carries the read, exactly as in a real layer.
+	e.ambient_light_energy = 0.12
+	env.environment = e
+	root.add_child(env)
+	# A cool key from the side (a crewmate's beam would be), so the shell is lit but
+	# the red emissive still leads — never a flat studio wash.
+	var key: SpotLight3D = SpotLight3D.new()
+	key.position = Vector3(2.4, 2.6, 3.2)
+	key.look_at_from_position(key.position, Vector3(0.0, 1.0, 0.0), Vector3.UP)
+	key.light_energy = 6.0
+	key.light_color = Color(0.7, 0.82, 1.0)
+	key.spot_range = 16.0
+	key.spot_angle = 40.0
+	root.add_child(key)
+
+	var floor_body: StaticBody3D = StaticBody3D.new()
+	floor_body.collision_layer = 1
+	floor_body.collision_mask = 0
+	root.add_child(floor_body)
+	var floor_col: CollisionShape3D = CollisionShape3D.new()
+	var box: BoxShape3D = BoxShape3D.new()
+	box.size = Vector3(16.0, 0.4, 16.0)
+	floor_col.shape = box
+	floor_col.position = Vector3(0.0, -0.2, 0.0)
+	floor_body.add_child(floor_col)
+	var floor_mesh: MeshInstance3D = MeshInstance3D.new()
+	var plane: PlaneMesh = PlaneMesh.new()
+	plane.size = Vector2(16.0, 16.0)
+	floor_mesh.mesh = plane
+	var fm: StandardMaterial3D = StandardMaterial3D.new()
+	fm.albedo_color = Color(0.03, 0.035, 0.05)
+	fm.metallic = 0.2
+	fm.roughness = 0.4
+	floor_mesh.material_override = fm
+	floor_body.add_child(floor_mesh)
+
+	var graph: LayerGraph = LayerGraph.generate(12345, 16)
+	var hunter: Hunter = null
+	var idle: String = "idle"
+	var look_y: float = 1.0
+	var cam_pos: Vector3 = Vector3(0.0, 1.5, 4.2)
+	match _hunter_which:
+		"moth":
+			hunter = Moth.new()
+			idle = "drift"
+			look_y = 1.7
+			cam_pos = Vector3(0.0, 1.7, 3.4)
+		"auditor":
+			hunter = Auditor.new()
+			idle = "inspect"
+			look_y = 1.2
+			cam_pos = Vector3(0.0, 1.4, 4.8)
+		_:
+			hunter = Hound.new()
+			idle = "prowl"
+			look_y = 0.7
+			cam_pos = Vector3(0.0, 1.1, 3.8)
+	root.add_child(hunter)
+	hunter.setup(0, Vector3.ZERO, 0, 16, graph)
+	# Freeze the sim so it holds still for the portrait; keep _process (animation +
+	# emissive breathing) running so it is not a dead mannequin.
+	hunter.set_physics_process(false)
+	# Point it a touch off-camera so the silhouette reads as three-quarter, not a
+	# mugshot, then settle its AnimationTree onto the idle clip.
+	hunter.rotation.y = deg_to_rad(28.0)
+	await get_tree().process_frame
+	var tree: AnimationTree = hunter.find_child("AnimTree", true, false) as AnimationTree
+	if tree != null:
+		CreatureKit.travel(tree, idle)
+		CreatureKit.set_speed(tree, 1.0)
+
+	var cam: Camera3D = Camera3D.new()
+	root.add_child(cam)
+	cam.position = cam_pos
+	cam.look_at(Vector3(0.0, look_y, 0.0))
+	cam.current = true
+	print("[Debug] hunterprobe staged '%s'" % _hunter_which)
+
+	# Let the emissive breathe settle and the animation reach its idle.
+	await get_tree().create_timer(1.6).timeout
+	RenderingServer.force_draw()
+	var img: Image = root.get_texture().get_image()
+	var path: String = screenshot_path if not screenshot_path.is_empty() \
+			else "user://hunterprobe.png"
+	img.save_png(path)
+	print("[Debug] hunterprobe saved %s" % path)
 	get_tree().quit(0)
 
 

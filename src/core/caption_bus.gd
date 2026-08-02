@@ -78,6 +78,12 @@ const TABLE: Dictionary = {
 	&"sentinel_alarm": {"line": "Quarantine alarm — MOTHER", "cat": Cat.THREAT},
 	&"hound_howl": {"line": "The Hound howls", "cat": Cat.THREAT},
 	&"hound_prowl": {"line": "Hound prowling", "cat": Cat.THREAT},
+	# M6 hunters. The Moth's surge is its dodge cue (go dark); the Auditor's
+	# door-by-door step is dread on a schedule, and its deletion is earned safety.
+	&"moth_surge": {"line": "Moth surging to the light!", "cat": Cat.THREAT},
+	&"auditor_step": {"line": "Audit advancing — a room away", "cat": Cat.THREAT},
+	&"auditor_strike": {"line": "Auditor strike!", "cat": Cat.THREAT},
+	&"auditor_ended": {"line": "Audit ended — sector safe", "cat": Cat.INFO},
 	# --- world threats (MOTHER hears these, or does these) ---
 	&"siphon_channel": {"line": "Siphon channeling — pinging hunters", "cat": Cat.THREAT},
 	&"debris": {"line": "Debris clatter", "cat": Cat.THREAT},
@@ -318,8 +324,16 @@ func _refresh_sustained() -> void:
 	var gone: Array = []
 	var active_keys: Dictionary = {}
 	for node: Variant in _registered:
+		# Validity BEFORE the cast: `freed_object as Node3D` logs a "cast a freed
+		# object" error before returning null, and M6's hunters register sustained
+		# captions (drones, prowl/wing loops) and are freed on death, despawn and the
+		# Hound's slink — so a registration can outlive its node for a frame. Checked
+		# with is_instance_valid (which is freed-safe), the drop is silent.
+		if not is_instance_valid(node):
+			gone.append(node)
+			continue
 		var n: Node3D = node as Node3D
-		if n == null or not is_instance_valid(n):
+		if n == null:
 			gone.append(node)
 			continue
 		var info: Dictionary = _registered[node]

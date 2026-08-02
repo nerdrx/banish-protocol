@@ -47,6 +47,10 @@ signal exfil_changed
 ## M3.5 events. These carry no new state — they name moments the run already
 ## replicates, so `Achievements` can listen instead of polling.
 signal process_deleted(by_peer: int, kind: String)  ## A breaker shot killed something.
+## Host-side, every breaker shot (hit or miss). The muzzle flash is a light, which
+## is why M6's Moth is drawn to it — the HauntDirector tracks these so a fighting
+## crew feeds the one hunter that comes to light.
+signal breaker_fired(by_peer: int, origin: Vector3)
 ## The local avatar's own shot resolved, for crosshair feedback ONLY.
 ##
 ## Emitted locally by Player and never replicated — no RPC signature changes, no
@@ -1086,6 +1090,9 @@ func _breaker_request(origin: Vector3, direction: Vector3) -> void:
 			"miss" if creature == null else "%s hp=%.0f%s" % [
 				String(creature.name), maxf(creature.health, 0.0),
 				"  KILL" if killed else ""]])
+	# The muzzle flash: a light the Moth reads (M6). Host-side and local — the
+	# Director tracks it per shooter; nothing extra crosses the wire for it.
+	breaker_fired.emit(sender, origin)
 	_breaker_shot.rpc(sender, origin, endpoint, killed, kind)
 
 

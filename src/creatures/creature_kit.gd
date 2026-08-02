@@ -24,6 +24,11 @@ const SENTINEL: String = "res://assets/models/sentinel.glb"
 const SENTINEL_KIT: String = "res://assets/models/sentinel_kit.glb"
 const CREW_AVATAR: String = "res://assets/models/crew_avatar.glb"
 const SURGE: String = "res://assets/models/surge.glb"
+## M6 hunter models. Same enemy palette family as the Scrubber (Body / Plate /
+## EmissRed / CoreEmiss), so they repaint through the same table.
+const HOUND: String = "res://assets/models/hound.glb"
+const MOTH: String = "res://assets/models/moth.glb"
+const AUDITOR: String = "res://assets/models/auditor.glb"
 
 ## Enemy palette. The body swallows light — a Sentinel should be a hole in the
 ## room until its core comes up — and every emissive slot burns red, which

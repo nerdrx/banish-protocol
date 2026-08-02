@@ -164,6 +164,17 @@ var scrubber_nest_rooms: Array[int] = []
 var sentinel_posts: Array[Vector3] = []
 var sentinel_post_rooms: Array[int] = []
 
+## M6 hunter placement. Seeded content like everything else here, so a
+## determinism dump covers it and two peers agree on it before the Director makes
+## a single runtime decision — but *whether and when* a hunter appears is the
+## Director's host-authoritative call (replicated like the reinforcement trickle),
+## not part of generation. These are only the *entry anchors* a directed spawn
+## can use (dark rooms, never the sanctuary) and are derived without drawing from
+## `_rng`, so adding them cannot move a single shard, nest or post on any existing
+## seed — the M5 dump above the hunter lines is byte-for-byte unchanged.
+var hunter_nests: Array[Vector3] = []
+var hunter_nest_rooms: Array[int] = []
+
 ## M4.8 functional clutter. Parallel arrays, same contract as the Compilers: all
 ## of it is **seeded content**, so a rewire packet carries a mode and a weld
 ## packet carries an index, and the host has its own copy of the exact prop the
@@ -779,6 +790,57 @@ func _place_furniture() -> void:
 	# else, so it adds two lines to the dump without shifting a single nest, post,
 	# Compiler or prop above it — the same append discipline M4 and M4.8 used.
 	_place_shaft_cache()
+	# M6 last, and deliberately NOT from `_rng` at all: the hunter entry anchors are
+	# derived from data the generator already settled (the unlit nests, the room
+	# depths), so they cannot perturb the stream even in principle — every seed's
+	# shards, nests, posts, Compilers and props are exactly where M5 left them.
+	_place_hunter_nests()
+
+
+## Entry anchors for M6's directed hunter spawns. Dark rooms (the unlit nests) are
+## where a hunter comes in from — never a lit arrival room and never the sanctuary
+## (DESIGN.md: backdoor rooms are sacred, no hunter enters, ever). Pure derivation,
+## no RNG: the point is a room centre, the room set is `nest_rooms`.
+func _place_hunter_nests() -> void:
+	var candidates: Array[int] = nest_rooms.duplicate()
+	if candidates.is_empty():
+		# A layer that rolled no unlit room still gets hunter entries: the deepest
+		# rooms that are not the arrival or the way down.
+		for room: Dictionary in rooms:
+			var index: int = int(room["index"])
+			if index != arrival_index and index != shaft_index:
+				candidates.append(index)
+		candidates.sort()
+	for index: int in candidates:
+		if is_backdoor and index == shaft_index:
+			continue
+		hunter_nests.append(centre_of(index))
+		hunter_nest_rooms.append(index)
+	# Absolute fallback: the arrival room, so a directed spawn always has an anchor.
+	if hunter_nests.is_empty():
+		hunter_nests.append(centre_of(arrival_index))
+		hunter_nest_rooms.append(arrival_index)
+
+
+## The Auditor's fixed route: every room ordered shallow-to-deep, so the sweep
+## works inward and TERMINATES at the lowest accessible point on the ring (the one
+## fact the dossier leaks). The sanctuary is excluded on a backdoor layer — the
+## Auditor audits the ring, never the campfire. Pure function of the room depths,
+## so it is identical on every peer and stable in the dump.
+func auditor_route() -> Array[int]:
+	var order: Array[int] = []
+	for room: Dictionary in rooms:
+		var index: int = int(room["index"])
+		if is_backdoor and index == shaft_index:
+			continue
+		order.append(index)
+	order.sort_custom(func(a: int, b: int) -> bool:
+		var da: int = int(rooms[a]["depth"])
+		var db: int = int(rooms[b]["depth"])
+		if da != db:
+			return da < db
+		return a < b)
+	return order
 
 
 ## Salvage. Vaults are rich, everything else is loose change; the drop-shaft room
@@ -1353,6 +1415,20 @@ func to_text() -> String:
 		lines.append("  debris %02d kind=%d (%.3f,%.3f,%.3f)" % [
 			i, debris_kinds[i],
 			debris_points[i].x, debris_points[i].y, debris_points[i].z])
+
+	# --- M6 -----------------------------------------------------------------
+	#
+	# The hunter entry anchors and the Auditor's route, in the dump for the same
+	# reason the Sentinel posts are: two peers that disagree about where a hunter
+	# comes in, or about the order the Auditor walks, disagree about a spawn packet
+	# and about a streamed pose. Both are derived (no RNG), so these lines are a
+	# statement that the derivation is identical on every peer — and being appended
+	# last, they move nothing above them.
+	for i: int in hunter_nests.size():
+		lines.append("  hunter_nest %02d room=%d (%.3f,%.3f,%.3f)" % [
+			i, hunter_nest_rooms[i],
+			hunter_nests[i].x, hunter_nests[i].y, hunter_nests[i].z])
+	lines.append("  auditor_route %s" % str(auditor_route()))
 	# Room names last: they are derived rather than rolled, but a dump that prints
 	# them is a dump that catches a rename breaking every terminal answer.
 	var names: PackedStringArray = PackedStringArray()

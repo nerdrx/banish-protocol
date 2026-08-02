@@ -174,6 +174,11 @@ const BOOT_CYCLES_START: float = 0.22
 # --- glitch / degradation ---------------------------------------------------
 var _glitch: float = 0.0
 var _degrade: float = -1.0
+## M6 glitch-proximity sense: 0..1 static that rises as a hunter nears the local
+## avatar — the screen breaking IS the radar. Ramped smoothly (never a strobe) and
+## held under A11y.glitch_proximity_ceiling() (the flash cap + Dampened Protocol),
+## so it is a new glitch source that stays inside the safety law by construction.
+var _proximity: float = 0.0
 ## Clusters that jump when the shell is hit, and their laid-out home positions.
 var _clusters: Array[Control] = []
 var _cluster_home: PackedVector2Array = PackedVector2Array()
@@ -186,6 +191,28 @@ var _self_name: String = ""
 var _glyph_tick: int = -1
 ## Labels that flicker as the interface degrades.
 var _flicker_labels: Array[Label] = []
+
+# --- MOTHER's voice (M6) -----------------------------------------------------
+#
+# The glyph-panel MOTHER speaks through. Deliberately NOT the amber player HUD:
+# this is her channel, not the crew's instrument, so it renders in her red glyph
+# colour, centred, above the readouts. The corruption is baked into the corpus
+# rendering the Director sends (depth-scaled, the same vocabulary the terminals
+# and signage decay through), so the label only holds and fades it. An address
+# line — the callsign money moment — holds longer and reads larger.
+var _mother_label: Label = null
+var _mother_clock: float = 0.0
+var _mother_hold: float = 0.0
+var _mother_is_address: bool = false
+var _prox_log_clock: float = 0.0
+## Cached raw (pre-ceiling) proximity 0..1, refreshed on a slow scan clock so the
+## per-frame path never walks the hunter group. The ceiling is applied per frame
+## so the A11y / Dampened toggles still respond instantly.
+var _prox_target: float = 0.0
+var _prox_scan_clock: float = 0.0
+## How often the radar re-scans the hunter group. The bearing of dread does not
+## need 60 Hz (same reasoning as PING_INTERVAL for the link readout).
+const PROX_SCAN_INTERVAL: float = 0.2
 
 # --- the tube ---------------------------------------------------------------
 ## The interface's own viewport, the container compositing it back, and the
@@ -285,6 +312,8 @@ func _ready() -> void:
 	_build_tube()
 	_install_depth()
 	_install_glitch_rig()
+	_build_mother_surface()
+	Haunt.mother_spoke.connect(_on_mother_spoke)
 	_build_crosshair()
 	_build_gate_panel()
 	_begin_boot()
@@ -344,6 +373,8 @@ func _process(delta: float) -> void:
 	_update_boot(delta)
 	_update_degradation()
 	_update_surfaces(delta)
+	_update_proximity(delta)
+	_update_mother(delta)
 	_update_glitch(delta)
 	_update_crosshair(delta)
 	_update_parallax(delta)
@@ -454,8 +485,13 @@ func _update_tube(delta: float) -> void:
 	_crt.set_shader_parameter("warmup", _warmup)
 	# The damage flinch reaches the glass as a loss of horizontal hold, and the
 	# draining pool reaches it as signal failure. Same two numbers the readouts
-	# are already using — one fault, told twice, in two vocabularies.
-	_crt.set_shader_parameter("damage", _glitch)
+	# are already using — one fault, told twice, in two vocabularies. M6 adds the
+	# proximity static under the same term: a nearing hunter loses you the tube's
+	# hold, sustained rather than flinched. The `damage` shader path is already
+	# a11y-scaled (mix(0.4,1,a11y_flash)) and positional (a uv shear, not a
+	# luminance flash), and `_proximity` is held under the flash-capped ceiling — so
+	# the radar cannot become a strobe.
+	_crt.set_shader_parameter("damage", maxf(_glitch, _proximity))
 	_crt.set_shader_parameter("degrade", _degrade * 0.85)
 	_update_phosphor(delta)
 
@@ -1076,15 +1112,26 @@ func _make_ghosts(source: Label) -> Array[Label]:
 func _update_glitch(delta: float) -> void:
 	if Debug.hud_state != "damage":
 		if _glitch <= 0.0:
-			return
-		_glitch = maxf(_glitch - delta / UiFx.GLITCH_TIME, 0.0)
+			_glitch = 0.0
+			# The proximity static keeps the rig alive even with no damage flinch: a
+			# nearing hunter jitters the clusters on its own, which is the radar. Once
+			# both are gone, settle the clusters home and stop.
+			if _proximity <= 0.0:
+				for i: int in _clusters.size():
+					if i < _cluster_home.size():
+						_clusters[i].position = _cluster_home[i]
+				return
+		else:
+			_glitch = maxf(_glitch - delta / UiFx.GLITCH_TIME, 0.0)
 
 	# SAFETY (a11y): the flinch's positional jump and chromatic shear are small-area
 	# and brief (HUD-only, ~0.2 s), so they hold with Reduced Flashing OFF — but
 	# they are a new M4.9 flash source, so they scale by the same global switch and
-	# go still under Reduced Flashing. The callsign corruption below is text, not a
-	# flash, and is left alone.
-	var shift: float = _glitch * UiFx.GLITCH_SHIFT * A11y.flash_scale
+	# go still under Reduced Flashing. The proximity static folds in under the same
+	# a11y_flash scale and is already held below the flash-capped ceiling. The
+	# callsign corruption below is text, not a flash, and is left alone.
+	var intensity: float = maxf(_glitch, _proximity)
+	var shift: float = intensity * UiFx.GLITCH_SHIFT * A11y.flash_scale
 	var tick: float = floor(UiFx.clock() * 45.0)
 	for i: int in _clusters.size():
 		var jump: Vector2 = Vector2(
@@ -1136,6 +1183,128 @@ func _corrupt_callsign() -> void:
 		else:
 			out += _self_name[i]
 	_self_label.text = out
+
+
+# --------------------------------------------------------- proximity radar --
+
+## The glitch-proximity sense. The static rises with the nearest HUNTER to the
+## local avatar (Scrubbers and the Sentinel have their own language and do not
+## drive it), ramped smoothly so it breathes rather than snaps, and clamped to the
+## A11y ceiling — which already folds in the flash scale and Dampened Protocol. It
+## is an amplitude, not a strobe: nothing here flashes, it only leans the tube's
+## loss-of-hold up as a hunter closes.
+func _update_proximity(delta: float) -> void:
+	# The group scan is throttled; only the smooth ramp runs every frame.
+	_prox_scan_clock -= delta
+	if _prox_scan_clock <= 0.0:
+		_prox_scan_clock = PROX_SCAN_INTERVAL
+		_prox_target = _scan_nearest_hunter()
+	var target: float = _prox_target * A11y.glitch_proximity_ceiling()
+	_proximity = move_toward(_proximity, target, Balance.HAUNT_GLITCH_RATE * delta)
+	if _proximity < 0.001:
+		_proximity = 0.0
+	# --log-ai: throttled trace of the radar rising, for verifying it tracks a
+	# nearing hunter AND never crosses the flash-capped ceiling.
+	if Debug.log_ai and _proximity > 0.0:
+		_prox_log_clock -= delta
+		if _prox_log_clock <= 0.0:
+			_prox_log_clock = 0.5
+			print("[HUD] glitch-proximity=%.3f (ceiling %.3f)" % [
+				_proximity, A11y.glitch_proximity_ceiling()])
+
+
+## The raw 0..1 nearness of the closest hunter to the local avatar, before the
+## flash-capped ceiling is applied. Walks the hunter group — hence throttled.
+func _scan_nearest_hunter() -> float:
+	var body: Node3D = _player as Node3D
+	if body == null or not is_instance_valid(body):
+		body = Net.get_player(Net.local_id()) as Node3D
+	if body == null or not is_instance_valid(body):
+		return 0.0
+	var nearest: float = 1e9
+	for node: Node in get_tree().get_nodes_in_group(Hunter.HUNTER_GROUP):
+		var hunter: Node3D = node as Node3D
+		if hunter == null or not is_instance_valid(hunter):
+			continue
+		nearest = minf(nearest, hunter.global_position.distance_to(body.global_position))
+	if nearest >= 1e9:
+		return 0.0
+	return clampf(inverse_lerp(Balance.HAUNT_GLITCH_FAR, Balance.HAUNT_GLITCH_NEAR,
+			nearest), 0.0, 1.0)
+
+
+# ----------------------------------------------------------- MOTHER's voice --
+
+## MOTHER's glyph panel: a centred red line above the amber readouts, distinct
+## from the crew's instrument because it is HER channel. Built in code beside the
+## other overlays.
+func _build_mother_surface() -> void:
+	_mother_label = Label.new()
+	_mother_label.name = "MotherLine"
+	_mother_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_mother_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_mother_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_mother_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_mother_label.anchor_left = 0.5
+	_mother_label.anchor_right = 0.5
+	_mother_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_mother_label.position = Vector2(0.0, 96.0)
+	_mother_label.custom_minimum_size = Vector2(760.0, 0.0)
+	_mother_label.pivot_offset = Vector2(380.0, 20.0)
+	_mother_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_mother_label.add_theme_font_override("font", load("res://assets/fonts/ui_font.tres") as Font)
+	_mother_label.add_theme_font_size_override("font_size", 22)
+	# Her colour is the hostile red the whole game reserves for MOTHER's processes,
+	# never the player's amber phosphor. Paired with position + size, not colour
+	# alone, so it reads without hue (the safety law's redundancy rule).
+	_mother_label.add_theme_color_override("font_color", UiFx.HOSTILE)
+	_mother_label.add_theme_constant_override("outline_size", 6)
+	_mother_label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 0.85))
+	_mother_label.modulate.a = 0.0
+	_mother_label.text = ""
+	# Onto the same overlay layer the notice label lives on, above the tube.
+	var parent: Node = _notice_label.get_parent() if _notice_label != null else self
+	parent.add_child(_mother_label)
+
+
+## The Director spoke. Render the (already depth-corrupted) line; an address line —
+## the callsign money moment — holds longer, reads larger, and only ever fires
+## within the corpus budget the Director enforces. Subtitles-gated: A11y.subtitles
+## owns MOTHER's authored text, so a player who has turned her captions off is not
+## shown them.
+func _on_mother_spoke(text: String, category: String, _tier: int, is_address: bool) -> void:
+	if _mother_label == null or not A11y.subtitles:
+		return
+	_mother_is_address = is_address
+	_mother_label.text = text
+	# The reveal intensity is softened by Dampened Protocol (a big red line snapping
+	# in is a jumpscare of its own); the hold and size grow for the rare address.
+	var reveal: float = A11y.hunter_reveal_scale()
+	_mother_label.add_theme_font_size_override("font_size", 30 if is_address else 22)
+	_mother_hold = (5.5 if is_address else 3.2)
+	_mother_clock = _mother_hold + 0.9
+	_mother_label.scale = Vector2.ONE * (1.0 + 0.12 * reveal)
+	if Debug.log_ai:
+		print("[HUD] MOTHER (%s): %s" % [category, text])
+
+
+func _update_mother(delta: float) -> void:
+	if _mother_label == null or _mother_clock <= 0.0:
+		return
+	_mother_clock -= delta
+	# Ease the reveal scale back to rest, and fade out over the tail.
+	_mother_label.scale = _mother_label.scale.move_toward(Vector2.ONE, delta * 0.6)
+	var fade: float = clampf(_mother_clock / 0.9, 0.0, 1.0)
+	# An address line gets a faint red shiver while it holds — she is inside the
+	# glass — capped small and a11y-scaled, never a flash.
+	var jitter: float = 0.0
+	if _mother_is_address and _mother_clock > 0.9:
+		jitter = 1.2 * A11y.flash_scale * (1.0 - A11y.hunter_reveal_scale() * 0.4)
+	_mother_label.position.x = (UiFx.hash01(floor(UiFx.clock() * 18.0)) - 0.5) * 2.0 * jitter
+	_mother_label.modulate.a = fade
+	if _mother_clock <= 0.0:
+		_mother_label.text = ""
+		_mother_label.position.x = 0.0
 
 
 # --------------------------------------------------------------- degradation --

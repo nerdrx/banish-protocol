@@ -92,9 +92,16 @@ func _build() -> void:
 	_toggle(column, "CRT WHINE (15.7 kHz)", Audio.crt_whine,
 			"The tube's flyback whine. Off notches it out — kill it if it hurts.",
 			func(on: bool) -> void: Audio.set_crt_whine(on))
-	_toggle(column, "REDUCED AUDIO SPIKES", Audio.reduced_spikes,
-			"Soft-limits sudden loud events (shrieks, klaxons) without changing the threat.",
-			func(on: bool) -> void: Audio.set_reduced_spikes(on))
+	# Dampened Protocol (M6): ONE comfort switch across both senses. M5 shipped the
+	# audio half (reduced spikes); M6 adds the visual half (hunter reveals,
+	# jumpscare sharpness, the glitch-proximity ceiling). It softens how the
+	# haunting is PRESENTED — it does not touch difficulty. Wired here to both
+	# stores from the single control (A11y owns the visual state, Audio the audio).
+	_toggle(column, "DAMPENED PROTOCOL", A11y.dampened_protocol,
+			"Softens hunter reveals, jumpscares and audio spikes. Comfort only — the threat is unchanged.",
+			func(on: bool) -> void:
+				A11y.set_dampened_protocol(on)
+				Audio.set_reduced_spikes(on))
 
 	_rule(column)
 	var close: Button = _button(column, "CLOSE")

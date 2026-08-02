@@ -134,9 +134,14 @@ func set_stress(value: float) -> void:
 	_stress_override = -1.0 if value < 0.0 else clampf(value, 0.0, 1.0)
 
 
-## M6 hook: a hunter appeared. Fires its leitmotif on MusStinger (dormant now —
-## the hunters do not exist until M6). The Auditor loops on MusStress under the
-## stack instead; the others are one-shots.
+## Looping hunter stingers, kept so they can be stopped when the hunter leaves or
+## the crew descends. The one-shots (Hound howl, Moth) free themselves.
+var _hunter_stingers: Dictionary = {}
+
+
+## M6 hook: a hunter appeared. Fires its leitmotif on MusStinger. The Auditor
+## loops under the stack (its audit is a sustained presence); the others are
+## one-shots. Activated by the HauntDirector (M5 wired these dormant).
 func play_hunter(kind: StringName) -> void:
 	var file: String = ""
 	match kind:
@@ -144,16 +149,42 @@ func play_hunter(kind: StringName) -> void:
 		&"moth": file = "mus_hunter_moth.ogg"
 		&"auditor": file = "mus_hunter_auditor.ogg"
 		_: return
+	# A looping stinger already up (a second Auditor, or a re-announce) must not
+	# stack a second forever-loop over the first.
+	if kind == &"auditor" and _hunter_stingers.has(kind) \
+			and is_instance_valid(_hunter_stingers[kind]):
+		return
 	var sting: AudioStreamPlayer = _make(file, Audio.BUS_MUS_STINGER, kind == &"auditor")
 	sting.volume_db = FULL_DB
 	sting.play()
 	if kind == &"hound":
 		# The howl is a spotlight: duck the beds under it (MUSIC_GUIDE).
 		Audio.set_music_duck(&"hound", -6.0)
-	if not sting.stream is AudioStreamOggVorbis or kind != &"auditor":
+	if kind == &"auditor" and sting.stream is AudioStreamOggVorbis:
+		_hunter_stingers[kind] = sting
+	else:
 		sting.finished.connect(func() -> void:
 			Audio.set_music_duck(&"hound", 0.0)
 			sting.queue_free())
+
+
+## M6 hook: a hunter left (killed, slunk, or the crew descended). Stops its
+## looping stinger; one-shots are already gone. Idempotent.
+func stop_hunter(kind: StringName) -> void:
+	if not _hunter_stingers.has(kind):
+		return
+	var sting: AudioStreamPlayer = _hunter_stingers[kind]
+	_hunter_stingers.erase(kind)
+	if sting != null and is_instance_valid(sting):
+		sting.stop()
+		sting.queue_free()
+
+
+## Every looping hunter stinger, silenced. Called on descent — the stingers belong
+## to the layer being left.
+func _stop_all_hunters() -> void:
+	for kind: StringName in _hunter_stingers.keys():
+		stop_hunter(kind)
 
 
 # --------------------------------------------------------------- run glue --
@@ -190,6 +221,8 @@ func _on_layer_changed(next_layer: int) -> void:
 	if _mode != Mode.DIVE and _mode != Mode.SANCTUARY and _mode != Mode.EXFIL:
 		return
 	# A descent leaves sanctuary/exfil and returns to the dive floor for the band.
+	# Any looping hunter stinger belonged to the layer we just left.
+	_stop_all_hunters()
 	_mode = Mode.DIVE
 	var want: StringName = _band_floor(next_layer)
 	if want != _floor_key:
@@ -217,6 +250,7 @@ func _on_exfil_changed() -> void:
 
 func _on_run_ended(summary: Dictionary) -> void:
 	_mode = Mode.ENDED
+	_stop_all_hunters()
 	_stop_all(false)  # fade the dive stack out under the sting.
 	var ok: bool = bool(summary.get("success", false))
 	# Exfil release → debrief, or the caught-at-the-threshold collapse → wipe.

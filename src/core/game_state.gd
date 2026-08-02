@@ -82,6 +82,10 @@ var last_status_message: String = ""
 ## Deepest layer whose maintenance node this machine has rooted. 0 = none, so
 ## the only injection point on offer is layer 1.
 var deepest_backdoor: int = 0
+## M6: whether MOTHER has ever told this player to leave — the `addr.go_up` bark,
+## "{CALLSIGN}. GO UP." She says it once per player, ever, and then never again;
+## the HauntDirector reads this to keep it out of the address pool once spent.
+var mother_said_go_up: bool = false
 ## Data banked by exfiltrating, across every run on this machine, minus
 ## everything spent at Compilers. DESIGN.md's "archive".
 var archive: int = 0
@@ -252,6 +256,8 @@ func load_progress() -> void:
 	var version: int = int(data.get("version", 1))
 	deepest_backdoor = maxi(int(data.get("deepest_backdoor", 0)), 0)
 	archive = maxi(int(data.get("archive", 0)), 0)
+	# Absent in any file written before M6 — the default is "she has not said it".
+	mother_said_go_up = bool(data.get("mother_said_go_up", false))
 	# Absent in a v1/v2 file written before M4.7, which is exactly the case the
 	# default covers — an untouched program ships Northcairn amber.
 	var saved_colour: String = String(data.get("color", ""))
@@ -487,6 +493,17 @@ static func write_text_file(tag: String, path: String, text: String) -> bool:
 	return true
 
 
+## M6: record that MOTHER has said "GO UP" to this player, so she never does
+## again. Persisted immediately (like installing a backdoor) — the whole point is
+## that it survives the run it happened in. A no-op in a sandboxed session, which
+## must never burn a real once-ever moment on a dev capture.
+func mark_go_up_said() -> void:
+	if mother_said_go_up or sandboxed:
+		return
+	mother_said_go_up = true
+	save_progress()
+
+
 func save_progress() -> void:
 	if sandboxed:
 		return
@@ -496,6 +513,7 @@ func save_progress() -> void:
 		"archive": archive,
 		"modules": modules,
 		"stats": stats,
+		"mother_said_go_up": mother_said_go_up,
 		# The shell marker, which since M4.7 is also the phosphor the player's own
 		# interface is coated with — so it is a setting worth surviving a restart
 		# rather than something re-picked every launch. Stored as a hex string

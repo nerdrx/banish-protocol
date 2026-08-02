@@ -45,6 +45,15 @@ var warning_ack: bool = false
 ## directly). It only ever scales an ALREADY-capped effect further down.
 var flash_scale: float = 1.0
 
+## Dampened Protocol (M6, DESIGN.md mercy layer). A comfort toggle that softens
+## the HAUNTING's PRESENTATION — never its difficulty. M5 shipped the audio half
+## (Audio.reduced_spikes); this is the visual half, and the settings panel wires
+## the single toggle to both. When on, jumpscare sharpness, hunter-reveal
+## intensity and the glitch-proximity ceiling are all pulled down. Persisted with
+## the flash caps, in the same resilient file: a comfort setting a haunted player
+## needs must never be lost to a corrupt profile.
+var dampened_protocol: bool = false
+
 # --- captions (M5; limbo-a11y 03-captions.md) --------------------------------
 #
 # The directional sound captions are the deaf/HoH player's copy of the game's
@@ -84,6 +93,33 @@ func _ready() -> void:
 ## for the settings pass — returns `flash_scale` today, per-effect later.
 func effect_scale(_name: String) -> float:
 	return flash_scale
+
+
+## The Dampened Protocol switch (visual half). The settings panel flips this AND
+## the audio half (Audio.reduced_spikes) from one control — presentation, not
+## difficulty. Emits `changed` so a live view updates.
+func set_dampened_protocol(on: bool) -> void:
+	if dampened_protocol == on:
+		return
+	dampened_protocol = on
+	_save()
+	changed.emit()
+
+
+## How hard a hunter reveals / a jumpscare hits, 0..1. Dampened Protocol softens
+## it; everything that presents a hunter arrival multiplies by this.
+func hunter_reveal_scale() -> float:
+	return Balance.DAMPENED_REVEAL_SCALE if dampened_protocol else 1.0
+
+
+## The ceiling on the glitch-proximity static, already inside the shaders' own
+## caps. Bounded further by the flash scale (Reduced Flashing) and by Dampened
+## Protocol — this is a NEW flash source, so it is capped like every other.
+func glitch_proximity_ceiling() -> float:
+	var ceiling: float = Balance.HAUNT_GLITCH_CEILING * flash_scale
+	if dampened_protocol:
+		ceiling *= Balance.DAMPENED_GLITCH_SCALE
+	return ceiling
 
 
 ## The switch the first-launch warning and the settings menu both flip.
@@ -146,6 +182,7 @@ func _load() -> void:
 		return
 	reduced_flashing = bool(cfg.get_value(SECTION, "reduced_flashing", false))
 	warning_ack = bool(cfg.get_value(SECTION, "warning_ack", false))
+	dampened_protocol = bool(cfg.get_value(SECTION, "dampened_protocol", false))
 	sound_captions = bool(cfg.get_value(CAPTION_SECTION, "sound_captions", false))
 	subtitles = bool(cfg.get_value(CAPTION_SECTION, "subtitles", true))
 	caption_directional = bool(cfg.get_value(CAPTION_SECTION, "directional", true))
@@ -166,6 +203,7 @@ func _save() -> void:
 	var cfg: ConfigFile = ConfigFile.new()
 	cfg.set_value(SECTION, "reduced_flashing", reduced_flashing)
 	cfg.set_value(SECTION, "warning_ack", warning_ack)
+	cfg.set_value(SECTION, "dampened_protocol", dampened_protocol)
 	cfg.set_value(CAPTION_SECTION, "sound_captions", sound_captions)
 	cfg.set_value(CAPTION_SECTION, "subtitles", subtitles)
 	cfg.set_value(CAPTION_SECTION, "directional", caption_directional)

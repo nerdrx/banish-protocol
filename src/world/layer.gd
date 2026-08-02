@@ -153,6 +153,10 @@ func _rebuild() -> void:
 	# only records the layout its spawn packets will be interpreted against.
 	var built: ProcLayerBuilder = _builder as ProcLayerBuilder
 	_director.begin(null if built == null else built.graph, Run.layer_number)
+	# M6: hand the layer to the HauntDirector too, on every peer. It only PACES the
+	# hunt host-side (spawns ride the antivirus director above); a client's copy
+	# drives the local presentation. Null graph (test layer) leaves it dormant.
+	Haunt.begin(null if built == null else built.graph, Run.layer_number, _director)
 
 	# Node count is the cheap canary for the descent leaking geometry: it must
 	# come back to roughly the same number on every layer, not climb. Since M3.7
