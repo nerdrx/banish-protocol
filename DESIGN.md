@@ -52,6 +52,17 @@ Steal the data. Reach a backdoor. Exfiltrate before the system decompiles you.
    empty floor plazas are a failure mode; surfaces hold up at 30cm; the only
    permitted emptiness is deliberate dread. If a space looks generated, the
    generator has failed.
+6. **The motivation law (companion to intricacy).** Detail must be *justified*,
+   not scattered — the generator asks "does this make sense here?" per element.
+   Cables run FROM a source TO a load (tap→machine, junction→fixture) as routed
+   connections, never sprinkled; props exist because something placed them;
+   clutter accretes where work happens. Dynamic motion needs a diegetic cause:
+   a sealed machine-space has no wind, so nothing sways for free. Motion follows
+   cause — cables bolted to running machinery get a fine high-frequency
+   vibration; cables near a *powered* vent-fan (the rewire junction's own fan
+   load) or a god-ray draft get true low-frequency sway; dead runs hang dead
+   still. If you cannot name the cause, cut the effect. Placement is a graph
+   (route, connect, motivate), not a scatter.
 
 ## Gameplay Loop — descent through the rings (one intrusion ≈ 15–30 min)
 
