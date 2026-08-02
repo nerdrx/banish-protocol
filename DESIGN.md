@@ -190,6 +190,15 @@ gun is useless," only as "shooting is one of several competing options."
   tracking tears and sync loss for damage/low-Cycles; pristine digital glitch
   reserved for MOTHER's own acts (decompile). Restrained, instrument-like:
   shared Cycles ring as analog gauge, dot-matrix readouts, quiet by default.
+- **The quiet-instrument rule (M4.9)**: sleek = adaptive silence. The HUD's
+  resting state is nearly empty — one compact cluster (Cycles gauge anchoring
+  a thin integrity arc + small data numeral), no persistent text labels, no
+  redundant status lines. Elements SURFACE on relevance (value changing,
+  danger threshold, aim/interact context) and fade when stable: integrity
+  hidden at full, breaker heat only when hot, layer title only on descent,
+  roster only on change. Labels appear briefly on change, then yield to
+  shape/position language. Every element must justify every frame it is
+  visible. Show less, mean more.
 
 ## Steam Integration
 
