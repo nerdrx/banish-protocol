@@ -6,6 +6,8 @@
 You are an invading program. The dungeon is a rogue AI. Its antivirus is hunting you.
 *Nothing in her stays dead — least of all you.*
 
+**[▶ Watch the teaser](.github/assets/teaser.mp4)** · 68s, sound on
+
 ![gameplay reel](.github/assets/reel.gif)
 
 [![Godot](https://img.shields.io/badge/Godot-4.7-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org)
