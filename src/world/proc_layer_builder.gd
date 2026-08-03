@@ -270,6 +270,9 @@ func _build_content() -> void:
 
 	var draws: int = _clutter.flush()
 	draws += _flush_trim()
+	# M6.7 PERF: and the verticality pass's railings, joists, treads and stringers,
+	# which were the last family on a layer still spending a draw call each.
+	draws += _flush_detail()
 	clutter_note = " clutter=[%s] batched=%d shafts=%d%s%s%s" % [
 		_clutter.describe(), draws, _shaft_specs.size(), _prop_note, _vertical_note,
 		_fidelity_note]
@@ -1300,9 +1303,25 @@ func _dress_nest(room: Dictionary) -> void:
 		var to: Vector2 = centre + Vector2(cos(angle), sin(angle)) * reach
 		to.x = clampf(to.x, rect.position.x + 1.4, rect.end.x - 1.4)
 		to.y = clampf(to.y, rect.position.y + 1.4, rect.end.y - 1.4)
+		# Both rolls are taken BEFORE the keep-out test and whether or not the
+		# strand is kept, so skipping one cannot shift `_rng` for everything
+		# dressed after it. Determinism is not the issue — the generator is a pure
+		# function of the seed either way — but a keep-out fix that silently
+		# reshuffles every other prop on the layer is impossible to review.
+		var nodule: float = _rng.randf_range(0.5, 0.9)
+		var lean: float = _rng.randf_range(-0.8, 0.8)
+		# M6.7 (found by the deck-climb probe): this was the ONE dressing pass with
+		# no keep-out test in it. e629de9 fixed the ordering bug that let racks,
+		# blocks and crates spawn inside plinths, terraces and pits — and every
+		# other pass consults `_blocks_a_prop`; this one never asked. A nest room is
+		# exactly the room that earns a SUNKEN pit, so its growth nodules were
+		# landing at grade over the hole: floating cubes from above, and at head
+		# height for anything walking the pit floor. A capsule walking the nest
+		# route put its skull into one.
+		if _blocks_a_prop(Vector3(to.x, 0.0, to.y)):
+			continue
 		_trace(Vector3(centre.x, 0.016, centre.y), Vector3(to.x, 0.016, to.y), rot, 0.07)
-		_data_block(Vector3(to.x, 0.0, to.y), Vector3.ONE * _rng.randf_range(0.5, 0.9),
-				_rng.randf_range(-0.8, 0.8))
+		_data_block(Vector3(to.x, 0.0, to.y), Vector3.ONE * nodule, lean)
 
 
 ## Bus hall: processing stacks that break a beam into slats, and trunk conduits.
@@ -2251,6 +2270,14 @@ func _place_props() -> void:
 	_prop_note = " props=[junction %d, vent %d, cabinet %d, terminal %d, bulkhead %d, debris %d]" % [
 		int(built["junction"]), int(built["vent"]), int(built["cabinet"]),
 		int(built["terminal"]), doors, graph.debris_points.size()]
+	# M9 PATCHES — the whole of the patch system's contact with generation, and
+	# deliberately ONE line. `PatchPlacement` is static and self-contained: it
+	# borrows the anchors this function and `_resolve_work_lights` already
+	# justified (the motivation law — a slate exists because somebody worked here)
+	# and hashes every decision off world position and the layer seed, so `_rng` is
+	# untouched and no other dressing on any layer moved. It appends its own census
+	# fragment, the same shape everything else in this file logs.
+	_prop_note += PatchPlacement.place(_fixtures, graph, _prop_spots, _work_lights)
 
 
 ## The shared emissive material for one junction's emergency strips. One per

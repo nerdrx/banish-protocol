@@ -88,6 +88,27 @@ const TABLE: Dictionary = {
 	&"siphon_channel": {"line": "Siphon channeling — pinging hunters", "cat": Cat.THREAT},
 	&"debris": {"line": "Debris clatter", "cat": Cat.THREAT},
 	&"bulkhead_reopen": {"line": "Bulkhead forcing open", "cat": Cat.THREAT},
+	# --- MOTHER's voice (the SOUND of her, which is not her words) ---
+	#
+	# Two different text tracks exist for MOTHER and they are not redundant.
+	# SUBTITLES (A11y.subtitles, rendered by the HUD) carry WHAT SHE SAID. These
+	# carry THAT SHE IS AUDIBLE, AND HOW — which is the half a hearing player gets
+	# for free and a deaf one otherwise loses entirely. Her three voice tiers do
+	# not sound remotely alike, and the difference between "she is murmuring in
+	# the walls two rooms over" and "she is whispering with her mouth against your
+	# ear" is threat information, not flavour: it is the same distinction the
+	# Sentinel drone's far/close bucket exists to draw.
+	#
+	# Hence the categories. The murmur is AMBIENT — it is the room having her in
+	# it, and a player on the default caption scope should not have a permanent
+	# MOTHER line on screen. The directed address is INFO: a real event, aimed at
+	# the crew, no danger implied by the sound itself. The Below-the-Kernel
+	# whisper is THREAT, and is the one entry here that is always shown, because
+	# proximity IS the payload — she does not get that close for nothing, and a
+	# deaf player must not be the only one who does not know she just did.
+	&"mother_murmur": {"line": "MOTHER — murmuring, distant", "cat": Cat.AMBIENT},
+	&"mother_address": {"line": "MOTHER — addressing you", "cat": Cat.INFO},
+	&"mother_close": {"line": "MOTHER — whispering, close", "cat": Cat.THREAT},
 	# --- info (useful, not dangerous) ---
 	&"exfil_klaxon": {"line": "Exfil klaxon — crew uplink", "cat": Cat.INFO},
 	&"exfil_countdown": {"line": "Exfil countdown", "cat": Cat.INFO},
@@ -121,6 +142,18 @@ const TABLE: Dictionary = {
 	&"sub_fork_end": {"line": "Decoy decompiled", "cat": Cat.INFO},
 	&"sub_barrier": {"line": "Checksum barrier up", "cat": Cat.INFO},
 	&"sub_barrier_end": {"line": "Barrier failed", "cat": Cat.INFO},
+	# --- M9 patches (run-scoped hot-patches) ---
+	# The two pickups are INFO and directional, because a deaf player needs the
+	# same "somebody over there just took one" a hearing player gets — patches are
+	# per-player and the crew negotiate over them. Breaching an anomaly cache is a
+	# THREAT for exactly the reason `siphon_channel` is: it is a two-room NoiseBus
+	# ping, and a deaf player must not be the only one who does not know they rang
+	# a bell. WATCHDOG is INFO and, unusually, worth captioning at all because it
+	# is the one event in the game where NOT taking damage is the news.
+	&"patch_pickup": {"line": "Patch absorbed", "cat": Cat.INFO},
+	&"patch_kernel": {"line": "Kernel patch absorbed", "cat": Cat.INFO},
+	&"patch_cache": {"line": "Anomaly cache breached — pinging hunters", "cat": Cat.THREAT},
+	&"patch_watchdog": {"line": "Watchdog — integrity asserted", "cat": Cat.INFO},
 	# --- ambient (flavour; only under the "all sounds" scope) ---
 	&"machinery": {"line": "Machinery hum", "cat": Cat.AMBIENT},
 	&"data_chip": {"line": "Data chip", "cat": Cat.AMBIENT},
@@ -130,9 +163,17 @@ const TABLE: Dictionary = {
 ## Most lines get direction; a few never do, because they have no place in the
 ## world — they are the player's own body or the whole screen. A 2D emitter
 ## (breath, decompile) also suppresses direction by passing the camera position.
+##
+## MOTHER's directed and Below-the-Kernel voices are here for a third reason, and
+## it is the point of the whole tier: they are 2D by design because SHE IS NOT IN
+## THE ROOM, SHE IS IN THE CHANNEL. An arrow pointing at her would be a lie, and
+## "· close" appended to a non-positional source would be a lie about the one
+## caption whose word for distance is already in its text. Her MURMUR keeps both,
+## because that one genuinely comes out of a vent you could walk to.
 const NO_DIRECTION: Dictionary = {
 	&"player_hurt": true, &"process_failing": true, &"you_are_down": true,
 	&"restored": true, &"decompiled": true,
+	&"mother_address": true, &"mother_close": true,
 }
 
 ## Eight-way bearing glyphs, colour-free by construction (spec 02): a shape, not

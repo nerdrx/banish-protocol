@@ -233,8 +233,10 @@ AIM_PITCH, AIM_YAW, AIM_ROLL = -8.0, 7.0, 0.0
 #   pistol grip  a column running (y -0.002, z -0.035) -> (y -0.060, z -0.131),
 #                +-0.014 wide, so its right face is at x = +0.014
 #   foregrip     added in M4.8 by tools/convert_surge.py because the Surge had
-#                nothing to hold there; palm centre (0, 0.2103, -0.1087), half
-#                width 0.019
+#                nothing to hold there; palm centre (0, 0.1254, -0.1188), half
+#                width 0.025 (T18: re-cut, and the palm centre corrected — the
+#                number that used to be written here, (0, 0.2103, -0.1087), was
+#                the pre-pullback column's. See the PT4 note below.)
 # Both attach points sit one PALM THICKNESS (~20 mm) proud of the surface the
 # palm touches, not 2 mm: the attach is the knuckle-line centre, i.e. the middle
 # of a hand that has depth. Two millimetres puts the palm's own flesh inside the
@@ -272,7 +274,42 @@ GRIP_ATTACH_R = Vector((0.0340, -0.025, -0.065))     # right face of the pistol 
 # weapon under the barrel, one palm thickness proud of its left face
 # (0.027 + 0.020). It also brings the hands 4 mm CLOSER together (0.175 from
 # 0.179), which the note above wants and the left arm's reach likes.
-FOREGRIP_LOCAL = Vector((-0.0390, 0.1300, -0.0550))  # left face of the handguard
+#
+# ------------------------------------------------------------- T18 CORRECTION
+#
+# Everything above the line is right about the SYMPTOM and wrong about the
+# CAUSE, and the fix it justified moved the support hand off the only thing on
+# this weapon shaped like a handhold. Keeping it as written because the numbers
+# in it are real and the reasoning is the instructive part.
+#
+# There is no hole. The band z -0.150..-0.105 has no VERTICES in it and never
+# had any surface missing: the M4.8 column's shaft was four rings, two of them
+# at z -0.085 and z -0.173, with one long quad stretched between — and a quad
+# crosses a 45 mm band without leaving a vertex in it. Worse, the slice above
+# is a slice of the WHOLE MODEL at a given height, so it cannot say whether a
+# particular column is solid even in principle; it counts the receiver, the
+# stock and the shroud in the same number. Shooting rays through the mesh
+# instead (scratchpad surge/probe_surface.py) hits solid material at x +-0.023
+# .. 0.025 at every 5 mm step through that band, and the column's centreline
+# reads INSIDE the mesh the whole way down.
+#
+# What actually put the palm in mid-air is the attach's Y. The M4.8 pass
+# authored the column at y = 0.196, measured the palm centre there — the
+# (0, 0.2103, -0.1087) recorded above — then PULLED THE COLUMN BACK to
+# y = 0.108 for the left arm's reach (tools/convert_surge.py says so in its own
+# note) and the attach was never re-measured. The hand was closing 8.5 cm
+# FORWARD of the grip, level with it, which is exactly the "drapes over the
+# foregrip" the playtest described. Both instruments then agreed with each
+# other and neither was pointed at the column — CLAUDE.md's rule, twice.
+#
+# So the attach goes back onto the column, at its palm centre this time, one
+# palm thickness (0.020) proud of a left face that a ray cast puts at
+# x = -0.0163. The column itself was re-cut in the same pass (panelled section,
+# flared heel, section re-proportioned to this hand's knuckle line, rings inside
+# the band) so that there is something worth wrapping and so the next slice of
+# this model tells the truth. The hold widens 0.172 -> 0.174 m, still well
+# inside the ~0.20 m where the left arm locks straight.
+FOREGRIP_LOCAL = Vector((-0.0363, 0.1251, -0.1179))  # left face of the foregrip
 # hand attach point measured out from the wrist head, in the wrist bone's own
 # basis (local Y runs wrist -> knuckles).
 HAND_OFF = Vector((0.0, 0.100, -0.006))
@@ -282,8 +319,16 @@ HAND_OFF = Vector((0.0, 0.100, -0.006))
 #          outboard and a little forward
 #   left : knuckles run down the foregrip's rake, back of the hand outboard on
 #          the other side — a thumb-forward support hold on a vertical grip
+# T18: the left vector now does what this comment always said it did. It was
+# (0, 0, -1), straight down the weapon, while the column it holds is raked 17
+# deg forward — so the KNUCKLE LINE (the hand's own X, wrist_dir x back_of_hand)
+# ran horizontally across a cross-section tilted 17 deg away from it, and the
+# index knuckle sat 17 mm further up the column than the pinky's. Along the rake
+# the knuckle line comes out perpendicular to the column, which is the whole
+# point of a cross-section, and the fingers spread across the grip instead of
+# along it.
 GRIP_HAND_R = (Vector((0.06, -0.50, -0.86)), Vector((0.97, 0.24, 0.0)))
-GRIP_HAND_L = (Vector((0.00, 0.00, -1.00)), Vector((-0.98, 0.00, -0.20)))
+GRIP_HAND_L = (Vector((0.00, 0.29, -0.96)), Vector((-0.98, 0.00, -0.20)))
 
 # --- finger fitting ---------------------------------------------------------
 #

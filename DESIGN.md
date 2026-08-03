@@ -321,7 +321,7 @@ Hidden / lore (unlock text stays cryptic):
 | `RELIEVED` | Relief Shift | (M7+: reach the Kernel — reserved) |
 
 Co-op (all solo-achievable variants exist per the solo invariant, except the explicitly-social):
-| `FULL_STACK` | Full Stack | Exfiltrate with a full 4-crew, everyone alive |
+| `FULL_STACK` | Full Stack | Full 4-crew exfiltration from layer 20+, everyone alive |
 | `SHARED_BURDEN` | Load Bearing | Carry 60%+ of the crew's banked data in one exfil |
 | `MEDIC_MAIN` | Restore Point | 25 lifetime restores |
 | `LIGHTHOUSE` | Lighthouse | Rout a Scrubber off a crewmate with YOUR beam 10 times |

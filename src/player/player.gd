@@ -1889,7 +1889,13 @@ func _land(impact_speed: float) -> void:
 func _resolve_landing(peer: int, speed: float, where: Vector3) -> void:
 	# Reach in ROOMS, the unit the antivirus thinks in. A step off a plinth is
 	# heard by whatever is in here with you; a storey is heard next door.
-	NoiseBus.ping(where, 1 if speed >= LAND_LOUD_SPEED else 0, "land", LAND_NOISE_HOLD)
+	# M9 ZERO PAGE lowers the reach by one room-tier a stack, floored at "this
+	# room only" — a drop is never silent, it just stops carrying next door. This
+	# is the ONLY noise reduction in the patch catalogue and this is its only
+	# caller; the DAMAGE below is untouched, because a shortcut you can take
+	# quietly should still be a shortcut that hurts.
+	var rooms: int = 1 if speed >= LAND_LOUD_SPEED else 0
+	NoiseBus.ping(where, Patches.land_noise_rooms(peer, rooms), "land", LAND_NOISE_HOLD)
 	if speed < LAND_HURT_SPEED:
 		return
 	Run.damage_player(peer,

@@ -146,7 +146,7 @@ const DEFINITIONS: Array[Dictionary] = [
 
 	# --- v2: co-op (solo-achievable variants exist per the solo invariant) --
 	{"id": "FULL_STACK", "name": "Full Stack",
-		"note": "Exfiltrate with a full 4-crew, everyone alive",
+		"note": "Full 4-crew exfiltration from layer 20+, everyone alive",
 		"epitaph": "FOUR IN, FOUR OUT, ALL BREATHING. A CLEAN NUMBER. I PREFER MINE UNEVEN."},
 	{"id": "SHARED_BURDEN", "name": "Load Bearing",
 		"note": "Carry 60%+ of the crew's banked data in one exfil",
@@ -176,6 +176,14 @@ const MEDIC_MAIN_RESTORES: int = 25
 const UNTOUCHED_LAYERS: int = 5
 const NO_BREATH_CYCLES: float = 5.0
 const SHARED_BURDEN_FRACTION: float = 0.6
+## FULL_STACK's depth gate. NO_AGENT_LEFT and FULL_STACK shipped with the SAME
+## trigger ("full 4-crew exfiltration, everyone alive") — two rows of the catalog
+## paying out on one event, which is a duplicate, not a pair. NO_AGENT_LEFT keeps
+## the plain version (it is the v1 entry and the one whose name means it); this
+## one re-scopes to the DEEP crew flex, which is a genuinely different ask: four
+## agents intact out of the KERNEL band, where the Director runs two hunters at
+## once. The icons already differed, so only the trigger had drifted.
+const FULL_STACK_LAYER: int = 20
 const SPEEDRUN_SECONDS: float = 90.0
 ## The three junction loads POWER_USER wants to see used in one layer.
 const POWER_LOADS_ALL: int = 0b111  # LIGHTS | DOORS | FANS
@@ -392,8 +400,12 @@ func _on_run_ended(summary: Dictionary) -> void:
 		# --- v2 (M4.9) ---
 		if int(counters.get("data_banked", 0)) >= MILLIONAIRE_DATA:
 			unlock("MILLIONAIRE")
-		# Everyone in, everyone out and up.
-		if crew >= FULL_CREW and escaped.size() >= FULL_CREW:
+		# Everyone in, everyone out and up — FROM THE KERNEL BAND. The shallow
+		# version of this is NO_AGENT_LEFT above; see FULL_STACK_LAYER for why the
+		# two stopped sharing a trigger. `layers` is `deepest_layer`, which at an
+		# exfil IS the layer they left from (a run never goes back up).
+		if crew >= FULL_CREW and escaped.size() >= FULL_CREW \
+				and int(summary.get("layers", Run.deepest_layer)) >= FULL_STACK_LAYER:
 			unlock("FULL_STACK")
 		if int(summary.get("layers", Run.deepest_layer)) >= UNTOUCHED_LAYERS \
 				and _run_untouched:

@@ -61,6 +61,7 @@ import math
 import os
 import re
 import sys
+import zlib
 
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
@@ -1078,8 +1079,10 @@ def g_RELIEVED(p):
 def g_FULL_STACK(p):
     """Full Stack: the four player tags as a literal call stack — four frames
        pushed on top of each other in the exfil bracket. Same four shapes as
-       NO_AGENT_LEFT, arranged as a stack rather than a perimeter, because the
-       two achievements share a trigger and must NOT share a picture."""
+       NO_AGENT_LEFT, arranged as a stack rather than a perimeter. The two used
+       to share a trigger as well as a cast, which was the catalog bug; the
+       trigger split (this one is the layer-20+ version), the picture did not
+       have to, because a stack of four frames is already the deep-crew read."""
     for k in range(4):
         y = 0.76 - k * 0.145
         p.rect(0.24, y - 0.058, 0.76, y + 0.058, 0.013)
@@ -1268,7 +1271,13 @@ def render(aid: str, tint, locked: bool) -> Image.Image:
 
     # Tube noise. Tiny, and the locked plate gets more of it — a dead channel
     # is noisier than a live one.
-    rng = np.random.default_rng(abs(hash(aid)) % (2 ** 31))
+    # crc32, not hash(): CPython randomises str hashing per process (PEP 456)
+    # unless PYTHONHASHSEED is pinned, so `hash(aid)` re-grained all 100 icons on
+    # every run. That made a 100-file binary diff the normal outcome of a rebuild,
+    # which is exactly the noise a drift detector must not generate — you stop
+    # reading a diff that is always red. crc32 is stable across processes and
+    # machines, so a rebuild that changes nothing now writes nothing.
+    rng = np.random.default_rng(zlib.crc32(aid.encode("utf-8")))
     img += rng.normal(0.0, 0.012 if locked else 0.007, img.shape)
 
     # Bezel: corner ticks and a hairline inner frame, matching the HUD's

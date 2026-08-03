@@ -131,7 +131,11 @@ func ready_to_fire() -> bool:
 ## Local only. Books the shot against the heat budget; the caller does the rest.
 func pull_trigger() -> void:
 	_cooldown = Balance.BREAKER_COOLDOWN
-	heat = minf(heat + Balance.BREAKER_HEAT_PER_SHOT, 1.0)
+	# M9 INSTRUCTION FUSION books less heat per shot. Local, like the rest of the
+	# heat budget — it is feel, not authority (the host decides what a shot is
+	# WORTH, never how warm your tool got) — and floored in `Balance` so the
+	# cutter always heats and the lockout is always reachable by a held trigger.
+	heat = minf(heat + Balance.BREAKER_HEAT_PER_SHOT * Patches.heat_scale(), 1.0)
 	# The thermal relay warns as the heat climbs past each graduation — quiet, a
 	# warning not an event (AUDIO_GUIDE), and denser the hotter it gets because the
 	# graduations are fixed-width and the shots come at a fixed cadence.

@@ -949,6 +949,27 @@ func drive(delta: float, speed: float, heading: Vector3, down: float) -> void:
 	# Peak dropped from 10.1 in M3.7. An emitter that far above the glow HDR
 	# threshold, 40 cm from the lens, bloomed across the entire frame — a shot
 	# fired in a dark corridor whited out the room it was supposed to light.
+	#
+	# T18 re-measured the IDLE floor (1.1) against the round-six flag that it
+	# "blows out a large area of the weapon next to the body lamp". It does not,
+	# on this build. Dark corridor, seed 20260803, CINEMA, three pitches, the
+	# f6cfade method (Rec.709 luminance on the saved frame, clip >= 0.90):
+	#
+	#     pitch      weapon-region clip%   brightest pixel on the weapon
+	#     level             0.000               0.859
+	#     -0.35             0.000               0.900
+	#     +0.35             0.000               0.769
+	#     -0.35 @5120x1440  0.000               —
+	#
+	# Nothing on the weapon reaches the clip threshold, and 1.1 is below the
+	# environment's 1.65 glow HDR threshold, so the idle emitter contributes no
+	# bloom either — while still reading alive at 0.22% of the weapon region
+	# above 0.70. The blowout the flag describes was the HEADLAMP lighting the
+	# player's own viewmodel, and the fix for that shipped in the same commit
+	# that raised the flag (player.gd `beam.light_cull_mask &= ~BODY_LAYER`,
+	# 3.1% -> 0.000%). The number measured here IS that 0.000%. Left alone on
+	# purpose: dimming an emitter that does not clip only costs the tool its
+	# powered read.
 	_write_emitter_heat(1.1 + heat * 2.8)
 	if _flash_light != null:
 		# Squared, so the decay reads as a discharge rather than as a dimmer. Gated

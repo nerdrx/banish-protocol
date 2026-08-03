@@ -194,6 +194,14 @@ static func hero_shaft(geo: Node3D, lights: Node3D, fog: Node3D, pos: Vector3,
 	# delivers a quarter of its energy to the floor, and compensating with
 	# energy alone blows out everything near the aperture.
 	l.spot_attenuation = 0.40
+	# M8 SOFT LIGHT: the aperture has SIZE, so the slats it casts have a penumbra.
+	# Deliberately restrained, and the geometry says why: the occluder (the slotted
+	# plate) sits ~25 m from the source and only 4-8 m above the floor, so the
+	# penumbra works out around a hand's width at the deck — a slat edge that
+	# softens over its length rather than a blurred shaft. Any larger and the blades
+	# stop being blades, which would cost the signature motif to buy softness the
+	# room does not need.
+	l.light_size = 0.25 if LightRig.soft() else 0.0
 	l.light_specular = 0.85
 	l.shadow_enabled = true
 	l.shadow_bias = 0.02
@@ -278,6 +286,10 @@ static func grate_stripes(geo: Node3D, lights: Node3D, fog: Node3D,
 	l.spot_angle = rad_to_deg(atan(2.9 / above)) * 1.4 + 1.5
 	l.spot_angle_attenuation = 0.9
 	l.spot_attenuation = 0.40
+	# M8: a touch of source size. Smaller than the hero shaft's, because the whole
+	# reason this variant pays for real geometry is blade definition (see
+	# `shadow_blur` below) and blades are what a penumbra eats first.
+	l.light_size = 0.15 if LightRig.soft() else 0.0
 	l.light_specular = 0.6
 	l.light_volumetric_fog_energy = fog_energy
 	if use_geometry:

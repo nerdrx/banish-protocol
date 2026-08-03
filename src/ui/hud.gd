@@ -325,6 +325,11 @@ func _ready() -> void:
 	# surface nor a fifth cluster for it. Added before `_build_tube` so it is
 	# reparented into the phosphor tube with the rest of the instrument.
 	_root.add_child(SubroutineSlot.create())
+	# M9: the patch strip, above the Cycles gauge. ONE line for the same reason
+	# the slot above it is one line — see PatchStrip, which owns its own anchors,
+	# surfacing, expansion and drawing, and draws nothing at all until this run
+	# has actually found a patch.
+	_root.add_child(PatchStrip.create())
 
 	_build_tube()
 	_install_depth()

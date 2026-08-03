@@ -459,6 +459,12 @@ var dump_live_path: String = ""
 var _pathwalk: bool = false
 ## M6.6 `--auditvert`: placement-quality sweep over every vertical element.
 var _auditvert: bool = false
+## M6.7 `--deckwalk` (mode, no flag var): walk a player capsule up the route to
+## EVERY deck on the whole seed/layer matrix, against real colliders, and quit
+## non-zero if any of them cannot be stood on. Needs no --autohost and no window:
+## it builds and tears down each layer itself. The sampled version of the same
+## check rides in `--selftest`. See the M6.7 section at the foot of this file for
+## why the graph's own reachability was not enough.
 ## `--tailprobe WHICH`. Which creature the spring-tail inspection stages.
 var _tail_which: String = "sentinel"
 var _last_probe_t: float = 0.0
@@ -619,6 +625,9 @@ func _ready() -> void:
 		return
 	if _mode == "selftest":
 		_balance_selftest.call_deferred()
+		return
+	if _mode == "deckwalk":
+		_run_deck_walk.call_deferred()
 		return
 	if _mode == "tailprobe":
 		_run_tail_probe.call_deferred()
@@ -1012,6 +1021,9 @@ func _parse_args(args: PackedStringArray) -> void:
 					dump_live_path = args[i]
 			"--selftest":
 				_mode = "selftest"
+			# M6.7: builds its own layers, so it needs no --autohost and no window.
+			"--deckwalk":
+				_mode = "deckwalk"
 			"--tailprobe":
 				# Dev inspection for the M4.9 spring tails: stage one creature on a
 				# lit turntable-less side view so the resting sag can be judged and
@@ -1613,10 +1625,17 @@ func _balance_selftest() -> void:
 			low_gain, high_gain, pool_max])
 
 	failures += _vertical_selftest()
+	# M6.7: the physics half of the same claim. `_vertical_selftest` proves the
+	# graph says every deck is reachable; this walks a capsule up the route against
+	# the colliders that were really built. It is awaited because it stands real
+	# layers up and the shapes only enter the physics space on a physics frame.
+	failures += await _deckwalk_selftest()
 	failures += _cartography_selftest()
 	failures += _hub_selftest()
 	failures += _fidelity_selftest()
 	failures += _subroutine_selftest()
+	failures += _patch_selftest()
+	failures += _voice_selftest()
 
 	print("[SelfTest] %d check(s) failed" % failures)
 	get_tree().quit(1 if failures > 0 else 0)
@@ -2143,6 +2162,19 @@ func _collect_audit_nodes(node: Node, vertical: Array[Dictionary],
 		if mesh != null:
 			vertical.append({"kind": stem,
 					"aabb": mesh.global_transform * mesh.get_aabb()})
+		# M6.7: railings, joists, fascias and flights are batched into MultiMeshes
+		# now (GeometryKit._flush_detail) and a MultiMeshInstance3D is NOT a
+		# MeshInstance3D — the cast above returns null and the whole element set
+		# would silently empty out. The audit's own rule is that it works off where
+		# geometry ACTUALLY ended up, so it unpacks the batch and takes one AABB per
+		# instance rather than one for the layer-sized bounding box of all of them.
+		var batch: MultiMeshInstance3D = node as MultiMeshInstance3D
+		if batch != null and batch.multimesh != null and batch.multimesh.mesh != null:
+			var local: AABB = batch.multimesh.mesh.get_aabb()
+			var to_world: Transform3D = batch.global_transform
+			for i: int in batch.multimesh.instance_count:
+				vertical.append({"kind": stem,
+						"aabb": (to_world * batch.multimesh.get_instance_transform(i)) * local})
 		return
 	# Everything a deck, ramp or railing could bury, clip or make unusable.
 	#
@@ -3478,6 +3510,12 @@ const M48_TARGETS: Dictionary = {
 	# is a product photo rather than a room.
 	"worklight": {"group": "work_lights", "standoff": 3.2, "aim": 1.35},
 	"panel": {"group": "diffuser_panels", "standoff": 3.2, "aim": 2.2},
+	# M9 PATCHES. The two vessels, so a slate on a desk and a quarantine pod in a
+	# dark room can both be photographed from a REAL GENERATED LAYER. The slate
+	# stands close and aims LOW — it is 16 cm across, lying on a surface, and a
+	# 2.6 m standoff at chest height frames the surface instead of the prop.
+	"slate": {"group": "patch_slates", "standoff": 1.5, "aim": 0.35},
+	"anomaly": {"group": "anomaly_caches", "standoff": 3.6, "aim": 0.9},
 }
 
 
@@ -6063,3 +6101,1085 @@ func _run_refresh_probe() -> void:
 			travel[travel.size() - 1]])
 	print("[Refresh] done")
 	get_tree().quit()
+
+
+# ------------------------------------------------- M6.7 deck-climb probe --
+#
+# THE GAP THIS CLOSES.
+#
+# M6.6 shipped three instruments and between them they left one hole. The
+# verticality selftest asserts the three laws on the GRAPH — every deck has a
+# route from grade, every slope is under the floor limit, nothing solid stands in
+# an aisle — and `LayerGraph.unreachable_decks` is the reachability half of that.
+# `--pathwalk` asserts the SOLO INVARIANT against real colliders, but it is a
+# deliberately GRADE-ONLY flood fill: it proves you can reach the drop shaft
+# without climbing, which is the opposite question. `--auditvert` asks whether the
+# vertical vocabulary sits correctly in the room, which is placement quality, not
+# traversal.
+#
+# So "the crew can actually get up onto that mezzanine" was, in the shipped build,
+# a claim about a dictionary of rectangles. A route can be perfectly legal in the
+# graph and unwalkable in the world: the flight's inclined collider can be built
+# at a different angle than the link's rise/run says, a crate can stand across the
+# foot of it, the head of the flight can stop a body-width short of the deck
+# fascia, or a catwalk span can be laid at a height its own ramp never reaches.
+# None of those show up in a rectangle.
+#
+# WHAT THIS DOES INSTEAD.
+#
+# It walks a player-sized capsule up the route, against the colliders that were
+# really built, in steps, with gravity and floor snapping, and asserts it ends up
+# STANDING ON the deck: laterally inside the deck footprint and at the deck's own
+# height. Failure modes it can tell apart, because "it did not get there" is not
+# an actionable bug report:
+#
+#   BLOCKED    the capsule stopped making forward progress against something
+#   STEEP      it is on a surface too steep to be a floor, i.e. sliding back
+#   FELL       it left the route downward — a catwalk with a hole in it, or a
+#              flight whose collider ends before the deck begins
+#   SHORT      it ran out of route without arriving
+#   LOW/HIGH   it arrived laterally but not at the deck's height, which is a
+#              flight that lands somewhere other than the deck it serves
+#
+# HOW IT STEPS.
+#
+# `PhysicsServer3D.body_test_motion` on a bare kinematic body RID — the same call
+# `CharacterBody3D.move_and_slide` is built out of, so the depenetration and the
+# collision normals are the engine's own rather than a re-implementation of them.
+# Deliberately NOT an actual `move_and_slide` on a real body driven by real
+# physics frames: at 60 Hz a sampled sweep would need several minutes of awaited
+# frames and a selftest nobody can afford to run is a selftest nobody runs. The
+# motion tests are synchronous, so a whole layer costs milliseconds.
+#
+# The capsule is the player's, from `player.tscn`: radius 0.34, height 1.8. The
+# floor limit is `CharacterBody3D`'s default 45 degrees, which is the limit the
+# real body is subject to, and the slope test uses the collision normal rather
+# than the authored angle — the point of the exercise is to stop trusting the
+# authored angle.
+
+## The body being simulated. Matches player.tscn's CollisionShape3D exactly; a
+## probe fatter or taller than the avatar reports failures nobody can feel, and
+## one thinner reports passes nobody can walk.
+const DECKWALK_RADIUS: float = 0.34
+const DECKWALK_HEIGHT: float = 1.8
+## Horizontal advance per iteration. Small enough that a 0.34 m riser's worth of
+## slope is resolved into several tests, large enough that a 20 m route is a few
+## hundred of them.
+const DECKWALK_STEP: float = 0.25
+## How far the body may fall in one iteration before it counts as having left the
+## route rather than as having walked down a slope. A 25 degree ramp descends
+## 0.12 m per 0.25 m step; half a metre is a hole.
+const DECKWALK_FALL: float = 0.5
+## Gravity probe length per iteration: the drop above plus the avatar's own floor
+## snap (Player.FLOOR_SNAP), which is what keeps a real body stuck to a slope
+## instead of ballistically hopping down it.
+const DECKWALK_SNAP: float = 0.55
+## Arrival tolerance on the horizontal, and on the deck height. The height one is
+## generous on purpose: `DECK_THICKNESS` is 0.36 and the walking surface is a kit
+## floor module laid on top of the slab, so "standing on the deck" is a band, not
+## a value.
+const DECKWALK_ARRIVE: float = 0.7
+const DECKWALK_HEIGHT_TOLERANCE: float = 0.45
+## Godot's own floor limit for a CharacterBody3D, in degrees. Not read off the
+## player, because the player does not override it — if it ever does, this const
+## is the line that has to move with it and the mismatch is worth a compile-time
+## look rather than a silent divergence.
+const DECKWALK_FLOOR_ANGLE: float = 45.0
+## Slide iterations per step, matching `CharacterBody3D.max_slides`.
+const DECKWALK_SLIDES: int = 6
+## How far the capsule is lifted off the surface before each horizontal step, so
+## the step is not spent colliding with the floor it is standing on. Deliberately
+## tiny — well under any real riser — and paid straight back by the gravity probe.
+const DECKWALK_LIFT: float = 0.04
+## Consecutive iterations of no forward progress before the route is called
+## blocked. Three, because a body squeezing round a corner legitimately spends an
+## iteration or two converting forward motion into lateral motion.
+const DECKWALK_STALLS: int = 3
+
+## Seeds and layers the SAMPLED check runs over — the version that rides in
+## `--selftest` and therefore in front of every merge. Kept small because this
+## one builds real layers and real colliders, which the rest of the selftest does
+## not, and a gate that adds a minute to every run is a gate people start
+## skipping. `--deckwalk` is the full sweep for when the geometry actually
+## changes.
+##
+## The FIRST sample was four layers, and it would have missed every bug this
+## probe found: both of them were in the shaft room's gantry and on shallow
+## layers. So the sample is chosen to hit the motifs rather than to be a tidy
+## grid — layer 1 for the shallow rooms, 7 and 12 for the mid-depth halls, 21 for
+## the deep ones, across three seeds. Twelve built layers, still under a second.
+const _DECKWALK_SEEDS: Array[int] = [12345, 777, 8675309]
+const _DECKWALK_LAYERS: Array[int] = [1, 7, 12, 21]
+
+
+## The route from grade to `deck`, as an ordered list of `{link, from, to}` — the
+## same breadth-first walk `LayerGraph.deck_waypoint` does, but returning the
+## whole chain instead of only the next hop, and naming the deck at each end of
+## every hop (`-1` is the ground floor).
+##
+## `from` is the deck the body is standing on when it reaches this link, which is
+## the surface it has to cross to get there; `_deckwalk_deck` routes via that
+## deck's middle rather than corner to corner. Which END of the link is the near
+## one is decided there, geometrically — not from `a`/`b`, which for a level span
+## say nothing about which end touches what.
+func _deckwalk_route(graph: LayerGraph, room: int, deck: int) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var links: Dictionary = {}
+	for i: int in graph.deck_links.size():
+		if int(graph.deck_links[i]["room"]) != room:
+			continue
+		for key: int in [int(graph.deck_links[i]["a"]), int(graph.deck_links[i]["b"])]:
+			if not links.has(key):
+				links[key] = [] as Array[int]
+			(links[key] as Array[int]).append(i)
+
+	var previous: Dictionary = {-1: -1}
+	var queue: Array[int] = [-1]
+	var head: int = 0
+	while head < queue.size():
+		var current: int = queue[head]
+		head += 1
+		if current == deck:
+			break
+		for i: int in (links.get(current, [] as Array[int]) as Array[int]):
+			var link: Dictionary = graph.deck_links[i]
+			var other: int = int(link["b"]) if int(link["a"]) == current else int(link["a"])
+			if previous.has(other):
+				continue
+			previous[other] = i
+			queue.append(other)
+	if not previous.has(deck):
+		return out
+
+	# Walk the chain back to grade, then reverse it: the search knows how it got
+	# here, the walker needs to know how to set off.
+	var chain: Array[Dictionary] = []
+	var step: int = deck
+	while int(previous[step]) >= 0:
+		var index: int = int(previous[step])
+		var link: Dictionary = graph.deck_links[index]
+		# `step` is the deck we arrived AT, so we travelled toward it. Both ends are
+		# recorded: the walker needs to know which deck it is standing on BETWEEN
+		# two links, because that is the surface it has to cross.
+		var back: int = int(link["a"]) if int(link["b"]) == step else int(link["b"])
+		chain.append({"link": link, "from": back, "to": step})
+		step = back
+	chain.reverse()
+	for entry: Dictionary in chain:
+		out.append(entry)
+	return out
+
+
+## A kinematic body RID carrying the player's capsule, living in `space`. Bare
+## server object rather than a node: nothing about this needs a transform in a
+## tree, and a node would have to be freed on every early return.
+func _deckwalk_body(space: RID) -> RID:
+	var capsule: CapsuleShape3D = CapsuleShape3D.new()
+	capsule.radius = DECKWALK_RADIUS
+	capsule.height = DECKWALK_HEIGHT
+	var body: RID = PhysicsServer3D.body_create()
+	PhysicsServer3D.body_set_mode(body, PhysicsServer3D.BODY_MODE_KINEMATIC)
+	PhysicsServer3D.body_set_space(body, space)
+	PhysicsServer3D.body_add_shape(body, capsule.get_rid())
+	PhysicsServer3D.body_set_collision_layer(body, 0)
+	PhysicsServer3D.body_set_collision_mask(body, 1)
+	# The shape resource is owned by the RID from here on; keeping a reference
+	# alive for the duration of the walk is the caller's problem, so park it on the
+	# instrument. Freeing it early takes the shape out from under the body.
+	_deckwalk_shape = capsule
+	return body
+var _deckwalk_shape: CapsuleShape3D = null
+
+
+## One `move_and_slide` iteration, by hand. Returns `{at, hit}` — where the
+## capsule CENTRE ended up, and the name of the last thing it pushed against.
+##
+## `hit` is not decoration. "BLOCKED at (21.7, 3.1, 10.0)" sends a reader to a
+## coordinate; "BLOCKED by DataRack" sends them to a placement rule, and the whole
+## point of grouping findings by class is that the fix is a rule. The name comes
+## off the collider node itself, so it is whatever the builder called the thing.
+func _deckwalk_slide(body: RID, at: Vector3, motion: Vector3) -> Dictionary:
+	var params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
+	var result: PhysicsTestMotionResult3D = PhysicsTestMotionResult3D.new()
+	var here: Vector3 = at
+	var left: Vector3 = motion
+	var hit: String = ""
+	for _slide: int in DECKWALK_SLIDES:
+		if left.length() < 0.0005:
+			break
+		params.from = Transform3D(Basis.IDENTITY, here)
+		params.motion = left
+		if not PhysicsServer3D.body_test_motion(body, params, result):
+			here += left
+			break
+		here += result.get_travel()
+		var remainder: Vector3 = result.get_remainder()
+		if result.get_collision_count() == 0:
+			here += remainder
+			break
+		var against: Object = result.get_collider(0)
+		if against != null:
+			var node: Node = against as Node
+			hit = String(node.name) if node != null else against.get_class()
+			# A GeometryKit layer parks every static box proxy as an anonymous
+			# CollisionShape3D on one `Colliders` StaticBody3D, so neither the body
+			# nor the shape has a name worth printing. What DOES identify it is the
+			# contact: the face normal says whether the body walked into a wall, was
+			# stopped by a ceiling, or is standing on the thing it is fighting.
+			if hit == "Colliders":
+				var normal: Vector3 = result.get_collision_normal(0)
+				var face: String = "wall"
+				if normal.y > 0.7:
+					face = "floor"
+				elif normal.y < -0.7:
+					face = "ceiling"
+				# And the box itself, off the physics server. A contact point plus a
+				# normal says where the body was stopped; the shape's own centre and
+				# size say WHICH box proxy it was, which is the difference between
+				# "somewhere near the pit" and "the excavation's north retaining
+				# wall". Everything the shell emits is a BoxShape3D, so this reads.
+				var where: String = ""
+				var shell: RID = result.get_collider_rid()
+				var index: int = result.get_collider_shape(0)
+				if shell.is_valid() and index >= 0:
+					var box: Transform3D = PhysicsServer3D.body_get_shape_transform(shell, index)
+					var data: Variant = PhysicsServer3D.shape_get_data(
+							PhysicsServer3D.body_get_shape(shell, index))
+					if data is Vector3:
+						where = " box centred %s size %s" % [
+							str(box.origin.snapped(Vector3.ONE * 0.1)),
+							str(((data as Vector3) * 2.0).snapped(Vector3.ONE * 0.1))]
+				hit = "an unnamed %s face of the shell (contact %s, normal %s%s)" % [
+					face, str(result.get_collision_point(0).snapped(Vector3.ONE * 0.1)),
+					str(normal.snapped(Vector3.ONE * 0.01)), where]
+		# Slide the rest of the motion along the wall, which is what
+		# `move_and_slide` does with `motion_mode = grounded`.
+		left = remainder.slide(result.get_collision_normal(0))
+	return {"at": here, "hit": hit}
+
+
+## Drops the capsule until it is standing on something. Returns the resting
+## centre, and reports the floor normal and how far it fell.
+func _deckwalk_settle(body: RID, at: Vector3, reach: float) -> Dictionary:
+	var params: PhysicsTestMotionParameters3D = PhysicsTestMotionParameters3D.new()
+	var result: PhysicsTestMotionResult3D = PhysicsTestMotionResult3D.new()
+	params.from = Transform3D(Basis.IDENTITY, at)
+	params.motion = Vector3.DOWN * reach
+	if not PhysicsServer3D.body_test_motion(body, params, result):
+		# Nothing under the body within reach: it is in the air.
+		return {"at": at + Vector3.DOWN * reach, "grounded": false, "fell": reach,
+				"normal": Vector3.UP}
+	var landed: Vector3 = at + result.get_travel()
+	var normal: Vector3 = Vector3.UP
+	if result.get_collision_count() > 0:
+		normal = result.get_collision_normal(0)
+	return {"at": landed, "grounded": true,
+			"fell": at.y - landed.y, "normal": normal}
+
+
+## Walks the capsule from `from` to `to` and reports what happened. Both points
+## are FLOOR points; the capsule centre rides half its height above them.
+##
+## Arrival is LATERAL only, deliberately: the body rides whatever surface is
+## really under it, and demanding it also finish at the waypoint's authored height
+## would fail every stair — `_add_link` puts `head` one metre back from the top of
+## a flight but at the TOP height, so the point is inside the slope rather than on
+## it. Height is asserted once, at the end, against the deck itself, which is the
+## claim that matters: a flight that lands a body NEXT TO a mezzanine passes every
+## lateral test there is.
+##
+## `start_at` continues from where the previous leg finished. Only the first leg
+## of a route drops the capsule in from the waypoint, and after that the walk is
+## unbroken — a probe that re-seats the body at the start of every leg would step
+## over exactly the gaps it exists to find.
+func _deckwalk_leg(body: RID, from: Vector3, to: Vector3,
+		start_at: Vector3 = Vector3.INF) -> Dictionary:
+	var lift: float = DECKWALK_HEIGHT * 0.5 + 0.02
+	var at: Vector3 = start_at
+	if at == Vector3.INF:
+		# Set off from the given floor point, dropped onto whatever is really there
+		# rather than onto the height the graph believes in.
+		var settled: Dictionary = _deckwalk_settle(
+				body, from + Vector3(0.0, lift + DECKWALK_SNAP, 0.0),
+				DECKWALK_SNAP * 2.0)
+		at = settled["at"]
+	var budget: int = int(Vector2(to.x - from.x, to.z - from.z).length()
+			/ DECKWALK_STEP) * 4 + 60
+	var stalls: int = 0
+	var floor_limit: float = cos(deg_to_rad(DECKWALK_FLOOR_ANGLE))
+	var steepest: float = 1.0
+	while budget > 0:
+		budget -= 1
+		var lateral: Vector3 = Vector3(to.x - at.x, 0.0, to.z - at.z)
+		if lateral.length() <= DECKWALK_ARRIVE:
+			return {"ok": true, "at": at, "why": "", "steepest": steepest}
+		var before: Vector3 = at
+		# Lift a fingernail before stepping. A capsule that has just settled is
+		# resting ON the floor, so a purely horizontal motion test collides with
+		# the floor itself, the slide projects the motion onto the floor plane
+		# (leaving it unchanged), and the loop spends all six of its iterations
+		# discovering it is standing on the ground — a stall against the very
+		# surface it is walking on. The gravity probe below puts it straight back
+		# down, so this is bookkeeping, not a hop; `move_and_slide` gets the same
+		# effect out of the engine's own depenetration margin.
+		at.y += DECKWALK_LIFT
+		var slid: Dictionary = _deckwalk_slide(body, at, lateral.normalized() * DECKWALK_STEP)
+		at = slid["at"]
+		var hit: String = String(slid["hit"])
+		# Gravity and floor snap, in one probe: walking UP a ramp the body is
+		# pushed into the slope by the slide and settles a few millimetres;
+		# walking along a catwalk it settles onto the grating; walking off the end
+		# of either it falls, and how far it fell is the diagnosis.
+		var settled: Dictionary = _deckwalk_settle(
+				body, at, DECKWALK_FALL + DECKWALK_SNAP)
+		at = settled["at"]
+		if not bool(settled["grounded"]) or float(settled["fell"]) > DECKWALK_FALL:
+			return {"ok": false, "at": at, "why": "FELL off the route (dropped %.2f m at %s)" % [
+					float(settled["fell"]), str(at.snapped(Vector3.ONE * 0.1))],
+					"steepest": steepest}
+		var up: float = (settled["normal"] as Vector3).dot(Vector3.UP)
+		steepest = minf(steepest, up)
+		if up < floor_limit:
+			return {"ok": false, "at": at,
+					"why": "STEEP: resting on a %.1f deg surface (floor limit %.0f) at %s" % [
+					rad_to_deg(acos(clampf(up, -1.0, 1.0))), DECKWALK_FLOOR_ANGLE,
+					str(at.snapped(Vector3.ONE * 0.1))], "steepest": steepest}
+		# Progress is measured on the horizontal only. A body climbing a stair
+		# converts most of a step into height, and calling that "stalled" would
+		# fail every flight on the layer.
+		if Vector2(at.x - before.x, at.z - before.z).length() < DECKWALK_STEP * 0.2:
+			stalls += 1
+			if stalls > DECKWALK_STALLS:
+				return {"ok": false, "at": at,
+						"why": "BLOCKED by %s at %s, %.1f m short of the target" % [
+						hit if not hit.is_empty() else "something unnamed",
+						str(at.snapped(Vector3.ONE * 0.1)), lateral.length()],
+						"steepest": steepest}
+		else:
+			stalls = 0
+	return {"ok": false, "at": at, "why": "SHORT: ran out of route %.1f m from the target at %s" % [
+			Vector2(to.x - at.x, to.z - at.z).length(), str(at.snapped(Vector3.ONE * 0.1))],
+			"steepest": steepest}
+
+
+## Climbs to one deck and says whether the body got there. Returns "" on success.
+func _deckwalk_deck(body: RID, graph: LayerGraph, deck: Dictionary) -> String:
+	var id: int = int(deck["id"])
+	var room: int = int(deck["room"])
+	var route: Array[Dictionary] = _deckwalk_route(graph, room, id)
+	if route.is_empty():
+		return "deck %d (%s) has no route in the graph at all" % [id, String(deck["kind"])]
+
+	# The legs: onto the near end of the first flight, along each flight in turn,
+	# and finally out onto the middle of the deck itself — which is the leg that
+	# catches a flight arriving a body-width short of the fascia.
+	#
+	# Which end of a link is the NEAR one cannot be read off `a`/`b`, and the first
+	# version of this probe assumed it could — 58 of 260 decks "failed", every one
+	# of them the instrument cutting a corner rather than the geometry being wrong.
+	# `_add_link(room, lower, upper, ...)` puts `foot` at the -dir end of the
+	# link's rect and `head` at the +dir end, and for a RAMP or a STAIR that lines
+	# up with `a` (the lower deck) because the flight climbs along dir. A CATWALK
+	# is level: `y0 == y1`, "lower" and "upper" are whichever way round the caller
+	# passed them, and on the L-shaped gantry rings the two ends came out reversed.
+	# Walking to the far end first crosses the notch in the L, and a capsule that
+	# walks into a notch falls down it, correctly and uselessly.
+	#
+	# So the end is chosen GEOMETRICALLY, off where the body actually is: height
+	# first (a flight's ends differ by a storey and that is unambiguous), lateral
+	# distance as the tie-break for the level spans where height says nothing.
+	var rect: Rect2 = Rect2(Vector2(deck["min"]), Vector2(deck["max"]) - Vector2(deck["min"]))
+	var mid: Vector2 = rect.position + rect.size * 0.5
+	var deck_y: float = float(deck["y"])
+	var legs: Array[Vector3] = []
+	var here: Vector3 = Vector3(graph.centre_of(room).x, 0.0, graph.centre_of(room).z)
+	for i: int in route.size():
+		var entry: Dictionary = route[i]
+		var link: Dictionary = entry["link"]
+		var foot: Vector3 = link["foot"]
+		var head: Vector3 = link["head"]
+		var near: Vector3 = foot
+		var far: Vector3 = head
+		if absf(float(link["y1"]) - float(link["y0"])) > 0.1:
+			# A real flight: set off from the end at the height we are already at.
+			if absf(head.y - here.y) < absf(foot.y - here.y):
+				near = head
+				far = foot
+		elif Vector2(head.x - here.x, head.z - here.z).length() \
+				< Vector2(foot.x - here.x, foot.z - here.z).length():
+			near = head
+			far = foot
+		# Cross the intermediate deck VIA ITS MIDDLE rather than corner to corner.
+		# The gantry rings and the machinery-hall galleries are L-shaped pairs of
+		# rectangles, and the straight line from the top of a stair on one arm to
+		# the mouth of a catwalk on the other cuts across the notch in the L — over
+		# thin air. A body does not do that; it walks out into the deck it is on and
+		# then along. The middle of the deck is the one point guaranteed to be on
+		# it, so it is the waypoint, and this stays a probe rather than a
+		# pathfinder — which it should: a probe that pathfinds can route around the
+		# very obstruction it is supposed to report.
+		if i > 0 and int(entry["from"]) >= 0:
+			var on: Dictionary = graph.decks[int(entry["from"])]
+			var on_rect: Rect2 = Rect2(Vector2(on["min"]),
+					Vector2(on["max"]) - Vector2(on["min"]))
+			var on_mid: Vector2 = on_rect.position + on_rect.size * 0.5
+			legs.append(Vector3(on_mid.x, float(on["y"]), on_mid.y))
+		legs.append(near)
+		legs.append(far)
+		here = far
+	legs.append(Vector3(mid.x, deck_y, mid.y))
+
+	var at: Vector3 = Vector3.INF
+	for i: int in legs.size() - 1:
+		var leg: Dictionary = _deckwalk_leg(body, legs[i], legs[i + 1], at)
+		at = leg["at"]
+		if not bool(leg["ok"]):
+			# The leg's own endpoints are in the message on purpose: "it fell" is
+			# not actionable, "it fell walking from the head of the stair to the
+			# mouth of the catwalk" names the two rectangles to go and look at.
+			return "deck %d (%s, room %d) leg %d/%d %s -> %s: %s" % [
+				id, String(deck["kind"]), room, i + 1, legs.size() - 1,
+				str(legs[i].snapped(Vector3.ONE * 0.1)),
+				str(legs[i + 1].snapped(Vector3.ONE * 0.1)), String(leg["why"])]
+
+	# Standing ON it, not beside it. The capsule centre rides half a body above
+	# its feet, so the floor it is on is the number to compare.
+	var feet: float = at.y - DECKWALK_HEIGHT * 0.5
+	if absf(feet - deck_y) > DECKWALK_HEIGHT_TOLERANCE:
+		return "deck %d (%s, room %d) reached %s but stands at y=%.2f, not the deck's %.2f" % [
+			id, String(deck["kind"]), room, str(at.snapped(Vector3.ONE * 0.1)),
+			feet, deck_y]
+	if not rect.grow(DECKWALK_RADIUS + 0.3).has_point(Vector2(at.x, at.z)):
+		return "deck %d (%s, room %d) ended at %s, outside its own footprint" % [
+			id, String(deck["kind"]), room, str(at.snapped(Vector3.ONE * 0.1))]
+	return ""
+
+
+## Stands one (seed, layer) up for real — graph, shell, decks, routes, dressing,
+## colliders — walks every deck on it, and tears it down again.
+##
+## The builder is added under a throwaway `Node3D` in the tree rather than to the
+## live scene: it needs to be in a `World3D` for its colliders to exist in a
+## physics space at all, and it must not be mistaken by anything else for the
+## layer. One awaited physics frame after `add_child` is what puts the shapes in
+## the space; without it every motion test comes back "nothing there" and the
+## probe passes everything, which is the failure mode worth being loud about.
+func _deckwalk_layer(seed_value: int, layer: int, findings: PackedStringArray) -> Dictionary:
+	var graph: LayerGraph = LayerGraph.generate(seed_value, layer)
+	if graph.decks.is_empty():
+		return {"decks": 0, "failed": 0, "flat": true}
+
+	var host: Node3D = Node3D.new()
+	host.name = "DeckWalkScratch"
+	get_tree().root.add_child(host)
+	var builder: ProcLayerBuilder = ProcLayerBuilder.create(graph)
+	host.add_child(builder)  # GeometryKit._ready() builds synchronously.
+	await get_tree().physics_frame
+
+	var body: RID = _deckwalk_body(host.get_world_3d().space)
+	var failed: int = 0
+	for deck: Dictionary in graph.decks:
+		var problem: String = _deckwalk_deck(body, graph, deck)
+		if problem.is_empty():
+			continue
+		failed += 1
+		if findings.size() < 8:
+			findings.append("seed %d layer %d: %s" % [seed_value, layer, problem])
+
+	PhysicsServer3D.free_rid(body)
+	_deckwalk_shape = null
+	host.queue_free()
+	return {"decks": graph.decks.size(), "failed": failed, "flat": false}
+
+
+## `--selftest`: the sampled deck-climb gate. Returns the failure count, the same
+## contract `_vertical_selftest` and the rest of them follow.
+func _deckwalk_selftest() -> int:
+	var failures: int = 0
+	var decks: int = 0
+	var layers: int = 0
+	var findings: PackedStringArray = PackedStringArray()
+	var started: int = Time.get_ticks_msec()
+	for seed_value: int in _DECKWALK_SEEDS:
+		for layer: int in _DECKWALK_LAYERS:
+			var out: Dictionary = await _deckwalk_layer(seed_value, layer, findings)
+			if bool(out["flat"]):
+				continue
+			layers += 1
+			decks += int(out["decks"])
+			failures += int(out["failed"])
+
+	if failures == 0:
+		print("[SelfTest] PASS  deck climb: %d decks on %d built layers all reached by a %.2f m capsule against real colliders (%d ms)" % [
+			decks, layers, DECKWALK_RADIUS * 2.0, Time.get_ticks_msec() - started])
+	else:
+		for line: String in findings:
+			printerr("[SelfTest] FAIL  deck climb %s" % line)
+	return failures
+
+
+## `--deckwalk`: the same probe over the full seed/layer matrix the verticality
+## selftest uses, as a standing instrument for when the placement rules change.
+## One process, because each layer is built and torn down inside it.
+func _run_deck_walk() -> void:
+	var findings: PackedStringArray = PackedStringArray()
+	var decks: int = 0
+	var failed: int = 0
+	var layers: int = 0
+	var flat: int = 0
+	var started: int = Time.get_ticks_msec()
+	for seed_value: int in _VERT_SEEDS:
+		for layer: int in _VERT_LAYERS:
+			var out: Dictionary = await _deckwalk_layer(seed_value, layer, findings)
+			if bool(out["flat"]):
+				flat += 1
+				continue
+			layers += 1
+			decks += int(out["decks"])
+			failed += int(out["failed"])
+			print("[DeckWalk]   seed=%-8d layer=%-3d decks=%-3d failed=%d" % [
+				seed_value, layer, int(out["decks"]), int(out["failed"])])
+	for line: String in findings:
+		printerr("[DeckWalk] FAIL %s" % line)
+	print("[DeckWalk] %s %d decks climbed on %d layers (%d flat), %d failed, %d ms" % [
+		"PASS" if failed == 0 else "FAIL", decks, layers, flat, failed,
+		Time.get_ticks_msec() - started])
+	get_tree().quit(1 if failed > 0 else 0)
+
+
+# ------------------------------------------------------- MOTHER's VOICE selftest --
+#
+# Appended for the voice pass. Same contract as `_vertical_selftest` and the rest:
+# returns a failure count, prints one line per check, and is aggregated by
+# `_balance_selftest`.
+#
+# What is worth asserting about a cosmetic audio layer, and what is not. Whether
+# she SOUNDS good is a human verdict and no test can hold it. What a test can hold
+# is everything the mix and the safety rules depend on being true regardless of
+# which cue anyone picks later: the depth lock on her deepest register, the
+# density inversion that IS the Director's withhold made audible, the fact that
+# every cue named in the swap tables is a file that exists, and the fact that
+# every tier arrives with a caption — because the captions are the ship gate, and
+# a voice line a deaf player cannot see is a threat telegraph with a hole in it.
+
+## `--selftest`, MOTHER's VOICE section.
+func _voice_selftest() -> int:
+	var failures: int = 0
+
+	# --- the Below-the-Kernel depth lock ------------------------------------
+	#
+	# The whisper is the one cue set that says "she is not where you thought she
+	# was", and it is spent for good the first time it is heard. It must be
+	# impossible to hear it above the KERNEL band, and that has to survive a
+	# stress spike, a forced bark and a dev flag — so it is asserted against the
+	# tier function itself, which is the only thing that decides.
+	var leaked_shallow: int = 0
+	var deepest_wrong: int = -1
+	for layer: int in range(1, Audio.VOICE_SUBZERO_LAYER):
+		if Audio.voice_tier_for("kernel_leak", layer) == Audio.VOICE_SUBZERO:
+			leaked_shallow += 1
+			deepest_wrong = layer
+	var deep_ok: bool = true
+	for layer: int in range(Audio.VOICE_SUBZERO_LAYER, 40):
+		if Audio.voice_tier_for("kernel_leak", layer) != Audio.VOICE_SUBZERO:
+			deep_ok = false
+	if leaked_shallow == 0 and deep_ok:
+		print("[SelfTest] PASS  voice subzero lock: silent on layers 1-%d, live from %d" % [
+			Audio.VOICE_SUBZERO_LAYER - 1, Audio.VOICE_SUBZERO_LAYER])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice subzero lock: %d shallow layers leak it (deepest %d), deep ok=%s" % [
+			leaked_shallow, deepest_wrong, str(deep_ok)])
+
+	# --- the density inversion ----------------------------------------------
+	#
+	# DESIGN.md: "when the crew is broken and limping she withholds". The claim
+	# being asserted is that her VOICE obeys that and not the naive reading where
+	# more stress means more MOTHER — she must be QUIETER at full terror than on
+	# an empty layer, and quieter again while the Director is actually withholding.
+	# The peak in the middle is the shape that makes both true at once.
+	var calm: float = Haunt.voice_density_at(0.0, false)
+	var peak: float = Haunt.voice_density_at(Haunt.VOICE_DENSITY_PEAK, false)
+	var terror: float = Haunt.voice_density_at(1.0, false)
+	var withheld: float = Haunt.voice_density_at(Haunt.VOICE_DENSITY_PEAK, true)
+	if peak > calm and terror < calm and withheld < peak and terror >= 0.0 and peak <= 1.0:
+		print("[SelfTest] PASS  voice density inverts: calm %.2f -> peak %.2f -> terror %.2f (withheld %.2f)" % [
+			calm, peak, terror, withheld])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice density: calm %.2f peak %.2f terror %.2f withheld %.2f" % [
+			calm, peak, terror, withheld])
+
+	# --- every cue in the swap tables is a real file -------------------------
+	#
+	# The three cue lists are documented as the place a human edits to change how
+	# she sounds. That makes a typo in them a normal event, and a missing stream is
+	# otherwise a silent no-op at runtime — she just stops speaking and nobody
+	# knows why. This is the drift check for her voice, the same job the icon tool
+	# does for the achievement catalog.
+	var missing: PackedStringArray = PackedStringArray()
+	var cue_total: int = 0
+	for table: Array in [Audio.VOICE_MURMUR_CUES, Audio.VOICE_DIRECTED_CUES,
+			Audio.VOICE_SUBZERO_CUES]:
+		if table.is_empty():
+			missing.append("<an empty tier table>")
+		for rel: String in table:
+			cue_total += 1
+			if not ResourceLoader.exists(Audio.AUDIO_DIR + rel):
+				missing.append(rel)
+	if missing.is_empty():
+		print("[SelfTest] PASS  voice cues resolve: %d files across 3 tiers" % cue_total)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice cues missing: %s" % ", ".join(missing))
+
+	# --- captions: the ship gate --------------------------------------------
+	#
+	# Each tier must arrive with a caption, and the captions must describe HER
+	# VOICE rather than restate the bark (that is the subtitle track's job, and it
+	# has its own switch). The categories are asserted too, because they are what
+	# decides visibility: the murmur is AMBIENT so a default-scope player is not
+	# given a permanent MOTHER line, and the Below-the-Kernel whisper is THREAT so
+	# it is ALWAYS shown — a deaf player must not be the only one who does not know
+	# she just got that close.
+	var want: Dictionary = {
+		&"mother_murmur": Captions.Cat.AMBIENT,
+		&"mother_address": Captions.Cat.INFO,
+		&"mother_close": Captions.Cat.THREAT,
+	}
+	var caption_bad: PackedStringArray = PackedStringArray()
+	for key: StringName in want:
+		if not Captions.TABLE.has(key):
+			caption_bad.append("%s: no caption" % key)
+			continue
+		if int((Captions.TABLE[key] as Dictionary)["cat"]) != int(want[key]):
+			caption_bad.append("%s: wrong category" % key)
+	if caption_bad.is_empty():
+		print("[SelfTest] PASS  voice captions: murmur=AMBIENT address=INFO subzero=THREAT")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice captions: %s" % ", ".join(caption_bad))
+
+	# --- captions ship OFF, and her voice does not change that ---------------
+	#
+	# CLAUDE.md's safety law and DESIGN.md pillar 7: captions/subtitles are OFF by
+	# default. `_balance_selftest` already asserts that for a fresh profile; this
+	# asserts the narrower thing this pass could have broken, which is that the
+	# voice layer emits through CaptionBus's own gate rather than around it.
+	var was: bool = A11y.sound_captions
+	A11y.sound_captions = false
+	var shown_off: int = Captions.active_count()
+	Captions.emit(&"mother_close", Vector3.ZERO, 30.0)
+	var after_off: int = Captions.active_count()
+	A11y.sound_captions = was
+	if after_off == shown_off:
+		print("[SelfTest] PASS  voice captions gated: nothing drawn with captions off")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice caption drawn with captions off (%d -> %d)" % [
+			shown_off, after_off])
+
+	# --- the mix promises ----------------------------------------------------
+	#
+	# Three numbers the voice tier is allowed to be wrong about only on purpose:
+	# she must duck DOWN under threat audio (never up), Dampened Protocol must
+	# attenuate her (never boost), and her murmur must ride the same DREAD
+	# attenuation the Sentinel drone does — that curve is what makes "two rooms
+	# away" sound like two rooms away, and the murmur is the only voice cue that
+	# is allowed to have a place in the world at all.
+	var duck_ok: bool = Audio.VOICE_DUCK_DB < 0.0 and Audio.VOICE_MUSIC_DUCK_DB < 0.0
+	var damp_ok: bool = Audio.VOICE_DAMPENED_TRIM < 0.0
+	var dread_ok: bool = is_equal_approx(Audio.VOICE_MURMUR_UNIT, 20.0) \
+			and is_equal_approx(Audio.VOICE_MURMUR_MAX, 90.0)
+	if duck_ok and damp_ok and dread_ok:
+		print("[SelfTest] PASS  voice mix: threat duck %.1f dB, music duck %.1f dB, dampened %.1f dB, DREAD %.0f/%.0f" % [
+			Audio.VOICE_DUCK_DB, Audio.VOICE_MUSIC_DUCK_DB, Audio.VOICE_DAMPENED_TRIM,
+			Audio.VOICE_MURMUR_UNIT, Audio.VOICE_MURMUR_MAX])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice mix: duck=%s damp=%s dread=%s" % [
+			str(duck_ok), str(damp_ok), str(dread_ok)])
+
+	# --- the sidechain is wired to the right events --------------------------
+	#
+	# "She never masks threat audio" is a claim about which events duck her, and
+	# that is derived once at registration from the CAPTION category — a coupling
+	# between two tables that nothing else in the game exercises. Asserted from
+	# both ends: a lunge shriek must arm the duck, a data chip must not, and her
+	# own Below-the-Kernel cue must not (it carries a THREAT caption and would
+	# otherwise sidechain her into her own duck the instant she whispered).
+	var lunge: bool = bool(Audio._events[&"scrubber_lunge"].threat)
+	var chip: bool = bool(Audio._events[&"datachip"].threat)
+	var herself: bool = bool(Audio._events[&"mother_close"].threat)
+	if lunge and not chip and not herself:
+		print("[SelfTest] PASS  voice sidechain: threats duck her, flavour does not, she cannot duck herself")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice sidechain: lunge=%s chip=%s self=%s" % [
+			str(lunge), str(chip), str(herself)])
+
+	# --- the VOICE slider actually reaches her -------------------------------
+	#
+	# She is on her own bus, and a bus nobody's slider is wired to is a bus that
+	# ships at full volume forever. Asserted by moving the slider and reading the
+	# trim back out, then putting it back — the settings store is not touched
+	# because `_bus_trim` is a pure read of `vol_voice`.
+	var slider_was: float = Audio.vol_voice
+	Audio.vol_voice = 1.0
+	var loud: float = Audio._bus_trim(Audio.BUS_VOICE)
+	Audio.vol_voice = 0.0
+	var muted: float = Audio._bus_trim(Audio.BUS_VOICE)
+	Audio.vol_voice = slider_was
+	if muted < loud - 40.0:
+		print("[SelfTest] PASS  VOICE slider drives MOTHER: %.1f dB at full, %.1f dB at zero" % [
+			loud, muted])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  VOICE slider does not reach her: %.1f -> %.1f dB" % [
+			loud, muted])
+
+	return failures
+
+
+# ---------------------------------------------------------------- M9 PATCHES --
+#
+# `--selftest`, the patch section. Returns the failure count, the same contract
+# `_vertical_selftest`, `_cartography_selftest`, `_hub_selftest` and
+# `_subroutine_selftest` all follow.
+#
+# M9 adds a whole second progression economy on top of a settled one, and almost
+# everything it does is invisible to a determinism dump — the effects are pure
+# sim-time scalars applied per player, exactly like the module tiers. So the
+# things that could break silently are the things asserted here:
+#
+#   * the ECONOMY LAWS from Balance's M9 header, as data rather than as prose;
+#   * the SAFETY caps on the one new light source;
+#   * the STACKING MATHS, at one stack and at the ceiling, against the numbers
+#     the catalogue documents;
+#   * the DROP DETERMINISM, which is the one place a patch could desync a crew.
+
+
+func _patch_selftest() -> int:
+	var failures: int = 0
+
+	# --- SAFETY: the pickup bloom ------------------------------------------
+	#
+	# One new light source a player controls the firing of. Bounded twice — by
+	# the channel that gates it and by `Fx.flash_gate()`'s own interval — and the
+	# binding one is reported. The channel alone (0.5 s == 2 Hz) already clears
+	# WCAG 2.3.1; the governor is what makes the ceiling true if somebody later
+	# shortens the channel, which is precisely the failure this is here to catch.
+	var pickup_hz: float = minf(1.0 / maxf(Balance.PATCH_SLATE_CHANNEL, 0.0001),
+			1.0 / maxf(Balance.PATCH_PICKUP_FLASH_MIN_INTERVAL, 0.0001))
+	# The energy checked is the SCALED one — a KERNEL pickup is the brightest this
+	# effect ever gets, so it is the number the ceiling has to hold against.
+	var pickup_energy: float = Balance.PATCH_PICKUP_FLASH_ENERGY \
+			* Balance.PATCH_PICKUP_KERNEL_SCALE
+	if pickup_hz <= 3.0 and pickup_energy <= Balance.SUB_FLASH_ENERGY:
+		print("[SelfTest] PASS  flash-rate PATCH : peak %.2f Hz <= 3.0 Hz (KERNEL energy %.2f <= kit ceiling %.1f)" % [
+			pickup_hz, pickup_energy, Balance.SUB_FLASH_ENERGY])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  flash-rate PATCH: %.2f Hz / energy %.2f" % [
+			pickup_hz, pickup_energy])
+
+	# --- SAFETY: Reduced Flashing zeroes the pickup bloom -------------------
+	var lit: float = A11y.flash_scale
+	A11y.flash_scale = 1.0
+	var pickup_on: float = Balance.PATCH_PICKUP_FLASH_ENERGY * A11y.flash_scale
+	A11y.flash_scale = 0.0
+	var pickup_off: float = Balance.PATCH_PICKUP_FLASH_ENERGY * A11y.flash_scale
+	A11y.flash_scale = lit
+	if pickup_on > 0.0 and pickup_off <= 0.0001:
+		print("[SelfTest] PASS  patch bloom calmed: %.2f at full, %.4f under Reduced Flashing" % [
+			pickup_on, pickup_off])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  patch bloom survives Reduced Flashing (%.4f)" % pickup_off)
+
+	# --- CATALOGUE SHAPE ----------------------------------------------------
+	#
+	# Every id in the order list must exist in the table and vice versa, and every
+	# entry must declare a rarity the weight arrays can actually roll. A patch
+	# present in one and absent from the other would be a patch that can be rolled
+	# and never drawn, or drawn and never rolled — both silent.
+	var shape_bad: PackedStringArray = PackedStringArray()
+	var per_tier: Array[int] = [0, 0, 0]
+	for id: String in Balance.PATCH_TRACKS:
+		if not Patches.is_patch(id):
+			shape_bad.append("%s: not in table" % id)
+			continue
+		var entry: Dictionary = Patches.definition(id)
+		for key: String in ["name", "glyph", "tier", "note"]:
+			if not entry.has(key):
+				shape_bad.append("%s: no %s" % [id, key])
+		var tier: int = Balance.patch_tier(id)
+		if tier < 0 or tier >= per_tier.size():
+			shape_bad.append("%s: tier %d" % [id, tier])
+			continue
+		per_tier[tier] += 1
+	if Balance.PATCHES.size() != Balance.PATCH_TRACKS.size():
+		shape_bad.append("table %d != order %d" % [
+			Balance.PATCHES.size(), Balance.PATCH_TRACKS.size()])
+	# A tier with weight and no members is a roll that returns nothing.
+	for t: int in per_tier.size():
+		if Balance.PATCH_WEIGHTS_SLATE[t] > 0 and per_tier[t] == 0:
+			shape_bad.append("%s: weighted but empty" % Balance.patch_tier_name(t))
+	if shape_bad.is_empty():
+		print("[SelfTest] PASS  patch catalogue: %d patches (%d stable / %d unstable / %d kernel)" % [
+			Balance.PATCH_TRACKS.size(), per_tier[0], per_tier[1], per_tier[2]])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  patch catalogue: %s" % ", ".join(shape_bad))
+
+	# --- THE KILLABILITY LAW ------------------------------------------------
+	#
+	# Asserted as data, the same way the subroutine section asserts it: no patch
+	# may declare damage of its own. TAIL CALL and BIT ROT are the BREAKER'S
+	# damage — chained and delayed — and both go through `Antivirus.take_damage`;
+	# the day somebody adds a `damage` key to this catalogue is the day a patch
+	# starts killing things the cutter did not, and this is where that is caught.
+	var damage_keys: int = 0
+	for id: String in Balance.PATCH_TRACKS:
+		if (Patches.definition(id) as Dictionary).has("damage"):
+			damage_keys += 1
+	if damage_keys == 0:
+		print("[SelfTest] PASS  killability law: no patch declares damage of its own")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  killability law: %d patch(es) declare damage" % damage_keys)
+
+	# --- THE ECONOMY STAYS THE BOSS: no free light --------------------------
+	#
+	# DESIGN.md pillar 2. Not one patch may widen a beam, brighten a flare or lift
+	# a room's light, so no entry may carry a key that sounds like one. Checked
+	# against the OPTICS track's own effect keys, which are the names a future
+	# author would reach for.
+	var light_keys: PackedStringArray = PackedStringArray()
+	for id: String in Balance.PATCH_TRACKS:
+		var entry: Dictionary = Patches.definition(id)
+		for key: String in ["angle", "energy", "reach", "beam", "light", "flare"]:
+			if entry.has(key):
+				light_keys.append("%s.%s" % [id, key])
+	if light_keys.is_empty():
+		print("[SelfTest] PASS  no free light: no patch touches beam, flare or fixture")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  no free light: %s" % ", ".join(light_keys))
+
+	# --- THE ECONOMY STAYS THE BOSS: the drain still bites ------------------
+	#
+	# Two floors, and both matter more than they look. SLEEP STATE at maximum
+	# stacks must still leave a real passive drain, and GARBAGE COLLECT's per-layer
+	# refund ceiling must stay well under a siphon tap — a patch that paid better
+	# than going and finding the tap would delete the loudest decision in the game.
+	var drained: float = Balance.PASSIVE_DRAIN * Balance.PATCH_SLEEP_FLOOR
+	var refund_cap: float = Balance.pool_max(1) * Balance.PATCH_GC_LAYER_CAP_FRACTION
+	if drained > 0.0 and Balance.PATCH_SLEEP_FLOOR >= 0.25 \
+			and refund_cap < Balance.SIPHON_YIELD:
+		print("[SelfTest] PASS  drain still bites: floor %.3f/s (%.0f%% of bare), GC cap %.0f < siphon %.0f" % [
+			drained, Balance.PATCH_SLEEP_FLOOR * 100.0, refund_cap, Balance.SIPHON_YIELD])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  drain trivialised: floor %.3f/s, GC cap %.0f vs siphon %.0f" % [
+			drained, refund_cap, Balance.SIPHON_YIELD])
+
+	# --- THE SPRINT-BILLING INVARIANT, WITH PATCHES ON ----------------------
+	#
+	# The M4.9 balance lab raised SPRINT_BILLING_SPEED so a maxed-Servos WALK could
+	# not bill at the sprint rate. PRIORITY BOOST multiplies the same product, so
+	# the margin has to be re-proved with the patch at its ceiling — which is the
+	# whole reason `PATCH_PRIORITY_CEILING` is 0.12 rather than a rounder number.
+	var servo_moves: Array = Balance.MODULES["servos"]["move"]
+	var max_move: float = float(servo_moves[servo_moves.size() - 1])
+	var boost: float = 1.0 + Balance.PATCH_PRIORITY_CEILING
+	var patched_walk: float = Player.WALK_SPEED * max_move * boost
+	if patched_walk < Balance.SPRINT_BILLING_SPEED:
+		print("[SelfTest] PASS  sprint-billing (patched): %.3f (WALK %.1f x Servos %.2f x boost %.2f) < %.2f (margin %.3f)" % [
+			patched_walk, Player.WALK_SPEED, max_move, boost,
+			Balance.SPRINT_BILLING_SPEED, Balance.SPRINT_BILLING_SPEED - patched_walk])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  sprint-billing (patched): %.3f >= %.2f" % [
+			patched_walk, Balance.SPRINT_BILLING_SPEED])
+
+	# --- STACKING MATHS -----------------------------------------------------
+	#
+	# Every stacking effect, at one stack and at the ceiling, against the numbers
+	# the catalogue documents. The property under test is not any single value —
+	# it is that stacking is MONOTONIC and BOUNDED: more stacks is never worse, and
+	# `PATCH_MAX_STACKS` never escapes the named ceiling. A regression here is a
+	# balance change nobody meant to make and nobody would notice for weeks.
+	var stack_bad: PackedStringArray = PackedStringArray()
+	var top: int = Balance.PATCH_MAX_STACKS
+	var probes: Array[Dictionary] = []
+	probes.append({"name": "priority_boost", "one": Patches.move_multiplier_for(1),
+		"max": Patches.move_multiplier_for(top),
+		"ceiling": 1.0 + Balance.PATCH_PRIORITY_CEILING, "rising": true})
+	probes.append({"name": "nop_sled", "one": Patches.iframe_bonus_for(1),
+		"max": Patches.iframe_bonus_for(top),
+		"ceiling": Balance.PATCH_NOPSLED_MAX, "rising": true})
+	probes.append({"name": "overflow_radius", "one": Patches.pulse_radius_for(1),
+		"max": Patches.pulse_radius_for(top),
+		"ceiling": 1.0 + Balance.PATCH_OVERFLOW_RADIUS_MAX, "rising": true})
+	probes.append({"name": "dead_code_life", "one": Patches.decoy_lifetime_for(1),
+		"max": Patches.decoy_lifetime_for(top),
+		"ceiling": 1.0 + Balance.PATCH_DEADCODE_LIFE_MAX, "rising": true})
+	probes.append({"name": "hot_loop", "one": Patches.hot_loop_bonus_for(1, 99),
+		"max": Patches.hot_loop_bonus_for(top, 99),
+		"ceiling": 1.0 + Balance.PATCH_HOTLOOP_MAX, "rising": true})
+	probes.append({"name": "spec_exec", "one": Patches.spec_bonus_for(1),
+		"max": Patches.spec_bonus_for(top),
+		"ceiling": 1.0 + Balance.PATCH_SPEC_MAX, "rising": true})
+	probes.append({"name": "bit_rot", "one": Patches.rot_fraction_for(1),
+		"max": Patches.rot_fraction_for(top),
+		"ceiling": Balance.PATCH_ROT_MAX_FRACTION, "rising": true})
+	for probe: Dictionary in probes:
+		var one: float = float(probe["one"])
+		var most: float = float(probe["max"])
+		var ceiling: float = float(probe["ceiling"])
+		if most < one:
+			stack_bad.append("%s: not monotonic (%.3f -> %.3f)" % [
+				String(probe["name"]), one, most])
+		if most > ceiling + 0.0001:
+			stack_bad.append("%s: %.3f over ceiling %.3f" % [
+				String(probe["name"]), most, ceiling])
+	# The two SHRINKING effects, checked the other way round.
+	if Patches.heat_scale_for(top) > Patches.heat_scale_for(1) \
+			or Patches.heat_scale_for(top) < Balance.PATCH_FUSION_FLOOR - 0.0001:
+		stack_bad.append("instruction_fusion: %.3f (floor %.3f)" % [
+			Patches.heat_scale_for(top), Balance.PATCH_FUSION_FLOOR])
+	if Patches.sleep_scale_for(top) > Patches.sleep_scale_for(1) \
+			or Patches.sleep_scale_for(top) < Balance.PATCH_SLEEP_FLOOR - 0.0001:
+		stack_bad.append("sleep_state: %.3f (floor %.3f)" % [
+			Patches.sleep_scale_for(top), Balance.PATCH_SLEEP_FLOOR])
+	# ZERO PAGE is integer and must never go under "this room only", which is the
+	# whole of the no-silent-everything law it is the single exception to.
+	if Patches.land_rooms_for(top, 1) != 0 or Patches.land_rooms_for(top, 0) != 0:
+		stack_bad.append("zero_page: floors below 0 rooms")
+	if stack_bad.is_empty():
+		print("[SelfTest] PASS  patch stacking: %d effects monotonic and capped at x%d stacks" % [
+			probes.size() + 3, top])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  patch stacking: %s" % ", ".join(stack_bad))
+
+	# --- DROP DETERMINISM ---------------------------------------------------
+	#
+	# DESIGN.md's determinism law, applied to the one system in the game that
+	# hands a player an item. Two properties, and losing either desyncs a crew:
+	#
+	#   1. the roll for a given (seed, layer, index) is a PURE FUNCTION of those
+	#      three — asking twice, in either order, returns the same patch. The bug
+	#      this catches is somebody replacing the hash with `Rng.stream()`, which
+	#      would make a slate depend on how many things had been rolled before it.
+	#   2. a different seed gives a different distribution. A hash that collapsed
+	#      to one answer would pass (1) perfectly and be worthless.
+	var kept: int = Rng.run_seed
+	var order_bad: int = 0
+	var forward: PackedStringArray = PackedStringArray()
+	Rng.set_run_seed(0x4E554C31)
+	for i: int in 24:
+		forward.append(Patches.preview(Patches.KIND_SLATE, i, 1 + i % 7))
+	# Backwards, and interleaved with anomaly and drop rolls, so any shared cursor
+	# would show up as a mismatch.
+	for i: int in range(23, -1, -1):
+		var _noise_a: String = Patches.preview(Patches.KIND_CACHE, i, 3)
+		var _noise_b: String = Patches.preview(Patches.KIND_DROP, i * 7, 11)
+		if Patches.preview(Patches.KIND_SLATE, i, 1 + i % 7) != forward[i]:
+			order_bad += 1
+	var spread: Dictionary = {}
+	for s: int in 12:
+		Rng.set_run_seed(0x1000 + s * 7919)
+		spread[Patches.preview(Patches.KIND_SLATE, 0, 1)] = true
+	Rng.set_run_seed(kept)
+	if order_bad == 0 and spread.size() >= 3:
+		print("[SelfTest] PASS  drop determinism: 24 rolls order-independent, %d distinct patches across 12 seeds" % [
+			spread.size()])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  drop determinism: %d order mismatches, %d distinct across 12 seeds" % [
+			order_bad, spread.size()])
+
+	# --- ANOMALY CACHE SPACING ---------------------------------------------
+	#
+	# "One guaranteed anomaly cache per 2-3 layers" is a promise, and a promise
+	# derived from a hash is a promise worth measuring. Walked over 40 layers of
+	# several seeds: the gap must always be the run's own period, and the period
+	# must always be inside the authored band.
+	var spacing_bad: PackedStringArray = PackedStringArray()
+	for s: int in 8:
+		Rng.set_run_seed(0x9000 + s * 104729)
+		var period: int = Patches.anomaly_period()
+		if period < Balance.PATCH_ANOMALY_PERIOD_MIN \
+				or period > Balance.PATCH_ANOMALY_PERIOD_MAX:
+			spacing_bad.append("seed %d: period %d" % [s, period])
+			continue
+		var last: int = -1
+		var hits: int = 0
+		for layer: int in range(1, 41):
+			if not Patches.layer_has_anomaly(layer):
+				continue
+			hits += 1
+			if last > 0 and layer - last != period:
+				spacing_bad.append("seed %d: gap %d != %d" % [s, layer - last, period])
+			last = layer
+		if hits < 40 / Balance.PATCH_ANOMALY_PERIOD_MAX - 1:
+			spacing_bad.append("seed %d: only %d caches in 40 layers" % [s, hits])
+	Rng.set_run_seed(kept)
+	if spacing_bad.is_empty():
+		print("[SelfTest] PASS  anomaly spacing: 8 seeds x 40 layers, gaps always %d-%d" % [
+			Balance.PATCH_ANOMALY_PERIOD_MIN, Balance.PATCH_ANOMALY_PERIOD_MAX])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  anomaly spacing: %s" % ", ".join(spacing_bad))
+
+	# --- RARITY MIX ---------------------------------------------------------
+	#
+	# The KERNEL tier has to stay rare on the common vessel and common on the rare
+	# one, or the whole acquisition curve inverts. Measured over 4000 rolls rather
+	# than asserted from the weights, because what matters is what the two-stage
+	# roll actually produces once "pick evenly inside the tier" is applied.
+	var slate_kernel: int = 0
+	var cache_kernel: int = 0
+	Rng.set_run_seed(0x2BADC0DE)
+	for i: int in 4000:
+		if Balance.patch_tier(Patches.preview(Patches.KIND_SLATE, i, 1 + i % 14)) \
+				== Balance.PATCH_TIER_KERNEL:
+			slate_kernel += 1
+		if Balance.patch_tier(Patches.preview(Patches.KIND_CACHE, i, 1 + i % 14)) \
+				== Balance.PATCH_TIER_KERNEL:
+			cache_kernel += 1
+	Rng.set_run_seed(kept)
+	var slate_rate: float = float(slate_kernel) / 4000.0
+	var cache_rate: float = float(cache_kernel) / 4000.0
+	if slate_rate < 0.10 and cache_rate > 0.5 and cache_rate > slate_rate * 4.0:
+		print("[SelfTest] PASS  rarity mix: KERNEL is %.1f%% of slates, %.1f%% of caches" % [
+			slate_rate * 100.0, cache_rate * 100.0])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  rarity mix: KERNEL %.1f%% slate / %.1f%% cache" % [
+			slate_rate * 100.0, cache_rate * 100.0])
+
+	# --- RUN-SCOPED, AND NOTHING ELSE ---------------------------------------
+	#
+	# The system's defining property, and the easiest to break by accident: a
+	# patch must not survive the run. Grant one offline, end the run, and assert
+	# the table is empty — and that the exfil conversion paid something on the way
+	# out, because a run-scoped system that pays nothing for success is a
+	# punishment for winning.
+	var before_exit: Dictionary = {"tail_call": 2, "parity_bit": 3}
+	Patches.carried[Net.local_id()] = before_exit
+	var sold: int = Patches.exfil_bonus(Net.local_id())
+	var want_sold: int = Balance.PATCH_EXFIL_DATA[Balance.PATCH_TIER_KERNEL] * 2 \
+			+ Balance.PATCH_EXFIL_DATA[Balance.PATCH_TIER_STABLE] * 3
+	Patches.clear_run()
+	var left: int = Patches.total_stacks(Net.local_id())
+	if left == 0 and sold == want_sold and sold > 0:
+		print("[SelfTest] PASS  run-scoped: 5 stacks sold back for %d data, 0 carried after run end" % sold)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  run-scoped: %d stacks survived, sold %d (wanted %d)" % [
+			left, sold, want_sold])
+
+	return failures

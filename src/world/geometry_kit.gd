@@ -46,6 +46,24 @@ const SYSTEM_AMBER: Color = Color(1.0, 0.62, 0.26)
 ## is why the energies in the tables look high.
 const LIGHT_DECAY: float = 0.85
 
+## M8: what a trace channel's own wash decays at once the soft-light pass is on.
+##
+## NOT `LightRig.SOFT_DECAY`, and the gap between 0.95 and 0.78 is a measurement.
+## There is one of these on every WALL_4x4_TRACE module, which on a generated
+## layer is dozens of them — so unlike a key or a wash, this fixture's falloff is
+## multiplied by a large N before it reaches the frame, and an exponent that is
+## merely generous per-fixture is a room-wide exposure lift in aggregate. The
+## first cut ran it at SOFT_DECAY and an A/B of the machine hall measured the
+## frame's mean luminance up 4.8x against pre-M8. 0.95 keeps the wash bleeding
+## further across the panel it is cut into — which is the whole reason the fixture
+## exists — without the aggregate becoming ambient by another name.
+## M8: the trace channel's own wash, as an area source rather than a point. Same
+## argument as `LightRig.SIZE_ACCENT` and a smaller number for the same reason it
+## needed its own falloff — there is one of these on every trace module, so its
+## contribution is multiplied by a large N before it reaches the frame.
+const TRACE_SIZE: float = 0.25
+const TRACE_SOFT_DECAY: float = 0.95
+
 ## M3.7: the surface set is now the look-dev kit's shader materials rather than
 ## flat StandardMaterial3Ds. INTEGRATION.md §3 gives the mapping — the important
 ## part is that the albedos did NOT go down. "Near-black" is a lighting result,
@@ -177,6 +195,13 @@ func build() -> void:
 	_grid_material = _make_emissive(Color(0.22, 0.6, 0.95), 0.22)
 
 	_build_content()
+	# M6.7 PERF: any decorative box the content pass collected becomes a MultiMesh
+	# here. A no-op when the subclass already flushed (ProcLayerBuilder does, one
+	# line before its census, so the batch count can be part of the layer log).
+	_flush_detail()
+	# M8: and the chamfered half of the same idea, which needs a mesh per size and
+	# therefore a table of its own. See `_detail_bevel`.
+	_flush_bevel_detail()
 
 
 ## Subclass hook: emit the layer.
@@ -266,24 +291,31 @@ func _doors_on(doors: Array, wall: String) -> Array:
 	return result
 
 
+## M8: `bevel = 0.0`. A floor slab meets the walls at their boundary and a
+## chamfer there would open a hairline gap all the way round every room, which is
+## a light leak rather than an expensive edge. Slabs are architecture and stay
+## square — see the bevel section header.
 func _slab(lo: Vector2, hi: Vector2, y: float, material: Material) -> void:
 	_box(Vector3((lo.x + hi.x) * 0.5, y, (lo.y + hi.y) * 0.5),
 			Vector3(hi.x - lo.x + WALL_THICKNESS, SLAB_THICKNESS, hi.y - lo.y + WALL_THICKNESS),
-			material)
+			material, 0.0)
 
 
 ## Wall in the XY plane at a fixed Z, spanning [x0, x1], pierced by `doors`.
 func _wall_at_z(z: float, x0: float, x1: float, h: float, doors: Array) -> void:
 	var spans: Array[Vector2] = _solid_spans(x0, x1, doors)
+	# `bevel = 0.0` throughout: a wall run is butted against its neighbours and
+	# against the slab, and chamfering it opens a seam at every join.
 	for span: Vector2 in spans:
 		_box(Vector3((span.x + span.y) * 0.5, h * 0.5, z),
-				Vector3(span.y - span.x, h, WALL_THICKNESS), MAT_MONOLITH)
+				Vector3(span.y - span.x, h, WALL_THICKNESS), MAT_MONOLITH, 0.0)
 	for door: Dictionary in doors:
 		var at: float = float(door.get("at", 0.0))
 		var w: float = float(door.get("w", DOOR_WIDTH))
 		var dh: float = float(door.get("h", DOOR_HEIGHT))
 		if h > dh:
-			_box(Vector3(at, (dh + h) * 0.5, z), Vector3(w, h - dh, WALL_THICKNESS), MAT_MONOLITH)
+			_box(Vector3(at, (dh + h) * 0.5, z),
+					Vector3(w, h - dh, WALL_THICKNESS), MAT_MONOLITH, 0.0)
 		_gate_frame(Vector3(at, 0.0, z), w, dh, "z")
 
 
@@ -292,13 +324,14 @@ func _wall_at_x(x: float, z0: float, z1: float, h: float, doors: Array) -> void:
 	var spans: Array[Vector2] = _solid_spans(z0, z1, doors)
 	for span: Vector2 in spans:
 		_box(Vector3(x, h * 0.5, (span.x + span.y) * 0.5),
-				Vector3(WALL_THICKNESS, h, span.y - span.x), MAT_MONOLITH)
+				Vector3(WALL_THICKNESS, h, span.y - span.x), MAT_MONOLITH, 0.0)
 	for door: Dictionary in doors:
 		var at: float = float(door.get("at", 0.0))
 		var w: float = float(door.get("w", DOOR_WIDTH))
 		var dh: float = float(door.get("h", DOOR_HEIGHT))
 		if h > dh:
-			_box(Vector3(x, (dh + h) * 0.5, at), Vector3(WALL_THICKNESS, h - dh, w), MAT_MONOLITH)
+			_box(Vector3(x, (dh + h) * 0.5, at),
+					Vector3(WALL_THICKNESS, h - dh, w), MAT_MONOLITH, 0.0)
 		_gate_frame(Vector3(x, 0.0, at), w, dh, "x")
 
 
@@ -491,9 +524,17 @@ func _build_conduit_node(spec: Dictionary) -> void:
 	light.position = pos + offset
 	light.light_color = color
 	light.omni_range = float(spec["range"])
-	light.omni_attenuation = LIGHT_DECAY
-	light.light_specular = 0.35
-	light.light_volumetric_fog_energy = 1.0
+	# M8 SOFT LIGHT. LIGHT_DECAY is kept above as the kit's own historical figure;
+	# every fixture the kit actually emits now runs the rig's softer curve, so the
+	# whole game agrees about how light falls off.
+	light.omni_attenuation = LightRig.SOFT_DECAY if LightRig.soft() else LIGHT_DECAY
+	light.light_size = TRACE_SIZE if LightRig.soft() else 0.0
+	# M8: up from 0.35. A conduit node sits ON a chamfered junction housing.
+	light.light_specular = 0.55 if LightRig.soft() else 0.35
+	# M8: trimmed with the falloff. Same finding as `LightRig.practical`'s own fog
+	# energy — a softer falloff spreads a small omni's air contribution over enough
+	# froxels to read as a glowing ball rather than as haze around a fitting.
+	light.light_volumetric_fog_energy = 0.6 if LightRig.soft() else 1.0
 	light.shadow_enabled = false  # nodes are fill light; the beam casts.
 	_fixtures.add_child(light)
 
@@ -674,12 +715,21 @@ func _data_rack(pos: Vector3, size: Vector3, yaw: float, glow: Color,
 
 ## Mesh box parented to a prop group rather than straight into `_geometry`, so a
 ## multi-part prop can be positioned and rotated once.
+## M8: chamfered by default. A data block and a processing rack are HOUSINGS —
+## the most-instanced props in the game and the ones the player stands closest
+## to — so they are exactly what the cassette-futurism note is asking for. Their
+## emissive slots and status strips fall under BEVEL_MIN_DIM and stay square,
+## which is correct: a light slot is a cut, not a casting.
 func _group_box(group: Node3D, at: Vector3, size: Vector3,
-		material: Material) -> MeshInstance3D:
+		material: Material, bevel: float = BEVEL_AUTO) -> MeshInstance3D:
 	var mesh: MeshInstance3D = MeshInstance3D.new()
-	var box: BoxMesh = BoxMesh.new()
-	box.size = size
-	mesh.mesh = box
+	var chamfer: float = bevel_for(size) if bevel < 0.0 else bevel
+	if chamfer > 0.0:
+		mesh.mesh = bevel_mesh(size, chamfer)
+	else:
+		var box: BoxMesh = BoxMesh.new()
+		box.size = size
+		mesh.mesh = box
 	mesh.position = at
 	mesh.material_override = material
 	group.add_child(mesh)
@@ -767,11 +817,307 @@ func _glyph_panel(base: Vector3, colour: Color, yaw: float = 0.0) -> MeshInstanc
 	return panel
 
 
+# ================================================== M8 THE BEVEL (chamfers) ==
+#
+# *"further pivot into the cassette futurism, no harsh angles and nicely beveled
+# corners for a more expensive feel."*
+#
+# The kit's .glb wall modules have been chamfered since M3.7 — that is where the
+# "6 mm chamfers" in the SSAO note come from. Everything the kit builds in CODE
+# was not: every rib, girder, housing, plinth, rack, gate bar, deck fascia and
+# console in the game was a `BoxMesh`, which is to say a shape with eight
+# mathematically infinite corners on it. Put one of those next to a chamfered
+# wall panel and it reads as an untextured primitive somebody forgot to finish —
+# the exact note `_data_block` already carries about ITS old self, generalised.
+#
+# ## Why a chamfer is the whole "expensive" tell, mechanically
+#
+# A razor edge has one normal on each side of it and NOTHING in between, so the
+# transition from lit face to dark face happens across zero pixels. It is a
+# drawn line. A chamfer inserts a third surface at 45 degrees whose normal points
+# somewhere neither face points, and that surface catches a specular streak from
+# any light raking past — which is why this pass and the soft-light pass are one
+# milestone and not two. `LightRig.accent` is the grazing layer and its specular
+# went up in the same commit; the chamfer is what it now has to graze.
+#
+# It also lands FREE ON THE SHADER. `nv_surface` already has an edge treatment
+# (`edge_polish` / `edge_lift` / `edge_metal`) driven by a chamfer mask in vertex
+# colour R, authored by the Blender kit and — until now — never written by
+# anything this file built. A `BoxMesh` carries no vertex colours at all, so
+# every code-built box in the game has been running COLOR = white, i.e. claiming
+# to be 100% polished edge over its entire surface. Baking the real mask both
+# fixes that and turns the chamfer into the polished, slightly-metallic,
+# slightly-lifted band the shader was always written to expect.
+#
+# ## The size rule
+#
+# Chamfers are 1-3 cm and scaled to the object: `BEVEL_RATIO` of the smallest
+# dimension, clamped. Anything whose smallest dimension is under `BEVEL_MIN_DIM`
+# is left as a box — a 35 mm hairline trace has no room for a chamfer that would
+# read, and paying 3.7x the triangles for one is how a bevel pass becomes a
+# performance incident.
+#
+# ## What stays crisp, on purpose
+#
+# MOTHER'S ARCHITECTURE. Walls and slabs pass `bevel = 0.0` explicitly. Her
+# brutalism is HERS and it is supposed to be severe — the whole point of the
+# cassette-futurism pivot is that the human-legible hardware (machinery,
+# housings, trim, decks, consoles) reads chunky and rounded AGAINST her flat
+# monoliths. If everything is chamfered, nothing is.
+
+## Below this smallest-dimension the box stays a box.
+const BEVEL_MIN_DIM: float = 0.06
+## Chamfer as a fraction of the smallest dimension, and its hard limits.
+const BEVEL_RATIO: float = 0.20
+const BEVEL_MIN: float = 0.008
+const BEVEL_MAX: float = 0.030
+## Auto sentinel for the `bevel` arguments below. Negative means "work it out".
+const BEVEL_AUTO: float = -1.0
+
+## `nv_surface`'s chamfer mask (vertex colour R) on the FLAT faces, against 1.0 on
+## the chamfers themselves.
+##
+## Zero is the physically honest answer and it was the first thing tried and it
+## was wrong on the photograph. Here is what the A/B showed, because the number is
+## only defensible with the mechanism written next to it:
+##
+## A `BoxMesh` carries no vertex colours, so COLOR comes through as white and
+## every code-built box in this game has been claiming wear = 1 over its entire
+## surface — running the full `edge_polish` (roughness -0.34), `edge_lift`
+## (albedo +0.03) and `edge_metal` (metallic +0.30) on flat panel faces that
+## should never have had any of it. Dropping the faces straight to 0 therefore
+## does TWO things at once: it creates the polished chamfer (good, and the entire
+## point) and it simultaneously strips a lift the whole art direction had been
+## quietly resting on for two milestones (not good). The vault racks came back
+## visibly matter and darker, which is the wrong direction on a milestone whose
+## headline note is *"make stuff more legible"*.
+##
+## So the faces keep a fraction of it. The chamfer is still four times as polished
+## as the face beside it — which is all the glint needs, because a specular streak
+## is read as a CONTRAST against its surroundings and not as an absolute value —
+## and the props do not lose the brightness they were shipped with.
+##
+## 0.55 comes out of a three-way capture — square / 0.35 / 0.55 on the vault racks
+## — and the honest version of that result is that IT BARELY MATTERS, which is
+## worth writing down because it is not what the eye reported.
+##
+## By eye 0.55 looked the brighter of the two. Measured over the same crop it is
+## marginally DARKER: mean 0.1355 against 0.1406 at 0.35, with square at 0.1816.
+## The reason is that `wear` drives `edge_polish`, and polish LOWERS roughness — a
+## smoother dark surface returns less diffuse and concentrates its specular into a
+## narrow lobe that mostly misses the lens. So more "polish" reads brighter at the
+## glint and measures darker across the face, and an eye comparing two frames
+## reports the glint.
+##
+## Both values are within 4% of each other and both sit ~25% under square. That
+## 25% is not a regression to tune away — it is the vertex-colour bug being fixed,
+## and it lands the code-built props on the same footing as the kit's own .glb
+## walls, which have always had a real mask. If a stronger glint is wanted, the
+## dial is DOWNWARD from here (a lower face value is more contrast against the
+## chamfer's 1.0), not upward.
+const BEVEL_FACE_WEAR: float = 0.55
+
+## Entries the shared mesh cache may hold before it is dropped. Comfortably above
+## one layer's working set — the densest layer measured builds ~90 distinct
+## chamfered sizes — and far below where 48 back-to-back layers took it.
+const BEVEL_CACHE_MAX: int = 600
+
+## Chamfered meshes, shared across every builder and every layer in the process.
+## Two hundred railing posts on a layer are one mesh; a rib column that appears in
+## every room is one mesh. Keyed on the exact size, so nothing is quantised and
+## nothing is the wrong length.
+static var _bevel_meshes: Dictionary = {}
+
+## `-- --nobevel`: build the whole layer square again.
+##
+## A CAPTURE FLAG, and it exists for one reason — the A/B this pass has to be able
+## to prove. "Bevels are cheap" and "bevels are everywhere" are both true, and the
+## only honest way to know which one wins is the SAME BUILD with ONE VARIABLE
+## MOVED: same seed, same layer, same fixtures, same everything, chamfers off.
+## Resolved once per process and cached, because `bevel_for` is called a few
+## thousand times per layer and scanning the argv each time would be measuring the
+## instrument. Same reasoning and the same place in the codebase as Photonics'
+## `--photonics` flag: a capture-only concern parked next to the state it forces,
+## rather than widening a shared file.
+static var _bevel_off: int = -1
+
+
+## The chamfer a box of this size earns, or 0.0 for "leave it square".
+static func bevel_for(size: Vector3) -> float:
+	if _bevel_off < 0:
+		_bevel_off = 1 if OS.get_cmdline_user_args().has("--nobevel") else 0
+		if _bevel_off == 1:
+			print("[GeometryKit] --nobevel: chamfers OFF (capture flag)")
+	if _bevel_off == 1:
+		return 0.0
+	var smallest: float = minf(minf(absf(size.x), absf(size.y)), absf(size.z))
+	if smallest < BEVEL_MIN_DIM:
+		return 0.0
+	return clampf(smallest * BEVEL_RATIO, BEVEL_MIN, BEVEL_MAX)
+
+
+## One triangle, wound so its face normal agrees with `n`.
+##
+## The winding is CHECKED rather than reasoned about. This function is called
+# with three points assembled from sign-permuted axis indices, and getting the
+## order right by hand for all 44 faces of a chamfered box — six faces, twelve
+## edge quads and eight corner triangles, each in eight sign combinations — is a
+## bug waiting to happen that produces a mesh with a scatter of inside-out
+## triangles nobody notices until a beam rakes across it. The cross product costs
+## nothing at build time and cannot be got wrong.
+static func _bevel_tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3,
+		n: Vector3, wear: float) -> void:
+	var second: Vector3 = b
+	var third: Vector3 = c
+	if (b - a).cross(c - a).dot(n) < 0.0:
+		second = c
+		third = b
+	# UV in METRES, projected off whichever axis the normal points along most.
+	# Deliberately not BoxMesh's normalised 3x2 atlas: that atlas does not depend
+	# on `size`, so `nv_surface`'s centimetre-scale detail layer tiles once across
+	# a 12 m girder and once across a 90 mm post, and the two end up with texel
+	# densities two orders of magnitude apart. Per-metre UVs are what makes the
+	# intricacy law's "surfaces hold up at 30 cm" true of a code-built box.
+	var axis: int = 0
+	var an: Vector3 = n.abs()
+	if an.y >= an.x and an.y >= an.z:
+		axis = 1
+	elif an.z >= an.x and an.z >= an.y:
+		axis = 2
+	for point: Vector3 in [a, second, third]:
+		var uv: Vector2 = Vector2(point.y, point.z) if axis == 0 \
+				else (Vector2(point.x, point.z) if axis == 1 else Vector2(point.x, point.y))
+		st.set_normal(n)
+		st.set_uv(uv)
+		# COLOR.r is `nv_surface`'s chamfer mask; COLOR.g is its grime height mask
+		# and is pinned to 1 (= no grime), which is what a `BoxMesh` has always
+		# implicitly claimed. Turning grime on for code-built props is a separate
+		# decision with its own look to judge, and this pass is not smuggling it in.
+		st.set_color(Color(wear, 1.0, 1.0, 1.0))
+		st.add_vertex(point)
+
+
+static func _bevel_quad(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3,
+		d: Vector3, n: Vector3, wear: float) -> void:
+	_bevel_tri(st, a, b, c, n, wear)
+	_bevel_tri(st, a, c, d, n, wear)
+
+
+## A box with its twelve edges and eight corners chamfered off.
+##
+## 44 triangles against `BoxMesh`'s 12. That ratio is the entire budget question
+## for this pass and it is why `bevel_for` refuses to run on hairlines: the cost
+## is per-BOX, and the kit emits far more 35 mm trim strips than it does 2 m
+## housings.
+static func bevel_mesh(size: Vector3, chamfer: float) -> ArrayMesh:
+	var key: String = "%.4f|%.4f|%.4f|%.4f" % [size.x, size.y, size.z, chamfer]
+	var cached: Variant = _bevel_meshes.get(key)
+	if cached != null:
+		return cached as ArrayMesh
+	# THE CACHE IS BOUNDED, and the bound is not theoretical caution.
+	#
+	# `--deckwalk` builds 48 layers back to back and the counter printed by
+	# `_flush_bevel_detail` walked to 2119 entries doing it — because a railing's
+	# key includes its exact length and no two decks are the same width. A
+	# roguelite descent is exactly that access pattern: layers are built, played
+	# and thrown away, and their rail lengths never come back. Left unbounded this
+	# is a static dictionary that only ever grows for as long as the process lives.
+	#
+	# Dropping the whole table rather than evicting one entry, because the working
+	# set is per-LAYER: everything still standing was cached while the current layer
+	# was built, the next layer will re-derive what it needs in about a millisecond,
+	# and an LRU over a few thousand string keys costs more to maintain than the
+	# thing it is protecting. The meshes already handed out stay alive — they are
+	# referenced by the MeshInstances holding them — so nothing on screen blinks.
+	if _bevel_meshes.size() >= BEVEL_CACHE_MAX:
+		_bevel_meshes.clear()
+
+	var h: Vector3 = size.abs() * 0.5
+	# Never eat more than 45% of the smallest half-extent, or the "box" collapses
+	# into an octahedron and the faces it was built for disappear.
+	var c: float = minf(chamfer, minf(minf(h.x, h.y), h.z) * 0.9)
+	var inner: Vector3 = h - Vector3(c, c, c)
+
+	var st: SurfaceTool = SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+
+	var signs: Array[float] = [-1.0, 1.0]
+	# --- the six faces, inset by the chamfer on both of their in-plane axes ---
+	for axis: int in 3:
+		var u: int = (axis + 1) % 3
+		var v: int = (axis + 2) % 3
+		for s: float in signs:
+			var n: Vector3 = Vector3.ZERO
+			n[axis] = s
+			var corners: Array[Vector3] = []
+			for du: float in signs:
+				for dv: float in [du, -du]:
+					var p: Vector3 = Vector3.ZERO
+					p[axis] = s * h[axis]
+					p[u] = du * inner[u]
+					p[v] = dv * inner[v]
+					corners.append(p)
+			# `corners` comes out in ring order — (-,-), (-,+), (+,+), (+,-) — which
+			# `_bevel_quad` needs; a bounding-box order would fold the quad in half.
+			_bevel_quad(st, corners[0], corners[1], corners[2], corners[3], n,
+					BEVEL_FACE_WEAR)
+
+	# --- the twelve edge chamfers ------------------------------------------
+	for a: int in 3:
+		for b: int in range(a + 1, 3):
+			var e: int = 3 - a - b
+			for sa: float in signs:
+				for sb: float in signs:
+					var n: Vector3 = Vector3.ZERO
+					n[a] = sa
+					n[b] = sb
+					n = n.normalized()
+					var p1: Vector3 = Vector3.ZERO
+					p1[a] = sa * h[a]
+					p1[b] = sb * inner[b]
+					p1[e] = -inner[e]
+					var p2: Vector3 = p1
+					p2[e] = inner[e]
+					var p3: Vector3 = Vector3.ZERO
+					p3[a] = sa * inner[a]
+					p3[b] = sb * h[b]
+					p3[e] = -inner[e]
+					var p4: Vector3 = p3
+					p4[e] = inner[e]
+					_bevel_quad(st, p1, p2, p4, p3, n, 1.0)
+
+	# --- the eight corner triangles -----------------------------------------
+	for sx: float in signs:
+		for sy: float in signs:
+			for sz: float in signs:
+				var n: Vector3 = Vector3(sx, sy, sz).normalized()
+				_bevel_tri(st,
+						Vector3(sx * h.x, sy * inner.y, sz * inner.z),
+						Vector3(sx * inner.x, sy * h.y, sz * inner.z),
+						Vector3(sx * inner.x, sy * inner.y, sz * h.z), n, 1.0)
+
+	# Tangents, because `nv_surface` samples a normal map and a surface with no
+	# tangent frame gets its detail normal applied in an arbitrary basis — which
+	# looks like the grain rotating as you walk round the prop.
+	st.generate_tangents()
+	var mesh: ArrayMesh = st.commit()
+	_bevel_meshes[key] = mesh
+	return mesh
+
+
 ## Mesh + matching box collider.
-func _box(center: Vector3, size: Vector3, material: Material) -> MeshInstance3D:
-	var mesh: MeshInstance3D = _mesh_box(center, size, material)
+##
+## `bevel` is BEVEL_AUTO by default; the wall and slab builders pass 0.0. See the
+## bevel section header for why MOTHER's architecture stays square.
+func _box(center: Vector3, size: Vector3, material: Material,
+		bevel: float = BEVEL_AUTO) -> MeshInstance3D:
+	var mesh: MeshInstance3D = _mesh_box(center, size, material, bevel)
 	var shape: CollisionShape3D = CollisionShape3D.new()
 	var box: BoxShape3D = BoxShape3D.new()
+	# The COLLIDER is always the full square box, never the chamfered hull. A
+	# bevel you can catch a foot on is worse than a flat wall (INTEGRATION.md §2
+	# says the same thing about the kit's own modules) and a 3 cm difference is
+	# below anything the character controller can feel.
 	box.size = size
 	shape.shape = box
 	shape.position = center
@@ -780,11 +1126,16 @@ func _box(center: Vector3, size: Vector3, material: Material) -> MeshInstance3D:
 
 
 ## Mesh only — trim, traces and decoration the player never bumps into.
-func _mesh_box(center: Vector3, size: Vector3, material: Material) -> MeshInstance3D:
+func _mesh_box(center: Vector3, size: Vector3, material: Material,
+		bevel: float = BEVEL_AUTO) -> MeshInstance3D:
 	var mesh: MeshInstance3D = MeshInstance3D.new()
-	var box: BoxMesh = BoxMesh.new()
-	box.size = size
-	mesh.mesh = box
+	var chamfer: float = bevel_for(size) if bevel < 0.0 else bevel
+	if chamfer > 0.0:
+		mesh.mesh = bevel_mesh(size, chamfer)
+	else:
+		var box: BoxMesh = BoxMesh.new()
+		box.size = size
+		mesh.mesh = box
 	mesh.position = center
 	mesh.material_override = material
 	_geometry.add_child(mesh)
@@ -1008,7 +1359,12 @@ func _trace_glow(center: Vector3, yaw: float, failing: bool = false) -> void:
 	light.light_color = LightRig.TEAL
 	light.light_energy = 1.5 * light_scale
 	light.omni_range = 6.4
-	light.omni_attenuation = 1.1
+	# M8 SOFT LIGHT: 1.1 -> the rig's soft decay. A trace channel's wash is
+	# supposed to bleed across the panel it is cut into; at 1.1 it died inside a
+	# metre and left the emissive line floating on black again, which is the exact
+	# failure this fixture was added to fix.
+	light.omni_attenuation = TRACE_SOFT_DECAY if LightRig.soft() else 1.1
+	light.light_size = TRACE_SIZE if LightRig.soft() else 0.0
 	light.light_specular = 0.04
 	light.shadow_enabled = false
 	light.light_volumetric_fog_energy = 0.35
@@ -1489,11 +1845,204 @@ static func _cell_cut(x: float, z: float, cuts: Array) -> bool:
 ## the thing that actually casts a readable shadow, and the surface the coming
 ## gobo pass will stripe light across — keeps its shadow. Same call the clutter
 ## and trim passes already make, for the same reason.
-func _detail_box(center: Vector3, size: Vector3, material: Material) -> MeshInstance3D:
-	var mesh: MeshInstance3D = _mesh_box(center, size, material)
-	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	mesh.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
-	return mesh
+##
+## M6.7 PERF: killing the shadows was half the bill. The other half was that each
+## of those boxes was still a node with a draw call behind it — two hundred of
+## them on a dense layer, all sharing four materials — and the M6.6 merge left
+## that as an honest deferral. They now go into MultiMeshes exactly like the
+## baseboards (`ProcLayerBuilder._flush_trim`) and the clutter, batched per
+## (tag, material) and flushed once when the layer is built.
+##
+## The mesh in the MultiMesh is a UNIT box and the box's real dimensions live in
+## the instance transform's scale, which is what makes one batch able to hold a
+## 4 m rail and a 90 mm post. That is pixel-identical here rather than merely
+## close, and the reason is worth writing down, because it is a property of THIS
+## shader and not a general fact about scaled boxes:
+##
+##   * `BoxMesh` UVs are a normalised 3x2 atlas — they do not depend on `size` —
+##     so the `detail_noise` and `detail_normal` fetches (which are UV-space) land
+##     on exactly the same texels.
+##   * the macro roughness/albedo break-up is sampled in WORLD space off
+##     `MODEL_MATRIX * VERTEX`, and a MultiMesh instance transform goes into
+##     MODEL_MATRIX, so it is unchanged by construction.
+##   * `nv_surface` transforms normals with `mat3(MODEL_MATRIX) * NORMAL`, which
+##     is wrong under non-uniform scale in general — but a box's normals are the
+##     basis axes, and an axis-aligned scale of an axis-aligned normal survives
+##     the `normalize()` exactly. Same for the ramps: rotation, then scale.
+##
+## `basis` orients the box (ramp plates, treads' stringers and grip strips are the
+## only things that use it); `tag` names the batch and is the SAME name the loose
+## node used to carry, so `--auditvert` keeps finding the elements it always did.
+var _detail_batches: Dictionary = {}
+
+func _detail_box(center: Vector3, size: Vector3, material: Material,
+		tag: String, basis: Basis = Basis.IDENTITY) -> void:
+	# Keyed on tag AND material because one tag can wear two: a joist is
+	# MAT_CONDUIT and the rim beam tying the joists together is MAT_TRIM, and both
+	# have always been called `Vert_joist` by the audit. `_flush_detail` numbers the
+	# second one `Vert_joist2` so the audit's stem rule still reads them as one
+	# class — see the note there about why Godot's own de-duplication is not
+	# good enough here.
+	var key: String = "%s|%s" % [tag, material.resource_path]
+	if not _detail_batches.has(key):
+		var made: Dictionary = {"tag": tag, "material": material}
+		made["xforms"] = [] as Array[Transform3D]
+		_detail_batches[key] = made
+	var batch: Dictionary = _detail_batches[key]
+	# `basis * from_scale(size)`, never `basis.scaled(size)`: the latter scales the
+	# basis ROWS, which is a scale in PARENT space, and on a ramp plate that shears
+	# the box instead of making it long.
+	(batch["xforms"] as Array[Transform3D]).append(
+			Transform3D(basis * Basis.from_scale(size), center))
+
+
+## Flush the collected detail boxes into one MultiMeshInstance3D per batch.
+## Returns the draw calls added — one per batch, since the unit box is a single
+## surface and the material rides as an override.
+##
+## Called from `build()` so every subclass gets it; `ProcLayerBuilder` calls it a
+## line earlier to fold the number into its census, and the second call is a
+## no-op because this clears the table.
+func _flush_detail() -> int:
+	if _detail_batches.is_empty():
+		return 0
+	# One unit box shared by every batch. Deliberately built here rather than as a
+	# preloaded resource: a `const` may only hold a constant expression, and a
+	# `BoxMesh.new()` at class scope is a constructor call.
+	var unit: BoxMesh = BoxMesh.new()
+	unit.size = Vector3.ONE
+	var draws: int = 0
+	# How many batches have already claimed each tag. Naming the collisions
+	# OURSELVES rather than letting `add_child` do it, because Godot's fallback for
+	# a taken name drops the name entirely and hands the node its class name back:
+	# the MAT_TRIM half of `Vert_joist` came out as `MultiMeshInstance3D` and
+	# vanished from `--auditvert`'s element set (145 -> 129 on seed 4242 layer 7),
+	# which is a silent hole in an instrument rather than a cosmetic one. A trailing
+	# DIGIT is the right suffix and not a coincidence: the audit's stem rule is
+	# `rstrip("0123456789")`, so `Vert_joist2` is still a `Vert_joist`.
+	var claimed: Dictionary = {}
+	# Dictionary iteration is insertion order, so the scene comes out in build
+	# order on every peer — the determinism law applies to the node tree too.
+	for key: String in _detail_batches:
+		var batch: Dictionary = _detail_batches[key]
+		var xforms: Array[Transform3D] = batch["xforms"]
+		if xforms.is_empty():
+			continue
+		var mm: MultiMesh = MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = unit
+		mm.instance_count = xforms.size()
+		for i: int in xforms.size():
+			mm.set_instance_transform(i, xforms[i])
+		var tag: String = String(batch["tag"])
+		var taken: int = int(claimed.get(tag, 0))
+		claimed[tag] = taken + 1
+		var inst: MultiMeshInstance3D = MultiMeshInstance3D.new()
+		inst.name = tag if taken == 0 else "%s%d" % [tag, taken + 1]
+		inst.multimesh = mm
+		inst.material_override = batch["material"] as Material
+		inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		inst.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+		_geometry.add_child(inst)
+		draws += 1
+	_detail_batches.clear()
+	return draws
+
+
+# ------------------------------------------- M8: batched detail, chamfered --
+#
+# `_detail_box` above cannot be chamfered and it is worth being precise about
+# why, because the reason is structural rather than a matter of effort: its whole
+# performance win comes from ONE unit box shared by every batch with the real
+# dimensions living in the instance scale. Scale a chamfered unit box by
+# (12, 0.07, 0.09) and the chamfer scales with it — a 24 cm bevel on the ends of
+# a 12 m handrail and a 1.7 mm one along its length. There is no per-instance
+# chamfer.
+#
+# So a beveled detail box needs its own mesh per SIZE, which means its own batch
+# per size. That is a real cost — one draw call per distinct size instead of one
+# per tag — and it is paid deliberately and only where the geometry is something
+# the player's hand is on:
+#
+#     THE RAILINGS AND THE TOE PLATES.
+#
+# A handrail is the single piece of hardware in a NULLVOID room that the player
+# is closest to for the longest time, it is the most obviously *cassette* object
+# in the kit (a chunky radiused bar between chunky radiused posts), and it is the
+# one place a square-section extrusion reads as unfinished from a metre away.
+# Everything else that goes through `_detail_box` — joists four metres overhead,
+# stair risers, ramp grip strips, deck stringers — is seen from far enough away
+# that a 2 cm chamfer is under a pixel, and those stay square and stay in the
+# cheap batch. Posts are one size for the whole game and therefore one batch and
+# effectively free; the rails and kicks are the ones that cost.
+#
+# Kept in a table of its own rather than by widening `_detail_box`'s signature,
+# because that function is under concurrent edit by the batching pass and a
+# second author changing its arity is how a merge eats a milestone.
+var _bevel_batches: Dictionary = {}
+
+
+## Same contract as `_detail_box`, but the instances carry no scale and the mesh
+## is a real chamfered box at the real size.
+func _detail_bevel(center: Vector3, size: Vector3, material: Material,
+		tag: String, basis: Basis = Basis.IDENTITY) -> void:
+	var chamfer: float = bevel_for(size)
+	if chamfer <= 0.0:
+		_detail_box(center, size, material, tag, basis)
+		return
+	var key: String = "%s|%s|%.4f|%.4f|%.4f" % [tag, material.resource_path,
+			size.x, size.y, size.z]
+	if not _bevel_batches.has(key):
+		var made: Dictionary = {"tag": tag, "material": material,
+				"mesh": bevel_mesh(size, chamfer)}
+		made["xforms"] = [] as Array[Transform3D]
+		_bevel_batches[key] = made
+	var batch: Dictionary = _bevel_batches[key]
+	(batch["xforms"] as Array[Transform3D]).append(Transform3D(basis, center))
+
+
+## Flush the chamfered detail batches. Called from `build()` beside
+## `_flush_detail`. Returns the draw calls added, for the census.
+func _flush_bevel_detail() -> int:
+	if _bevel_batches.is_empty():
+		return 0
+	var draws: int = 0
+	var claimed: Dictionary = {}
+	# Insertion order, like `_flush_detail` — the determinism law applies to the
+	# node tree, and a peer whose railings come out in a different order has a
+	# different scene even though it has the same building.
+	for key: String in _bevel_batches:
+		var batch: Dictionary = _bevel_batches[key]
+		var xforms: Array[Transform3D] = batch["xforms"]
+		if xforms.is_empty():
+			continue
+		var mm: MultiMesh = MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = batch["mesh"] as Mesh
+		mm.instance_count = xforms.size()
+		for i: int in xforms.size():
+			mm.set_instance_transform(i, xforms[i])
+		var tag: String = String(batch["tag"])
+		var taken: int = int(claimed.get(tag, 0))
+		claimed[tag] = taken + 1
+		var inst: MultiMeshInstance3D = MultiMeshInstance3D.new()
+		# Same trailing-digit naming as `_flush_detail`, for the same reason: the
+		# `--auditvert` stem rule is `rstrip("0123456789")`, so `Vert_rail7` is
+		# still a `Vert_rail` and the audit's element count does not move.
+		inst.name = tag if taken == 0 else "%s%d" % [tag, taken + 1]
+		inst.multimesh = mm
+		inst.material_override = batch["material"] as Material
+		inst.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		inst.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+		_geometry.add_child(inst)
+		draws += 1
+	_bevel_batches.clear()
+	# One line, because "one draw call per distinct size" is a claim and a claim
+	# about cost belongs in a log rather than in a comment. The census in
+	# ProcLayerBuilder runs a line earlier than this and is not ours to widen.
+	print("[GeometryKit] bevel batches=%d meshes_cached=%d" % [
+		draws, _bevel_meshes.size()])
+	return draws
 
 
 ## A box collider with an arbitrary orientation — the one shape `_collider_box`
@@ -1575,8 +2124,8 @@ func deck_platform(rect: Rect2, y: float, grated: bool, open: Array,
 		while t < march - 0.01:
 			var at: Vector3 = Vector3(mid.x, joist_y, rect.position.y + t) if short_x \
 					else Vector3(rect.position.x + t, joist_y, mid.y)
-			_named(_detail_box(at, Vector3(span, 0.24, 0.18) if short_x
-					else Vector3(0.18, 0.24, span), MAT_CONDUIT), "Vert_joist")
+			_detail_box(at, Vector3(span, 0.24, 0.18) if short_x
+					else Vector3(0.18, 0.24, span), MAT_CONDUIT, "Vert_joist")
 			t += 2.0
 		# And a beam round the rim tying them together.
 		for edge_side: int in 4:
@@ -1587,9 +2136,9 @@ func deck_platform(rect: Rect2, y: float, grated: bool, open: Array,
 			if length < 0.1:
 				continue
 			var rim_mid: Vector2 = (a + b) * 0.5
-			_named(_detail_box(Vector3(rim_mid.x, joist_y, rim_mid.y),
+			_detail_box(Vector3(rim_mid.x, joist_y, rim_mid.y),
 					Vector3(length, 0.26, 0.24) if edge_side % 2 == 0
-					else Vector3(0.24, 0.26, length), MAT_TRIM), "Vert_joist")
+					else Vector3(0.24, 0.26, length), MAT_TRIM, "Vert_joist")
 
 	for side: int in open:
 		var edge: Dictionary = _edge_of(rect, int(side))
@@ -1604,7 +2153,7 @@ func deck_platform(rect: Rect2, y: float, grated: bool, open: Array,
 		var centre: Vector3 = (from + to) * 0.5
 		var thick: Vector3 = Vector3(0.22, 0.44, length) if int(side) % 2 == 1 \
 				else Vector3(length, 0.44, 0.22)
-		_named(_detail_box(centre + Vector3(0.0, -0.08, 0.0), thick, MAT_CONDUIT), "Vert_fascia")
+		_detail_box(centre + Vector3(0.0, -0.08, 0.0), thick, MAT_CONDUIT, "Vert_fascia")
 		if columns and y >= RAIL_MIN_HEIGHT:
 			_deck_columns(from, to, y)
 		if y >= RAIL_MIN_HEIGHT:
@@ -1646,8 +2195,13 @@ func _deck_columns(from: Vector3, to: Vector3, y: float) -> void:
 		# The kit's rib column is one storey; anything taller gets a plain post
 		# under the rest of the drop rather than a stack of stubs.
 		if y > STOREY + 0.1:
+			# Batch tags on the pieces that were never `_named` deliberately do NOT
+			# begin with `Vert_`: the audit's element set is defined by that prefix,
+			# and quietly enrolling four more classes into it would change what
+			# `--auditvert` reports at the same time as this pass changes how the
+			# same geometry is drawn. One change at a time.
 			_detail_box(Vector3(at.x, (STOREY + y) * 0.5, at.z),
-					Vector3(0.3, y - STOREY, 0.3), MAT_CONDUIT)
+					Vector3(0.3, y - STOREY, 0.3), MAT_CONDUIT, "Deck_post")
 		t += CELL * 2.0
 
 
@@ -1694,20 +2248,23 @@ func _railing(from: Vector3, to: Vector3, gaps: Array) -> void:
 		var centre: Vector3 = from + step * ((run.x + run.y) * 0.5) + base
 		var size: Vector3 = Vector3(absf(step.x) * run_length + 0.08, 0.07,
 				absf(step.z) * run_length + 0.08)
+		# M8: chamfered. See `_detail_bevel` — the handrail is the one piece of the
+		# kit the player's hand is on, so it is the one that earns a mesh per size.
 		for height: float in [RAIL_HEIGHT, RAIL_HEIGHT * 0.5]:
-			_named(_detail_box(centre + Vector3(0.0, height, 0.0), size, MAT_CONDUIT),
-					"Vert_rail")
+			_detail_bevel(centre + Vector3(0.0, height, 0.0), size, MAT_CONDUIT, "Vert_rail")
 		var posts: int = maxi(int(run_length / 2.0), 1)
 		for i: int in posts + 1:
 			var at: Vector3 = from + step * lerpf(run.x, run.y, float(i) / float(posts)) + base
-			_named(_detail_box(at + Vector3(0.0, RAIL_HEIGHT * 0.5, 0.0),
-					Vector3(0.09, RAIL_HEIGHT, 0.09), MAT_CONDUIT), "Vert_rail")
+			# One size for every post in the game, therefore one batch, therefore
+			# free.
+			_detail_bevel(at + Vector3(0.0, RAIL_HEIGHT * 0.5, 0.0),
+					Vector3(0.09, RAIL_HEIGHT, 0.09), MAT_CONDUIT, "Vert_rail")
 	# Toe plate along the whole edge, gaps included: it is what stops the deck
 	# reading as a floating rectangle when the rail is broken for a ledge.
 	var kick_centre: Vector3 = (from + to) * 0.5 + base
-	_detail_box(kick_centre + Vector3(0.0, 0.09, 0.0),
+	_detail_bevel(kick_centre + Vector3(0.0, 0.09, 0.0),
 			Vector3(absf(step.x) * length + 0.06, 0.18, absf(step.z) * length + 0.06),
-			MAT_TRIM)
+			MAT_TRIM, "Deck_kick")
 
 
 ## A walkable slope from `y0` to `y1` across `rect`, climbing along `axis` in the
@@ -1735,19 +2292,18 @@ func deck_ramp(rect: Rect2, axis: String, dir: int, y0: float, y1: float,
 			Vector3(length, DECK_THICKNESS, width), basis)
 
 	if not treads:
-		var plate: MeshInstance3D = _named(_detail_box(
-				centre - basis.y * (DECK_THICKNESS * 0.5),
-				Vector3(length, DECK_THICKNESS, width), MAT_FLOOR), "Vert_flight")
-		plate.basis = basis
+		# The oriented pieces pass their basis to the batch instead of setting it on
+		# a node afterwards. Same transform either way — see `_detail_box`.
+		_detail_box(centre - basis.y * (DECK_THICKNESS * 0.5),
+				Vector3(length, DECK_THICKNESS, width), MAT_FLOOR, "Vert_flight", basis)
 		# Grip strips across the ramp, so a slope reads as a slope from above
 		# rather than as a wedge of the same plate the floor is made of.
 		var strips: int = maxi(int(length / 1.2), 1)
 		for i: int in strips:
 			var t: float = (float(i) + 0.5) / float(strips)
 			var at: Vector3 = low.lerp(high, t)
-			var strip: MeshInstance3D = _detail_box(at + basis.y * 0.03,
-					Vector3(0.16, 0.05, width - 0.3), MAT_CONDUIT)
-			strip.basis = basis
+			_detail_box(at + basis.y * 0.03, Vector3(0.16, 0.05, width - 0.3),
+					MAT_CONDUIT, "Deck_grip", basis)
 	else:
 		var count: int = maxi(int(absf(y1 - y0) / TREAD_RISE), 1)
 		for i: int in count:
@@ -1755,24 +2311,22 @@ func deck_ramp(rect: Rect2, axis: String, dir: int, y0: float, y1: float,
 			var t1: float = float(i + 1) / float(count)
 			var tread_mid: Vector3 = low.lerp(high, (t0 + t1) * 0.5)
 			var depth: float = run / float(count)
-			_named(_detail_box(Vector3(tread_mid.x, tread_mid.y + 0.02, tread_mid.z),
+			_detail_box(Vector3(tread_mid.x, tread_mid.y + 0.02, tread_mid.z),
 					Vector3(depth if horizontal else width, 0.09,
-							width if horizontal else depth), MAT_FLOOR), "Vert_flight")
+							width if horizontal else depth), MAT_FLOOR, "Vert_flight")
 			# The riser, so the flight has a face and throws a shadow ladder when
 			# a beam rakes across it.
 			var riser_at: Vector3 = low.lerp(high, t1)
 			_detail_box(Vector3(riser_at.x, riser_at.y - TREAD_RISE * 0.5, riser_at.z)
 					- step * (depth * 0.5),
 					Vector3(0.07 if horizontal else width, absf(y1 - y0) / float(count),
-							width if horizontal else 0.07), MAT_TRIM)
+							width if horizontal else 0.07), MAT_TRIM, "Deck_riser")
 
 	# Stringers down both flanks: a ramp bolted to something, not a floating wedge.
 	var side: Vector3 = basis.z * (width * 0.5)
 	for sign_side: float in [1.0, -1.0]:
-		var stringer: MeshInstance3D = _detail_box(
-				centre + side * sign_side - basis.y * (DECK_THICKNESS * 0.5 + 0.12),
-				Vector3(length, 0.34, 0.16), MAT_CONDUIT)
-		stringer.basis = basis
+		_detail_box(centre + side * sign_side - basis.y * (DECK_THICKNESS * 0.5 + 0.12),
+				Vector3(length, 0.34, 0.16), MAT_CONDUIT, "Deck_stringer", basis)
 	# No skirt under the flight, deliberately. A box under a slope either pokes
 	# through the low end of it or leaves a gap at the high end, and closed risers
 	# plus stringers already stop you seeing through a stair — the space beneath is

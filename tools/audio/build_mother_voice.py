@@ -11,8 +11,15 @@
 # MOTHER currently exists as 183 text barks (assets/lore/corpus.json) rendered
 # to a caption line. This tool is the R&D bench for giving her an AUDIBLE
 # voice-presence without a text-to-speech engine and without a single byte of
-# third-party audio, per the no-third-party law. Nothing here is wired into the
-# game; these are candidates for review. See the report / integration notes.
+# third-party audio, per the no-third-party law.
+#
+# STATUS: WIRED. The output moved out of R&D quarantine (it was .gdignore'd) to
+# `assets/audio/mother/` and all 15 cues are live — AudioService's VOICE section
+# subscribes to `Haunt.mother_spoke` and maps the bark CATEGORY onto the three
+# intensity tiers by filename prefix (mv_amb_ / mv_addr_ / mv_sub_). The tier
+# tables there are the swap points: reorder them and she sounds different, with
+# no other change anywhere. Regenerating a cue in place is likewise transparent
+# to the game, so this tool stays the way her voice is authored.
 #
 # THE DESIGN PROBLEM
 # ------------------
@@ -100,7 +107,7 @@ import bs1770  # noqa: E402  (sibling module, same directory)
 RATE = 48000
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-OUT_DIR = os.path.join(REPO, "assets", "audio", "mother_voice_rnd")
+OUT_DIR = os.path.join(REPO, "assets", "audio", "mother")
 CORPUS = os.path.join(REPO, "assets", "lore", "corpus.json")
 
 N_FFT = 1024

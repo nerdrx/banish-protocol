@@ -1073,3 +1073,477 @@ const SHATTER_GLOW_DECAY: float = 3.6
 const SCORCH_POOL: int = 24
 const SCORCH_LIFETIME: float = 7.0
 const SCORCH_SIZE: float = 0.42
+
+# =============================================================================
+# M9 — PATCHES (run-scoped hot-patches)
+# =============================================================================
+#
+# NOTHING ABOVE THIS LINE WAS TOUCHED. Everything below is new and is priced
+# *against* the settled economy rather than by adjusting it.
+#
+# ## The fiction, and why it is run-scoped
+#
+# A module is compiled into your SOURCE and survives everything (DESIGN.md's
+# meta-progression: "deletion in-system only kills the running instance; your
+# source is safe outside"). A patch is the opposite of that and deliberately so:
+# it is a HOT-PATCH injected into the instance that is currently executing. It
+# lives in process memory, not in your source, so it dies with the instance —
+# gone on a wipe, and gone on exfil too, because the process you exfiltrate is
+# the process you stop running.
+#
+# That is what makes patches the roguelite half of a game whose meta-progression
+# is permanent. Modules are the build you keep; patches are the build this run
+# happened to hand you. Exfiltrating converts each carried patch into a small
+# data bonus (`PATCH_EXFIL_DATA`), so a stacked run that ends well still pays —
+# you sell the patch back rather than keeping it.
+#
+# ## The law these numbers are written under: THE ECONOMY STAYS THE BOSS
+#
+# DESIGN.md pillar 1 makes Cycles "the clock, the economy, and the argument the
+# crew has over voice chat", pillar 2 makes the dark the enemy, and pillar 3
+# makes greed the thing that kills you. A patch may bend any of those; none may
+# break one. Concretely, and every one of these is asserted by `--selftest`:
+#
+#   * **No free light.** Nothing here widens a beam, brightens a flare or lights
+#     a room. SLEEP STATE — the one patch that touches the drain hard — pays you
+#     for turning your beam OFF, which pushes *into* pillar 2 rather than out of
+#     it.
+#   * **No silent-everything.** ZERO PAGE lowers landing noise by one room-tier
+#     per stack and touches nothing else; the siphon, the breaker, the terminal,
+#     the pulse and the pickups themselves stay exactly as loud as they were.
+#     There is no patch anywhere in the catalogue that reduces any other noise.
+#   * **The drain cannot be trivialised.** Every Cycles refund is capped per
+#     layer (`PATCH_GC_LAYER_CAP_FRACTION`) and every drain reduction has a hard
+#     floor (`PATCH_SLEEP_FLOOR`, `PATCH_RACE_MAX`). A maxed patch build still
+#     runs out of clock.
+#   * **The killability law is untouched.** Nothing here makes a process immune
+#     to the breaker and nothing deletes one outside the breaker: TAIL CALL and
+#     BIT ROT are both the cutter's OWN damage, chained and delayed, routed
+#     through `Antivirus.take_damage` like every other cut.
+#   * **The solo invariant.** No patch is required for anything, none is a key,
+#     and the catalogue is never a gate. A run that finds nothing is a run.
+#
+# ## Stacking
+#
+# Risk-of-Rain shaped: finding the same patch again does not upgrade it, it
+# ADDS ONE. Stack count multiplies or extends the effect, and every effect has a
+# named ceiling so a lucky run is powerful rather than broken. `PATCH_MAX_STACKS`
+# is 6 for the same reason the HUD strip draws a single numeral: past six the
+# ceilings have all bound anyway, and a two-digit stack count is a spreadsheet.
+
+## Rarity tiers. STABLE is the bread and butter, UNSTABLE reshapes a fight,
+## KERNEL is build-defining and rare. Ints rather than an enum because they index
+## the weight arrays below and are written into the wire packet.
+const PATCH_TIER_STABLE: int = 0
+const PATCH_TIER_UNSTABLE: int = 1
+const PATCH_TIER_KERNEL: int = 2
+
+## Ceiling on how many of one patch a program may be carrying. See above.
+const PATCH_MAX_STACKS: int = 6
+
+## Order the HUD strip and the inspect list use: tier first, then the catalogue's
+## own order inside a tier, so a KERNEL patch is always at the end of the strip
+## and always in the same place.
+const PATCH_TRACKS: Array[String] = [
+	# --- STABLE ---
+	"hot_loop", "garbage_collect", "parity_bit", "priority_boost",
+	"zero_page", "instruction_fusion",
+	# --- UNSTABLE ---
+	"speculative_execution", "bit_rot", "overflow", "race_condition",
+	"nop_sled", "dead_code",
+	# --- KERNEL ---
+	"tail_call", "watchdog", "sleep_state",
+]
+
+## The catalogue. Shape deliberately mirrors `MODULES` / `SUBROUTINES` —
+## name/glyph/note — minus the per-tier effect arrays, because a patch has no
+## tiers: it has a STACK COUNT, and the numbers it multiplies are the constants
+## below. `tier` here is RARITY, not power level.
+##
+## Glyphs are kept inside the Geometric Shapes / Block Elements ranges for the
+## same reason the interact prompts are (`Interactable.prompt_glyph`): they have
+## to resolve on every font in the system fallback chain, and an icon that draws
+## as a box on somebody's machine is not an icon.
+const PATCHES: Dictionary = {
+	# --- STABLE ---------------------------------------------------------------
+	"hot_loop": {
+		"name": "HOT LOOP",
+		"glyph": "◐",
+		"tier": PATCH_TIER_STABLE,
+		"note": "CONSECUTIVE HITS ON ONE PROCESS RAMP",
+	},
+	"garbage_collect": {
+		"name": "GARBAGE COLLECT",
+		"glyph": "◌",
+		"tier": PATCH_TIER_STABLE,
+		"note": "DELETIONS REFUND CYCLES  ·  CAPPED PER LAYER",
+	},
+	"parity_bit": {
+		"name": "PARITY BIT",
+		"glyph": "◫",
+		"tier": PATCH_TIER_STABLE,
+		"note": "ERROR CORRECTION SHAVES EVERY HIT",
+	},
+	"priority_boost": {
+		"name": "PRIORITY BOOST",
+		"glyph": "▶",
+		"tier": PATCH_TIER_STABLE,
+		"note": "MOVE SPEED ↑  ·  DIMINISHING",
+	},
+	"zero_page": {
+		"name": "ZERO PAGE",
+		"glyph": "▽",
+		"tier": PATCH_TIER_STABLE,
+		"note": "LANDING NOISE ↓ ONE TIER PER STACK",
+	},
+	"instruction_fusion": {
+		"name": "INSTRUCTION FUSION",
+		"glyph": "◨",
+		"tier": PATCH_TIER_STABLE,
+		"note": "CUTTER HEAT PER SHOT ↓",
+	},
+	# --- UNSTABLE -------------------------------------------------------------
+	"speculative_execution": {
+		"name": "SPECULATIVE EXECUTION",
+		"glyph": "◗",
+		"tier": PATCH_TIER_UNSTABLE,
+		"note": "FIRST SHOT AFTER A PAUSE CRITS",
+	},
+	"bit_rot": {
+		"name": "BIT ROT",
+		"glyph": "▚",
+		"tier": PATCH_TIER_UNSTABLE,
+		"note": "CUTS LEAVE A DECAY THAT KEEPS EATING",
+	},
+	"overflow": {
+		"name": "OVERFLOW",
+		"glyph": "◍",
+		"tier": PATCH_TIER_UNSTABLE,
+		"note": "STACK PULSE RADIUS + HOLD ↑  ·  AS LOUD AS EVER",
+	},
+	"race_condition": {
+		"name": "RACE CONDITION",
+		"glyph": "◪",
+		"tier": PATCH_TIER_UNSTABLE,
+		"note": "FIRST SECONDS OF A SPRINT BILL AS A WALK",
+	},
+	"nop_sled": {
+		"name": "NOP SLED",
+		"glyph": "▱",
+		"tier": PATCH_TIER_UNSTABLE,
+		"note": "SURGE STEP INVULNERABILITY ↑",
+	},
+	"dead_code": {
+		"name": "DEAD CODE",
+		"glyph": "▧",
+		"tier": PATCH_TIER_UNSTABLE,
+		"note": "FORK DECOYS LIVE LONGER AND SOAK MORE",
+	},
+	# --- KERNEL ---------------------------------------------------------------
+	"tail_call": {
+		"name": "TAIL CALL",
+		"glyph": "▷",
+		"tier": PATCH_TIER_KERNEL,
+		"note": "THE CUT CHAINS TO A NEARBY PROCESS",
+	},
+	"watchdog": {
+		"name": "WATCHDOG",
+		"glyph": "◒",
+		"tier": PATCH_TIER_KERNEL,
+		"note": "ONE FREE SHELL PER LAYER AT CRITICAL INTEGRITY",
+	},
+	"sleep_state": {
+		"name": "SLEEP STATE",
+		"glyph": "◑",
+		"tier": PATCH_TIER_KERNEL,
+		"note": "PASSIVE DRAIN ↓ WHILE YOUR BEAM IS OFF",
+	},
+}
+
+# --- STABLE effects ----------------------------------------------------------
+
+## HOT LOOP. Consecutive cuts on the SAME process ramp. 7% a hit, three ramp
+## steps bought per stack, and a hard ceiling at +90% so a six-stack build is a
+## faster kill rather than a different game. The window is generous enough to
+## survive a Scrubber crossing the crosshair and short enough that the ramp is
+## about staying on one target rather than about firing at all.
+const PATCH_HOTLOOP_STEP: float = 0.07
+const PATCH_HOTLOOP_STEPS_PER_STACK: int = 3
+const PATCH_HOTLOOP_MAX: float = 0.90
+const PATCH_HOTLOOP_WINDOW: float = 1.6
+
+## GARBAGE COLLECT. A deleted process frees the memory it was holding, and you
+## take it. 1.6 Cycles a stack for a light process, triple for a heavy one.
+##
+## THE CAP IS THE WHOLE DESIGN. Uncapped, a six-stack GARBAGE COLLECT in a nest
+## turns the antivirus into a siphon tap and the pool stops being the clock. So
+## refunds are tallied per LAYER against a fraction of the crew's own pool
+## ceiling: at 25% a good layer is worth about half a siphon, which is a real
+## reward that never replaces going and finding the tap.
+const PATCH_GC_PER_STACK: float = 1.6
+const PATCH_GC_HEAVY_MULT: float = 3.0
+const PATCH_GC_LAYER_CAP_FRACTION: float = 0.25
+
+## PARITY BIT. A flat shave off every incoming hit, never a fraction of it — so
+## it is worth most against a Scrubber's 9 and least against a Sentinel's 26,
+## which is the right way round for a common patch. Bounded twice: a stack is
+## only 0.9 integrity, and no amount of stacking may eat more than 40% of a blow.
+const PATCH_PARITY_PER_STACK: float = 0.9
+const PATCH_PARITY_MAX_FRACTION: float = 0.40
+
+## PRIORITY BOOST. Deliberately the most diminishing thing in the catalogue:
+## `1 + CEILING * (1 - FALLOFF^stacks)`, so stack 1 is worth +5.4%, stack 6 is
+## worth +11.6%, and the asymptote is +12%.
+##
+## The ceiling is not an aesthetic choice. `WALK_SPEED * max(Servos.move) *
+## (1 + CEILING)` must stay under `SPRINT_BILLING_SPEED`, or a maxed-Servos
+## patched walk starts billing the pool at the sprint rate for walking — the
+## exact failure the M4.9 balance lab raised the threshold to fix. 4.2 * 1.22 *
+## 1.12 = 5.74 against a 6.0 threshold. `--selftest` asserts the margin.
+const PATCH_PRIORITY_CEILING: float = 0.12
+const PATCH_PRIORITY_FALLOFF: float = 0.55
+
+## ZERO PAGE. One room-tier of landing noise per stack, floored at "this room
+## only" — a drop is never silent, it just stops carrying next door. The synergy
+## with M6.6's verticality is the point: the shortcut down a shaft was priced in
+## noise, and this is the patch that makes taking it a habit.
+##
+## It does NOT touch the fall's DAMAGE, and it does not touch any other noise in
+## the game. There is exactly one caller.
+const PATCH_ZEROPAGE_PER_STACK: int = 1
+
+## INSTRUCTION FUSION. Macro-op fusion: two operations issued as one, so the
+## cutter does the same work for less heat. 11% a stack against a floor of 0.55 —
+## the tool always heats, and the lockout is always reachable by a held trigger.
+const PATCH_FUSION_PER_STACK: float = 0.11
+const PATCH_FUSION_FLOOR: float = 0.55
+
+# --- UNSTABLE effects --------------------------------------------------------
+
+## SPECULATIVE EXECUTION. The branch was predicted while you were not firing, so
+## the first shot after a pause lands with the work already done. +85% a stack
+## against a +200% ceiling (a 3x cut), and the idle window shortens with stacks
+## to a 2.0 s floor so a stacked build rewards a rhythm rather than a stopwatch.
+const PATCH_SPEC_IDLE: float = 3.0
+const PATCH_SPEC_IDLE_PER_STACK: float = 0.35
+const PATCH_SPEC_IDLE_FLOOR: float = 2.0
+const PATCH_SPEC_BONUS_PER_STACK: float = 0.85
+const PATCH_SPEC_MAX: float = 2.00
+
+## BIT ROT. A cut leaves corruption behind that keeps eating: 7% of the landed
+## hit a stack, spread over four seconds, capped at 30% of the hit.
+##
+## It is the BREAKER'S damage, delayed — dealt through `Antivirus.take_damage`
+## from the host, credited to the shooter, and it cannot start on a process the
+## breaker never touched. The killability law is a statement about what kills
+## things, and rot does not add a new killer; it stretches an existing one out.
+## A fresh cut REFRESHES the decay rather than adding a second one, so six
+## stacks is one heavier rot and never six overlapping timers.
+const PATCH_ROT_FRACTION_PER_STACK: float = 0.07
+const PATCH_ROT_MAX_FRACTION: float = 0.30
+const PATCH_ROT_SECONDS: float = 4.0
+## How often the host applies a tick of it. Slower than the AI tick on purpose:
+## rot is a slow leak, and a 15 Hz leak is a second weapon.
+const PATCH_ROT_TICK: float = 0.5
+
+## OVERFLOW. STACK PULSE reaches further and holds longer. Radius +14% a stack
+## to +45%; stagger +0.12 s a stack to +0.4 s.
+##
+## The NOISE is untouched, and that is the balance. The pulse's defining cost is
+## that it rings a two-room bell the Hound hears; a patch that made the panic
+## button quieter would delete the ability's whole price. A bigger pulse is a
+## bigger bell.
+const PATCH_OVERFLOW_RADIUS_PER_STACK: float = 0.14
+const PATCH_OVERFLOW_RADIUS_MAX: float = 0.45
+const PATCH_OVERFLOW_STAGGER_PER_STACK: float = 0.12
+const PATCH_OVERFLOW_STAGGER_MAX: float = 0.40
+
+## RACE CONDITION. The scheduler has not noticed you are sprinting yet. For the
+## first 1.5 s (+0.55 s a stack, ceiling 3.2 s) of a sprint the SPRINT SURCHARGE
+## is suspended — the passive drain still runs, because you still exist.
+##
+## Re-arms only after four seconds under the billing speed, so it is a burst
+## across a corridor, never a free sprint held by tapping the key.
+const PATCH_RACE_SECONDS: float = 1.5
+const PATCH_RACE_PER_STACK: float = 0.55
+const PATCH_RACE_MAX: float = 3.2
+const PATCH_RACE_REARM: float = 4.0
+
+## NOP SLED. More instructions to slide down: +0.055 s of SURGE STEP immunity a
+## stack, ceiling +0.18 s. Against `SCRUBBER_LUNGE_TIME` 0.45 even a maxed sled
+## (0.26 + 0.18 = 0.44) still does not cover a whole commit — it covers the
+## strike, which is what an i-frame is for.
+const PATCH_NOPSLED_PER_STACK: float = 0.055
+const PATCH_NOPSLED_MAX: float = 0.18
+
+## DEAD CODE. Nobody collected it, so it keeps running. Fork lifetime +30% a
+## stack to +90%, and one extra strike soaked per two stacks to a ceiling of +3.
+const PATCH_DEADCODE_LIFE_PER_STACK: float = 0.30
+const PATCH_DEADCODE_LIFE_MAX: float = 0.90
+const PATCH_DEADCODE_HITS_PER_TWO_STACKS: int = 1
+const PATCH_DEADCODE_HITS_MAX: int = 3
+
+# --- KERNEL effects ----------------------------------------------------------
+
+## TAIL CALL. The cut does not return — it jumps straight into the next frame.
+## A landed breaker hit chains to the nearest OTHER process within 6.5 m, at 45%
+## of the parent hit, decaying 0.72 per further link. One link, plus one a stack,
+## to a ceiling of four.
+##
+## Routed through `Antivirus.take_damage` from the host, credited to the shooter,
+## and a process already in the chain is never revisited. It is the breaker's own
+## damage arriving somewhere else, which is why the killability law does not
+## budge: the chain kills nothing the breaker could not have killed by aiming.
+const PATCH_TAILCALL_RANGE: float = 6.5
+const PATCH_TAILCALL_LINKS: int = 1
+const PATCH_TAILCALL_LINKS_PER_STACK: int = 1
+const PATCH_TAILCALL_LINKS_MAX: int = 4
+const PATCH_TAILCALL_FALLOFF: float = 0.45
+const PATCH_TAILCALL_DECAY: float = 0.72
+
+## WATCHDOG. The timer nobody kicked. Once a layer, a hit that would take you to
+## or under 28% integrity is absorbed WHOLE and a free CHECKSUM BARRIER goes up
+## around you — the same shell the subroutine casts, reused rather than reinvented,
+## so the crew standing with you are covered by it exactly as they would be.
+##
+## +1 charge a layer a stack to a ceiling of three, and the charges reset on
+## descent rather than accumulating: this is insurance against a layer, not a
+## stock of lives.
+const PATCH_WATCHDOG_TRIGGER_FRACTION: float = 0.28
+const PATCH_WATCHDOG_CHARGES_PER_STACK: int = 1
+const PATCH_WATCHDOG_CHARGES_MAX: int = 3
+const PATCH_WATCHDOG_SHELL_ABSORB: float = 45.0
+const PATCH_WATCHDOG_SHELL_SECONDS: float = 3.0
+const PATCH_WATCHDOG_SHELL_RADIUS: float = 3.4
+
+## SLEEP STATE. The build-defining one, and the only patch that touches the
+## passive drain — in the direction pillar 2 wants. While your beam is OFF your
+## share of the drain is scaled by (1 - 0.30 a stack) against a 0.40 floor: at
+## most a 60% saving, bought by playing in the dark you were already told was the
+## enemy. It gives you no light, it does not touch the sprint surcharge, and the
+## moment you switch your beam on you pay full rate again.
+const PATCH_SLEEP_PER_STACK: float = 0.30
+const PATCH_SLEEP_FLOOR: float = 0.40
+
+# --- acquisition -------------------------------------------------------------
+#
+# Three sources, and their rarity mixes are the whole progression curve of a run.
+# Every roll is HASH-DERIVED from (run seed, layer, source tag, index) and never
+# consumes the shared RNG stream — DESIGN.md's determinism law. That means every
+# peer computes the same answer for the same slate before anybody touches it, and
+# the host's grant is a validation rather than a broadcast of a secret.
+
+## Weights per rarity tier, indexed by PATCH_TIER_*.
+##
+## The POCKET SECRETARY is the bread and butter: a slate somebody left behind, so
+## it is mostly STABLE with a real chance of something better. A deleted process
+## drops even more conservatively — the reward for fighting is the data, and a
+## patch on top is a bonus. The ANOMALY CACHE is the only reliable route to a
+## KERNEL patch in the game, which is what makes walking to one worth the noise.
+const PATCH_WEIGHTS_SLATE: Array[int] = [66, 30, 4]
+const PATCH_WEIGHTS_DROP: Array[int] = [72, 26, 2]
+const PATCH_WEIGHTS_ANOMALY: Array[int] = [0, 30, 70]
+
+## How many pocket secretaries the generator leaves on a layer. Two on the
+## surface, four by the depth floor: the patch economy opens up exactly as the
+## threat curve stops being survivable bare.
+const PATCH_SLATES_MIN: int = 2
+const PATCH_SLATES_MAX: int = 4
+## Layers per extra slate above the minimum.
+const PATCH_SLATES_PER_LAYER: int = 6
+
+## Chance a deleted process leaves a slate behind, by weight class. A Scrubber is
+## disposable and almost never carries anything; a quarantine process and a
+## hunter are the two things in the game you commit to a fight for.
+const PATCH_DROP_CHANCE_LIGHT: float = 0.014
+const PATCH_DROP_CHANCE_HEAVY: float = 0.22
+const PATCH_DROP_CHANCE_HUNTER: float = 0.34
+
+## The anomaly cache appears every N layers, with N and the phase both derived
+## from the run seed — so "every two or three layers" is true of the run rather
+## than of the game, and two crews on two seeds do not learn one timetable.
+const PATCH_ANOMALY_PERIOD_MIN: int = 2
+const PATCH_ANOMALY_PERIOD_MAX: int = 3
+
+## Pickup. Walk over it, hold the channel, absorb the hot-patch; the slate then
+## powers dead and stays where it is as inert dressing. The cache takes longer
+## because it is a container being opened rather than a slate being read.
+const PATCH_SLATE_CHANNEL: float = 0.5
+const PATCH_CACHE_CHANNEL: float = 1.1
+## Host-side proximity gate on a grant. Generous like every other `_at_prop`
+## reach: the job is to tell "stood at it" from "sent a packet".
+const PATCH_PICKUP_REACH: float = 4.0
+
+## GREED HAS A PRICE. Reading a slate wakes it up and it announces itself; a
+## cache is a sealed container being cracked. One room and two rooms — the
+## terminal-query and the siphon-drain rungs of the existing noise ladder, not
+## new ones.
+const PATCH_SLATE_NOISE_ROOMS: int = NOISE_ROOMS_TERMINAL
+const PATCH_SLATE_NOISE_TIME: float = NOISE_TIME_TERMINAL
+const PATCH_CACHE_NOISE_ROOMS: int = NOISE_ROOMS_JUNCTION
+const PATCH_CACHE_NOISE_TIME: float = NOISE_TIME_JUNCTION
+
+## What one carried stack is worth on exfiltration, by rarity tier. Priced
+## against the module ladder: a full six-stack KERNEL build is ~720 data, which
+## is roughly one cheap module tier — a good run's patches pay for a permanent
+## upgrade, and never for a build.
+const PATCH_EXFIL_DATA: Array[int] = [18, 45, 120]
+
+# --- presentation ------------------------------------------------------------
+#
+# SAFETY LAW (DESIGN.md pillar 7). The pickup burst is a NEW light source, so it
+# is bounded here rather than in the effect that draws it and it is asserted by
+# `--selftest`. It is one rise-and-fall envelope — a bloom, decaying — so it
+# cannot strobe by construction, and it goes through `Fx.flash_gate()` and
+# `A11y.flash_scale` on top like every other bloom in the game.
+
+## Unconditional ceiling on a pickup bloom, before gating and A11y scaling, and
+## before the rarity scale below.
+##
+## THE FIRST CAPTURE OF THIS EFFECT IS WHY THE NUMBER IS 1.8 AND NOT 3.4. At 3.4
+## with a 6 m reach the burst is fired 1.5 m from the lens (you are stood over the
+## thing you just picked up), and the pickup reel came back as two frames of white
+## filling most of the screen. It was inside every safety cap — one envelope, no
+## repeat, comfortably under 3 Hz — and it was still wrong, because pillar 2 says
+## the dark is the enemy and a game whose whole look is one beam in a black room
+## cannot afford a pickup that lights the room better than the beam does. The
+## effect reads exactly as well at half the energy and a smaller radius, because
+## what sells it is the RING (which says how far it reached) and the chime, not
+## the luminance.
+const PATCH_PICKUP_FLASH_ENERGY: float = 1.8
+const PATCH_PICKUP_RING_RADIUS: float = 1.6
+## A KERNEL pickup is allowed to be a bigger moment than a STABLE one — it is the
+## rarest thing in the run — but only by this much, and from the lowered base.
+const PATCH_PICKUP_KERNEL_SCALE: float = 1.45
+const PATCH_PICKUP_SHAKE: float = 0.22
+## Minimum seconds between two full-amplitude pickup blooms. Unreachable by hand
+## (the channel alone is 0.5 s), and it is here so that a future channel cut
+## fails in `--selftest` rather than in a living room. 0.36 s == 2.78 Hz.
+const PATCH_PICKUP_FLASH_MIN_INTERVAL: float = 0.36
+
+## The slate's own screen: a find-me beacon in a dark room that also risks
+## drawing an eye. Deliberately feeble — under a data chip's pool and well under
+## the cabinet's lock plate — because pillar 2 is not negotiable for a pickup.
+const PATCH_SLATE_SCREEN_ENERGY: float = 0.34
+const PATCH_SLATE_SCREEN_RANGE: float = 3.2
+## The anomaly cache is allowed to be seen across a dark room. It is the rarest
+## thing on the layer and the whole point of it is that you notice it.
+const PATCH_CACHE_GLOW_ENERGY: float = 1.15
+const PATCH_CACHE_GLOW_RANGE: float = 7.5
+
+
+## Rarity tier of a patch id, or STABLE for anything unknown (a table read from
+## an untrusted packet must never abort the read).
+static func patch_tier(id: String) -> int:
+	var entry: Dictionary = PATCHES.get(id, {}) as Dictionary
+	return int(entry.get("tier", PATCH_TIER_STABLE))
+
+
+static func patch_tier_name(tier: int) -> String:
+	match tier:
+		PATCH_TIER_KERNEL:
+			return "KERNEL"
+		PATCH_TIER_UNSTABLE:
+			return "UNSTABLE"
+		_:
+			return "STABLE"

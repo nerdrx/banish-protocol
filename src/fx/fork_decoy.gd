@@ -83,10 +83,19 @@ static func create(id: int, peer: int, subroutine_tier: int, origin: Vector3,
 	decoy.decoy_id = id
 	decoy.owner_peer = peer
 	decoy.tier = maxi(subroutine_tier, 1)
-	decoy.lifetime = maxf(seconds, 0.5)
-	decoy.walk_distance = maxf(distance, 0.0)
+	# M9 DEAD CODE: nobody collected the fork, so it keeps running. Applied HERE
+	# rather than at the cast site because a decoy is built independently on every
+	# peer from one packet, and the carried table is replicated to all of them —
+	# so all four machines extend the same fork by the same amount without the
+	# packet having to grow a field. Identity for a caster carrying nothing.
+	# Lifetime AND distance, by the same factor, so the fork keeps walking at the
+	# authored pace for longer instead of dawdling the same ten metres over nine
+	# seconds — a decoy that slows down is a decoy standing next to you.
+	var longer: float = Patches.decoy_lifetime_scale(peer)
+	decoy.lifetime = maxf(seconds, 0.5) * longer
+	decoy.walk_distance = maxf(distance, 0.0) * longer
 	decoy.lure_radius = maxf(lure, 1.0)
-	decoy.hits_left = maxi(hits, 1)
+	decoy.hits_left = maxi(hits, 1) + Patches.decoy_hits_bonus(peer)
 	decoy._tint = tint
 	decoy._from = origin
 	decoy._to = origin + direction

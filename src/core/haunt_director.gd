@@ -567,8 +567,18 @@ func _tick_barks(step: float) -> void:
 			return
 	if _hunters_present():
 		_bark("hunt")
-	else:
-		_bark("ambient")
+		return
+	# Below-the-Kernel leakage. The corpus has 20 of these and, until now, nothing
+	# in the game ever asked for the category — they were authored, depth-gated and
+	# unreachable. They belong exactly here: deep, and only when NOTHING is hunting,
+	# because the whole register is her attention wandering somewhere that is not
+	# the crew. Reached for by coin flip so the deep ambient track does not become
+	# all basement, and the corpus's own `depth_min` still owns the floor (`pick`
+	# returns empty above the band and `_bark` then says nothing at all).
+	if _layer >= KERNEL_LEAK_LAYER and randf() < KERNEL_LEAK_CHANCE:
+		_bark("kernel_leak")
+		return
+	_bark("ambient")
 
 
 ## Who MOTHER addresses: a living crewmate near a hunter, preferring one who is
@@ -643,6 +653,80 @@ func _on_backdoor_changed() -> void:
 @rpc("authority", "call_local", "reliable")
 func _speak(text: String, category: String, tier: int, callsign: bool) -> void:
 	mother_spoke.emit(text, category, tier, callsign)
+
+
+# -------------------------------------------------------------------- voice --
+#
+# MOTHER got an audible voice (assets/audio/mother, 15 synthesized cues in three
+# intensity tiers). The AUDIO half lives in AudioService — buses, spatialisation,
+# ducking, captions — and subscribes to `mother_spoke`, so nothing about playback
+# is in here. What IS in here is the only part of it that is a DIRECTOR decision:
+# how often she is audible at all. That is a pacing judgement and it belongs next
+# to the pacing, not next to the mixer.
+
+## The depth from which she reaches for the Below-the-Kernel register at all. The
+## corpus's own `depth_min` on those entries is the real floor (16); this only
+## says the Director stops bothering to ask above it.
+const KERNEL_LEAK_LAYER: int = 16
+## How often the deep no-hunter cadence reaches for kernel_leak instead of an
+## ordinary ambient. Deliberately not a majority: the register is worth less the
+## more of it you hear.
+const KERNEL_LEAK_CHANCE: float = 0.35
+
+## The stress at which she is at her most talkative — around the point where a
+## hunter is real and close but the crew is still fighting it.
+const VOICE_DENSITY_PEAK: float = 0.55
+## Density at dead calm. Not zero: an empty layer with her murmuring in the walls
+## is the game's baseline mood, not a special event.
+const VOICE_DENSITY_QUIET: float = 0.42
+const VOICE_DENSITY_TOP: float = 1.0
+## Density at maximum stress. THE INVERSION: past the peak she gets QUIETER, and
+## at full terror she is nearly silent.
+const VOICE_DENSITY_BROKEN: float = 0.18
+## And the withhold proper — multiplied on top, because a broken crew's stress is
+## already ceilinged at 0.5 by `_perceived_stress`, which lands them right on the
+## peak. Without this the mercy would read as her getting CHATTIER.
+const VOICE_DENSITY_WITHHELD: float = 0.2
+
+
+## Perceived stress in [0,1] as this peer currently reads it. Local perception,
+## not replicated state — see `_perceived_stress`. Exposed for the voice layer.
+func perceived_stress() -> float:
+	return _stress
+
+
+## How likely her voice is to actually be heard on the next bark, in [0,1].
+##
+## Rides stress, but INVERSELY at the top. DESIGN.md's Director "withholds" when
+## the crew is broken and limping, and the withhold has always been expressed in
+## the things that hurt — pressure stops accruing, the Hound toys instead of
+## finishing, the score eases. Her VOICE is the fourth channel of the same
+## decision and the most legible one: a predator that has already won does not
+## need to say anything. So the curve rises from a calm-layer baseline to a peak
+## in the middle of a real fight and then falls away to almost nothing, and the
+## withhold flag knocks it down by another 5x on top.
+##
+## It also does the mix a favour for free, which is the tell that it is right: the
+## moment the crew is at maximum stress is the moment the mix is fullest of things
+## that will kill them, and that is precisely when she shuts up.
+func voice_density() -> float:
+	return voice_density_at(_stress, withholding)
+
+
+## The curve itself, as a pure function of its two inputs, so `--selftest` can
+## assert the inversion without standing up a layer and a hunter.
+func voice_density_at(stress: float, withheld: bool) -> float:
+	var s: float = clampf(stress, 0.0, 1.0)
+	var d: float = 0.0
+	if s <= VOICE_DENSITY_PEAK:
+		d = lerpf(VOICE_DENSITY_QUIET, VOICE_DENSITY_TOP,
+				s / maxf(VOICE_DENSITY_PEAK, 0.0001))
+	else:
+		d = lerpf(VOICE_DENSITY_TOP, VOICE_DENSITY_BROKEN,
+				(s - VOICE_DENSITY_PEAK) / maxf(1.0 - VOICE_DENSITY_PEAK, 0.0001))
+	if withheld:
+		d *= VOICE_DENSITY_WITHHELD
+	return clampf(d, 0.0, 1.0)
 
 
 # ------------------------------------------------------------------ helpers --

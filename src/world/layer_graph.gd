@@ -470,8 +470,20 @@ func _build_rooms(cells: Array[Vector2i], plan: Dictionary) -> void:
 		# so the RNG stream is exactly where it was; the override only changes the
 		# NUMBER, and only for the archetypes the vocabulary reaches. Everything else
 		# keeps the height it always had.
-		var storeys: int = _plan_storeys(archetype, unlit.has(i),
-				_kit_rect(centre - half, centre + half), centre)
+		# M6.7 (found by the deck-climb probe): the motif roll must be taken at the
+		# SNAPPED rect's centre, which is where `_plan_decks` takes it. This call
+		# used to pass the raw `centre`, so `_plan_motif` — a function whose own
+		# docstring says it "must answer the same" both times it is asked — could
+		# answer MEZZANINE here and "" over there, or the other way round. When it
+		# said "flat" here and "mezzanine" there, the room kept its rolled height:
+		# 5.2 m rounds to ONE kit storey, so the shell was built 4 m tall and the
+		# gallery was authored at Y_MEZZANINE = 4 m. That is a walkway laid in the
+		# ceiling. Nothing in the graph could see it — the deck is reachable, the
+		# slope is legal, the footprint is clear — and a capsule walking up the
+		# stair puts its head into the ceiling slab 2.7 m from the top.
+		var kit_shell: Rect2 = _kit_rect(centre - half, centre + half)
+		var storeys: int = _plan_storeys(archetype, unlit.has(i), kit_shell,
+				kit_shell.position + kit_shell.size * 0.5)
 		if float(storeys) * KIT_STOREY > height:
 			height = float(storeys) * KIT_STOREY
 		var built: int = maxi(maxi(storeys, int(roundf(height / KIT_STOREY))), 1)
@@ -1909,7 +1921,29 @@ func _plan_gantry(room: Dictionary, rect: Rect2) -> void:
 		# The second arm, round the corner the gantry's deck end reaches. Two
 		# perpendicular wall bands physically meet in that corner cell, so the arm
 		# is a genuine continuation of the walkway rather than a floating slab.
-		var arm_side: int = (side + 1) % 4 if int(split["dir"]) > 0 else (side + 3) % 4
+		#
+		# M6.7 (found by the deck-climb probe): the corner is chosen off RUN_A's own
+		# extent, not off the split's `dir`. The old line rotated the side by +1 or
+		# -1 depending on `dir`, and that convention only holds for two of the four
+		# sides — on a west or a south band it named the corner at the STAIR's end
+		# instead of the deck's. The stair band sits between the two, descending, so
+		# the arm was a slab in mid-air 3 m above the flight with a LINK_CATWALK
+		# claiming it was walkable. Every graph law passed: the deck was reachable
+		# (there was an edge), the span was level and wide, nothing blocked the
+		# ground. A capsule walked under it.
+		#
+		# Which end of the band `run_a` occupies is a fact about two rectangles, so
+		# it is read off them rather than re-derived from the split's bookkeeping.
+		var vertical_band: bool = side % 2 == 1
+		var arm_side: int
+		if vertical_band:
+			# Band runs along Z: its low end is the north side, its high end south.
+			arm_side = 0 if absf(run_a.position.y - rect.position.y) \
+					<= absf(run_a.end.y - rect.end.y) else 2
+		else:
+			# Band runs along X: low end west, high end east.
+			arm_side = 3 if absf(run_a.position.x - rect.position.x) \
+					<= absf(run_a.end.x - rect.end.x) else 1
 		var arm: Rect2 = _wall_strip(rect, arm_side, KIT_CELL, 0.0)
 		var horizontal: bool = side % 2 == 0
 		# Trim the arm back so it stops before the opposite wall — a full ring
@@ -1930,8 +1964,12 @@ func _plan_gantry(room: Dictionary, rect: Rect2) -> void:
 			var length_x: float = minf(arm.size.x, KIT_CELL * 3.0)
 			arm = Rect2(Vector2(arm.position.x if near_x else arm.end.x - length_x, arm.position.y),
 					Vector2(length_x, arm.size.y))
+		# And the arm only exists if it TOUCHES the run. The side choice above is
+		# correct, and this is the law it is correct against: a walkway you get to
+		# by walking is one whose two halves share an edge. `grow(0.05)` because two
+		# rectangles that abut exactly do not "intersect" in float arithmetic.
 		if _within(rect, arm) and arm.size.x >= KIT_CELL \
-				and arm.size.y >= KIT_CELL:
+				and arm.size.y >= KIT_CELL and arm.grow(0.05).intersects(run_a):
 			var arm_id: int = _add_deck(index, DECK_GANTRY, arm, Y_GANTRY, false, false)
 			_add_link(index, gantry, arm_id, LINK_CATWALK, arm,
 					"x" if arm_side % 2 == 0 else "z", 1, Y_GANTRY, Y_GANTRY)
@@ -2290,6 +2328,26 @@ func vertical_violations() -> PackedStringArray:
 				rooms[int(link["room"])], foot) and float(link["y0"]) <= 0.01:
 			out.append("route %d->%d blocks the ground route in room %d" % [
 				int(link["a"]), int(link["b"]), int(link["room"])])
+		# M6.7, law 4: a LEVEL span has to physically REACH both decks it claims to
+		# join. Reachability was a statement about edges in a dictionary, and a
+		# gantry arm authored round the wrong corner satisfied every other line in
+		# this function while standing three metres above the flight that was
+		# supposed to serve it. A ramp or a stair is exempt because it MEETS its
+		# decks at its ends by construction, in the third dimension; a catwalk is
+		# the same height at both ends, so its footprint is the whole claim.
+		if String(link["kind"]) != LINK_CATWALK:
+			continue
+		for end_deck: int in [int(link["a"]), int(link["b"])]:
+			if end_deck < 0 or end_deck >= decks.size():
+				continue
+			var span: Rect2 = Rect2(Vector2(decks[end_deck]["min"]),
+					Vector2(decks[end_deck]["max"]) - Vector2(decks[end_deck]["min"]))
+			# Abutting rectangles do not "intersect" in float arithmetic, so the
+			# tolerance is the whole reason this reads as touching rather than as
+			# overlapping.
+			if not foot.grow(0.05).intersects(span):
+				out.append("catwalk %d->%d in room %d does not reach deck %d" % [
+					int(link["a"]), int(link["b"]), int(link["room"]), end_deck])
 
 	# Nothing on the critical path may be standing on a deck. The crew arrives at
 	# grade, walks at grade and rides the trunk down from grade.

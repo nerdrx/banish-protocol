@@ -588,8 +588,13 @@ func speed_multiplier() -> float:
 	# off the local program because movement is client-authoritative — the host
 	# is not simulating this player's velocity, it is only billing for it.
 	var loadout: Dictionary = Modules.local_loadout()
-	return multiplier * float(loadout["move"]) * Balance.carry_multiplier(
-			local_buffered(), int(loadout["carry_free"]), float(loadout["carry_penalty"]))
+	# M9 PRIORITY BOOST, applied here for the same reason the module tiers are:
+	# movement is client-authoritative, so this is the local program's own number.
+	# Sharply diminishing and hard-capped so a maxed-Servos patched WALK still
+	# stays under SPRINT_BILLING_SPEED — `--selftest` asserts that margin.
+	return multiplier * float(loadout["move"]) * Patches.move_multiplier() \
+			* Balance.carry_multiplier(local_buffered(), int(loadout["carry_free"]),
+			float(loadout["carry_penalty"]))
 
 
 ## 0..1 "how badly is this process failing", driving the post-process glitch and
@@ -728,8 +733,19 @@ func _drain(delta: float) -> void:
 		var player: Node = Net.get_player(int(id))
 		if player != null and is_instance_valid(player):
 			var speed: float = float(player.get("sync_speed"))
-			if speed >= Balance.SPRINT_BILLING_SPEED:
-				rate *= float(loadout["sprint"])
+			# M9 PATCHES, and the split matters. SLEEP STATE discounts the PASSIVE
+			# half while this peer's beam is off — it pays you for the dark (pillar
+			# 2) and hands you no light to pay with. RACE CONDITION suspends the
+			# SPRINT SURCHARGE for the first seconds of a sprint. The surcharge is
+			# computed on the UNDISCOUNTED rate and added, never multiplied through
+			# the discount, so sprinting costs what sprinting costs whether or not
+			# your beam is on. `bills_sprint` is called every frame rather than only
+			# while sprinting, because its window has to re-arm.
+			var surcharge: float = rate * (float(loadout["sprint"]) - 1.0)
+			rate *= Patches.drain_scale(int(id), bool(player.get("sync_beam")))
+			if Patches.bills_sprint(int(id),
+					speed >= Balance.SPRINT_BILLING_SPEED, delta):
+				rate += surcharge
 		drain += rate
 
 	if drain <= 0.0:
@@ -1447,12 +1463,20 @@ func _breaker_request(origin: Vector3, direction: Vector3) -> void:
 	var creature: Antivirus = Antivirus.pick_target(
 			get_tree(), _layer_space(), origin, direction, reach)
 	if creature != null:
-		var damage: float = creature.breaker_damage(origin, float(loadout["damage"]))
+		# M9 PATCHES. `amplify` is the shooter's carried patches applied to a shot
+		# the host was already resolving (SPECULATIVE EXECUTION's crit, HOT LOOP's
+		# ramp); `on_breaker_hit` is everything that happens BECAUSE it landed
+		# (TAIL CALL's chain, BIT ROT's decay, GARBAGE COLLECT's refund). Both are
+		# host-side, both read the host's own copy of what the peer is carrying,
+		# and both return the game unchanged for a peer carrying nothing.
+		var damage: float = Patches.amplify(sender, creature,
+				creature.breaker_damage(origin, float(loadout["damage"])))
 		endpoint = creature.aim_point()
 		creature.take_damage(damage, origin)
 		killed = damage > 0.0 and creature.health <= 0.0
 		if killed:
 			kind = creature.get_script().get_global_name()
+		Patches.on_breaker_hit(sender, creature, damage, origin, killed)
 	if Debug.log_ai:
 		print("[AI] breaker shot by %d: %s" % [sender,
 			"miss" if creature == null else "%s hp=%.0f%s" % [
@@ -1580,7 +1604,11 @@ func _fire_exfil() -> void:
 			var pos: Vector3 = (player as Node3D).global_position
 			on_pad = Vector2(pos.x - pad.x, pos.z - pad.z).length() <= Balance.EXFIL_PAD_RADIUS
 		if on_pad:
-			banked[peer] = buffered_value_of(peer)
+			# M9: carried hot-patches do not survive the run — the process you
+			# exfiltrate is the process you stop running — so they are SOLD BACK on
+			# the way out. A stacked run that ends well still pays, and it pays in
+			# the only currency that persists.
+			banked[peer] = buffered_value_of(peer) + Patches.exfil_bonus(peer)
 			escaped.append(peer)
 		else:
 			banked[peer] = 0

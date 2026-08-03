@@ -690,7 +690,11 @@ func _cast_denied(reason: String) -> void:
 ## host owns is everything with a consequence — the Cycles, the cooldown and the
 ## i-frames — and it grants the immunity window here, against its own clock.
 func _host_surge_step(peer_id: int, tier: int, _body: Node3D) -> void:
-	_iframes_until[peer_id] = _now() + float(value_at("surge_step", "iframes", tier))
+	# M9 NOP SLED extends the window. Read from the HOST's copy of what this peer
+	# is carrying, like every other number in this validation, and it is zero for a
+	# peer carrying nothing — so an unpatched dash is the dash it always was.
+	_iframes_until[peer_id] = _now() + float(value_at("surge_step", "iframes", tier)) \
+			+ Patches.iframe_bonus(peer_id)
 
 
 ## STACK PULSE, resolved where it matters: on the host, against the host's own
@@ -706,8 +710,14 @@ func _host_surge_step(peer_id: int, tier: int, _body: Node3D) -> void:
 ## siphon, held for the same time: the crew's panic button rings a bell, and the
 ## Hound hears every single one.
 func _host_stack_pulse(peer_id: int, tier: int, body: Node3D) -> void:
-	var radius: float = float(value_at("stack_pulse", "radius", tier))
-	var hold: float = float(value_at("stack_pulse", "stagger", tier))
+	# M9 OVERFLOW widens the burst and lengthens the hold. The NOISE below is
+	# deliberately left alone: the pulse's defining cost is that it rings a
+	# two-room bell, and a patch that made the panic button quieter would delete
+	# the ability's whole price. A bigger pulse is a bigger bell.
+	var radius: float = float(value_at("stack_pulse", "radius", tier)) \
+			* Patches.pulse_radius_scale(peer_id)
+	var hold: float = float(value_at("stack_pulse", "stagger", tier)) \
+			+ Patches.pulse_stagger_bonus(peer_id)
 	var shove: float = float(value_at("stack_pulse", "knockback", tier))
 	var centre: Vector3 = body.global_position
 	var caught: int = 0
@@ -790,7 +800,11 @@ func _play_surge_step(peer_id: int, tier: int, origin: Vector3, direction: Vecto
 
 
 func _play_stack_pulse(peer_id: int, tier: int, origin: Vector3, tint: Color) -> void:
-	var radius: float = float(value_at("stack_pulse", "radius", tier))
+	# The ring IS the hitbox (see `Fx.pulse_ring`), so it reads the same M9
+	# OVERFLOW scale the host resolved the burst with. The carried table is
+	# replicated to every peer, so this is a local lookup and not a wider packet.
+	var radius: float = float(value_at("stack_pulse", "radius", tier)) \
+			* Patches.pulse_radius_scale(peer_id)
 	Fx.pulse_ring(origin, radius, tint, 0.42)
 	# The flare, gated. This is the only wide-area luminance the kit produces, so
 	# it is the one that goes through the governor: at most one full bloom per

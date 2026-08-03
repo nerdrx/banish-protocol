@@ -179,6 +179,14 @@ func _build() -> void:
 			func(v: float) -> void: Audio.set_volume(&"sfx", v))
 	_slider(column, "VOICE", Audio.vol_voice,
 			func(v: float) -> void: Audio.set_volume(&"voice", v))
+	# The only level slider with a gloss, because it is the only one whose meaning
+	# is not obvious from its name — and because it is now the switch for the
+	# loudest new thing in the game. A player who does not want MOTHER audible has
+	# to be able to find that, and ACCESSIBILITY is the wrong shelf for it: her
+	# voice is not a comfort setting, it is a mix level. (Turning it to zero does
+	# NOT silence her captions or subtitles; those are their own switches, below.)
+	_gloss(column, "Breath, heartbeat — and MOTHER. Her murmur in the walls and "
+			+ "the lines she aims at you. Her text tracks have their own switches.")
 
 	_rule(column)
 	_section(column, "ACCESSIBILITY")

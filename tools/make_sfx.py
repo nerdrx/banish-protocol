@@ -457,6 +457,101 @@ def descent_rush():
     return fade_edges(normalise(soft_clip(body), 0.80), ms=25.0)
 
 
+def patch_pickup():
+    """A hot-patch absorbed off a pocket secretary.
+
+       THE GRAMMAR IS THE CREW'S OWN TECH, not MOTHER's. A slate is human
+       hardware — the same box the phosphor HUD came out of — so this is built
+       from the interface's family (soft sine partials through a one-pole
+       low-pass) rather than from her neon: one hard mechanical click (the
+       slate's single button), then a two-note rise that RESOLVES, because the
+       event is an acquisition and an unresolved interval would read as a
+       warning. 0.34 s, mostly tail.
+
+       Deliberately modest. It fires perhaps four times a layer, and the pickup
+       already has a light burst and a caption; a fanfare here would make the
+       KERNEL chime below have nowhere to go."""
+    n = frames(0.34)
+    click = apply_env(highpass(noise(n, 0x9C21), 2600.0), env_exp(n, 0.0008, 0.010))
+    lift = env_exp(n, 0.010, 0.11)
+    low = apply_env(sine(n, 392.0), lift)
+    # The resolution, 70 ms behind: a perfect fifth up. The stagger is what makes
+    # it a phrase rather than a chord.
+    d = frames(0.07)
+    high = [0.0] * d + gain(apply_env(sine(n - d, 587.0),
+                                      env_exp(n - d, 0.008, 0.085)), 0.44)
+    warm = apply_env(lowpass(noise(n, 0x3D77), 900.0), env_exp(n, 0.020, 0.060))
+    body = mix(gain(click, 0.30), gain(low, 0.50), high, gain(warm, 0.16))
+    return fade_edges(normalise(soft_clip(body), 0.74))
+
+
+def patch_pickup_kernel():
+    """A KERNEL patch coming out of an anomaly cache.
+
+       The one moment in the patch economy that is allowed to be a MOMENT: the
+       same click-and-rise as its stable sibling, extended into a three-note
+       arpeggio over a low swell that arrives UNDER the notes rather than with
+       them. 0.9 s. Still not a fanfare — the crew are stealing something, and a
+       triumphant sting would fight the room's own dread — but it is the sound
+       everyone on voice comment on, which is the point of a rare drop."""
+    n = frames(0.9)
+    swell = apply_env(sine(n, 98.0, sweep_to=131.0), env_exp(n, 0.12, 0.30))
+    body = mix(gain(swell, 0.42))
+    # 392 / 587 / 784: the stable chime's two notes plus the octave. A build-
+    # defining patch says the same phrase and then keeps going.
+    for i, hz in enumerate([392.0, 587.0, 784.0]):
+        d = frames(0.05 + 0.11 * i)
+        body = mix(body, [0.0] * d + gain(
+            apply_env(sine(n - d, hz), env_exp(n - d, 0.008, 0.13)),
+            0.44 - 0.06 * i))
+    shimmer = apply_env(highpass(lowpass(noise(n, 0x77C3), 7200.0), 3200.0),
+                        env_exp(n, 0.16, 0.22))
+    return fade_edges(normalise(soft_clip(mix(body, gain(shimmer, 0.13))), 0.80))
+
+
+def patch_cache_open():
+    """An anomaly cache being breached — a pressurised quarantine pod cracking.
+
+       HER hardware, so the grammar flips: no musical partials at all, only
+       mechanism. A heavy bolt releasing (a low filtered thump with a metallic
+       ring on top), then the seal letting go as a band of noise that opens and
+       closes, then the lid taking its own weight. 1.15 s, and the last third is
+       the hydraulics — the pod is slow, and it should sound slow."""
+    n = frames(1.15)
+    bolt = apply_env(lowpass(noise(n, 0x51B9), 300.0), env_exp(n, 0.002, 0.055))
+    ring = apply_env(sine(n, 218.0, sweep_to=196.0), env_exp(n, 0.003, 0.10))
+    d = frames(0.10)
+    hiss = [0.0] * d + gain(apply_env(highpass(lowpass(noise(n - d, 0x2A6F), 5400.0),
+                                               1100.0),
+                                      env_exp(n - d, 0.12, 0.20)), 0.34)
+    # The lid, arriving late and low: the hydraulic take-up rather than an impact.
+    h = frames(0.48)
+    lid = [0.0] * h + gain(apply_env(sine(n - h, 62.0, sweep_to=48.0),
+                                     env_exp(n - h, 0.09, 0.20)), 0.40)
+    body = mix(gain(bolt, 0.72), gain(ring, 0.30), hiss, lid)
+    return fade_edges(normalise(soft_clip(body), 0.84), ms=18.0)
+
+
+def patch_watchdog():
+    """WATCHDOG firing — the timer nobody kicked, kicking.
+
+       It has to be legible at the exact instant a player is about to be knocked
+       down, over a fight, so it is a MECHANICAL LATCH and not a tone: a hard
+       high transient (the relay), a short square-ish 147 Hz body (the assertion),
+       and the shell's own hum rising underneath for 0.35 s. Related to
+       sub_barrier by that last layer on purpose — it IS a checksum barrier, and
+       the ear should be told so."""
+    n = frames(0.62)
+    latch = apply_env(highpass(noise(n, 0x6E11), 3200.0), env_exp(n, 0.0006, 0.014))
+    slam = apply_env(lowpass(noise(n, 0x1C93), 520.0), env_exp(n, 0.002, 0.038))
+    assertion = apply_env(sine(n, 147.0), env_exp(n, 0.004, 0.070))
+    d = frames(0.04)
+    hum = [0.0] * d + gain(apply_env(sine(n - d, 294.0, sweep_to=330.0),
+                                     env_exp(n - d, 0.05, 0.17)), 0.36)
+    body = mix(gain(latch, 0.42), gain(slam, 0.46), gain(assertion, 0.52), hum)
+    return fade_edges(normalise(soft_clip(body), 0.82))
+
+
 SOUNDS = {
     "ui/ui_hit_confirm.ogg": hit_confirm,
     "ui/ui_shaft_siphon.ogg": shaft_siphon,
@@ -473,6 +568,11 @@ SOUNDS = {
     "ui/ui_sub_refused.ogg": sub_refused,
     # M7 juice
     "world/dropshaft_rush.ogg": descent_rush,
+    # M9 patches
+    "world/patch_pickup.ogg": patch_pickup,
+    "world/patch_pickup_kernel.ogg": patch_pickup_kernel,
+    "world/patch_cache_open.ogg": patch_cache_open,
+    "world/patch_watchdog.ogg": patch_watchdog,
 }
 
 

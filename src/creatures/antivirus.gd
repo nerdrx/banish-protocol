@@ -710,6 +710,15 @@ func _land_hit(body: Node3D, amount: float) -> void:
 		Subs.report_barrier_absorb(barrier)
 	if landed <= 0.0:
 		return
+	# 5. **M9: does a hot-patch answer this?** Asked last, after the shell, so a
+	#    patch never covers for a barrier that was already covering — WATCHDOG's
+	#    once-a-layer charge must be spent on a blow that was genuinely going to
+	#    land. Deliberately hooked HERE rather than in `Run.damage_player`, which
+	#    would also catch falls and starvation: a patch is error correction against
+	#    MOTHER's writes, and a drop off a gantry is your own arithmetic.
+	landed = Patches.on_incoming(player.peer_id, landed, global_position)
+	if landed <= 0.0:
+		return
 	Run.damage_player(player.peer_id, landed, global_position)
 
 

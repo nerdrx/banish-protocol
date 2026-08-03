@@ -51,6 +51,13 @@ Haunt="*res://src/core/haunt_director.gd"
 ;; the determinism dump cannot see either of them.
 Fx="*res://src/fx/fx.gd"
 Subs="*res://src/player/subroutines.gd"
+;; M9 (PATCHES). Dead last, and the order is load-bearing: it reads Run, Net,
+;; Modules and Rng on load, hands its bursts to Fx and its shells to the same
+;; ChecksumBarrier class Subs casts — so everything it consults must already be
+;; standing. Nothing consults IT during generation: the placement pass calls a
+;; static function on PatchPlacement, and the determinism dump renders LayerGraph,
+;; which cannot see this autoload at all.
+Patches="*res://src/patches/patches.gd"
 
 [shader_globals]
 

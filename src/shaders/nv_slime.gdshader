@@ -116,6 +116,19 @@ void fragment() {
 		float dist_fade = 1.0 / (1.0 + length(VERTEX) * 0.35);
 		vec2 off = n.xy * refraction * dist_fade * (0.4 + fres * 1.4);
 		float lod = clamp(path * 0.9, 0.0, 4.0);
+		// `screen_tex` is the WORLD's screen — everything behind this fragment was
+		// rasterised through the camera's own projection. This gel may not have
+		// been: `lens_scale` above rescales PROJECTION_MATRIX for the local
+		// player's viewmodel (nv_fp_lens.gdshaderinc explains why). At
+		// GUN_LENS_DEG 0, which is what ships, lens_scale is exactly 1.0, the two
+		// projections are the same one, and the UV read here is the UV the gel was
+		// drawn at — correct by construction. Pushed away from 1.0 they separate:
+		// the gel is drawn magnified while what is genuinely behind it still sits
+		// at the world UV, so the refraction shows the wrong parallax, by a margin
+		// that grows with |lens_scale - 1| and with distance from screen centre.
+		// Refracting correctly under a second projection means re-deriving the
+		// world UV from VERTEX rather than reading SCREEN_UV; nobody has needed
+		// that yet, because the lens ships off.
 		vec3 behind = textureLod(screen_tex, clamp(SCREEN_UV + off, vec2(0.001),
 				vec2(0.999)), lod).rgb;
 

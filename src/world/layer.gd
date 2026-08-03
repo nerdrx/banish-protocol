@@ -188,6 +188,18 @@ func _rebuild() -> void:
 	# the per-archetype density to read.
 	if graph != null:
 		DustAir.attach(_builder, graph)
+		# M8 THE COLOUR SCRIPT. A re-grade of the standing rig by room archetype,
+		# run once here rather than threaded through every fixture call in the
+		# generator — see the long note at the foot of `light_rig.gd` for why the
+		# placement builder is deliberately not the thing that knows what colour a
+		# room is. Pure function of (rects, archetypes, layer, fixture position), so
+		# it consumes nothing from the RNG stream and two peers agree without a byte
+		# on the wire. Generated layers only: the hub and the hand-authored greybox
+		# are other people's rooms.
+		# `--hardlight` skips it, so the colour A/B and the soft-light A/B are the
+		# same one flag rather than two.
+		if LightRig.soft():
+			LightRig.apply_colour_script(_builder, graph.rooms, Run.layer_number)
 	_apply_environment()
 
 	# Antivirus last: the taps it listens to and the rooms it paths through both
@@ -388,6 +400,18 @@ const GRADE_EXPOSURE: Array[float] = [0.10, -0.06, -0.22]
 ## The iris-hunting breath, ±this many stops at 0.055 Hz. Sub-threshold; unscaled.
 const GRADE_EXPOSURE_BREATHE: float = 0.035
 
+## M8 SOFT LIGHT. The authored values in `layer_environment.tres` are, in order:
+## 5.5 / 2.8 / 3.1 / 1.8 / 0.10. They are overridden here rather than
+## edited there for two reasons: the .tres is the BASELINE record that
+## `Photonics.preset` promises to be a copy of, and it is a shared file under
+## concurrent edit. See the long note in `_apply_environment` for what each one
+## is buying. The fog is untouched — see the reversal note in `_apply_environment`.
+const SOFT_SSIL_RADIUS: float = 6.6
+const SOFT_SSIL_INTENSITY: float = 3.45
+const SOFT_SSAO_INTENSITY: float = 2.35
+const SOFT_SSAO_POWER: float = 1.45
+const SOFT_SSAO_LIGHT_AFFECT: float = 0.04
+
 static var _lut_textures: Array[Texture2D] = []
 
 
@@ -449,6 +473,60 @@ func _apply_environment() -> void:
 	# that made the density bigger.
 	scaled.volumetric_fog_ambient_inject = 0.0
 	scaled.volumetric_fog_emission_energy = 0.0
+
+	# --- M8 SOFT LIGHT: the environment half ---------------------------------
+	#
+	# `LightRig` owns the fixtures; these are the room's own response, and every
+	# one of them is a SOFTNESS change rather than a brightness one. The darkness
+	# law is enforced in the block above and none of this is allowed to
+	# renegotiate it: the ambient energy is untouched, the fog inject stays pinned
+	# at zero, and a pixel with no light reaching it is exactly as black as it was
+	# before this pass.
+	#
+	#   SSIL UP. This is the mid-tone lift, and screen-space bounce is the RIGHT
+	#   place to buy one. Flat ambient raises every surface in the frame by the
+	#   same amount whether or not there is a light anywhere near it — it lifts
+	#   true blacks, which is forbidden, and it flattens the grade, which is the
+	#   thing being fixed. Bounce raises a surface in PROPORTION TO WHAT IS LIT
+	#   BESIDE IT, so a wall two metres from a lamp gains a readable value and the
+	#   far end of the room gains nothing. That is the whole Alien trick stated as
+	#   a render setting: the shadow side of a lit object is dark, not empty.
+	#
+	#   SSAO DOWN. Not off — at 0.85 m radius it is what makes the kit's 60 mm
+	#   recesses and the bevel pass's chamfers read at all. But 3.1 intensity at
+	#   power 1.8 crushes every contact into a hard black seam, and a room made of
+	#   hard black seams is precisely the "harsh" the note is about. The occlusion
+	#   stays; the crush comes off, and `ssao_light_affect` drops so a lit surface
+	#   stops having AO burned into it twice.
+	#
+	#   THE FOG ITSELF IS NOT TOUCHED, and that is a REVERSAL worth writing down
+	#   because the brief asked for "fog wrap on light edges" and the obvious lever
+	#   was the obvious mistake.
+	#
+	#   The obvious lever is `volumetric_fog_anisotropy`, authored at 0.62. High
+	#   anisotropy throws scatter FORWARD along the beam axis, which is what makes
+	#   a shaft a shaft; backing it off does indeed wrap some scatter around a cone
+	#   edge. Two rounds of captures at 0.54 and 0.58 say do not do it, for a reason
+	#   that only shows up in a photograph: anisotropy is a property of the MEDIUM,
+	#   so it de-focuses every source in the game at once — and while a cone gains a
+	#   feathered edge, a POINT gains a halo. Every OmniLight practical grew a
+	#   visible ball of lit air around it, and the ankle-height can down the middle
+	#   of a corridor became a blown white sphere in the middle of the frame. Buying
+	#   a soft cone edge with a hard bright ball is not a trade this pass can make.
+	#
+	#   So the wrap is bought where it belongs — on the CONE, with
+	#   `LightRig.KEY_FEATHER` / `ACCENT_FEATHER` — and the medium stays as authored.
+	#   The general rule the two rounds paid for: soften the fixture, never the air.
+	#
+	# Gated on the same `--hardlight` capture flag the fixtures are, so ONE flag
+	# puts the entire pre-M8 photograph back and the A/B is a comparison rather
+	# than two pictures.
+	if LightRig.soft():
+		scaled.ssil_radius = SOFT_SSIL_RADIUS
+		scaled.ssil_intensity = SOFT_SSIL_INTENSITY
+		scaled.ssao_intensity = SOFT_SSAO_INTENSITY
+		scaled.ssao_power = SOFT_SSAO_POWER
+		scaled.ssao_light_affect = SOFT_SSAO_LIGHT_AFFECT
 
 	# And the player's quality tier, LAST, so a setting always wins over a
 	# derived value rather than being quietly overwritten by the next descent.
