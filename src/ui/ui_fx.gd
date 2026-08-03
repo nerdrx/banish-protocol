@@ -103,6 +103,54 @@ const PHOSPHOR_SAT: Vector2 = Vector2(0.45, 1.0)
 const PHOSPHOR_VALUE: Vector2 = Vector2(0.70, 1.0)
 
 
+# --- HUD chrome vs shell marker (M9 QA) ---------------------------------------
+#
+# THE TWO JOBS ONE COLOUR WAS DOING.
+#
+# M4.7 made the interface wear the player's shell marker, and the argument holds:
+# it is your hardware, it should glow the colour you chose. What it did not
+# separate is that the shell marker has a second, older job — telling four
+# crewmates apart in the dark — and the two jobs pull in opposite directions. The
+# marker wants the whole hue wheel, because four people need four distinguishable
+# colours. The INSTRUMENT wants a family, because a gauge you read under stress
+# should look like the same gauge on every machine.
+#
+# The default program file picks #7700FF, and the Cycles ring it produced was a
+# saturated violet: legible in isolation, and the only large coloured object on
+# screen with no relationship to anything else in the game's language.
+#
+# So the marker keeps the wheel and the CHROME is pulled toward the crew's own
+# instrument colour. `CrewAvatar.crew_accent` is a separate door and is NOT
+# touched by this — your shell, your seams, your gel and your muzzle flash are
+# still exactly the colour you picked, which is the half that has to stay
+# personal because it is the half other players read.
+
+## The crew's instrument colour. Cyan rather than MOTHER's teal (`LightRig.TEAL`,
+## hue 195) and rather than Northcairn amber: the ring has to be unmistakable
+## against the two colours that MEAN something on this interface, and cyan at hue
+## 192 is 190 degrees off `HOSTILE` and 55 degrees off the data green that
+## terminals and shards wear.
+const CREW_PHOSPHOR: Color = Color(0.28, 0.86, 1.0)
+
+## How far HUD chrome is pulled toward `CREW_PHOSPHOR`. 0.0 is M4.7's shipped
+## behaviour (the raw shell marker); 1.0 is a crew-standard instrument with no
+## personalisation left in it.
+##
+## USER-VETOABLE. This is a colour-script judgement, not a correctness fix — the
+## alternatives were captured side by side (c4b_ring_blend_*.png) and 0.55 was
+## chosen for keeping a violet marker visibly violet-leaning while putting every
+## crew's ring in one family. Anyone who prefers the M4.7 reading sets it to 0.0
+## and nothing else in the codebase has to move.
+const CHROME_CREW_BLEND: float = 0.55
+
+
+## The shell marker as the INSTRUMENT should wear it. Identity for a blend of 0.
+static func chrome_tint(marker: Color) -> Color:
+	if CHROME_CREW_BLEND <= 0.0:
+		return marker
+	return marker.lerp(CREW_PHOSPHOR, CHROME_CREW_BLEND)
+
+
 ## Whether `colour` sits in the reserved quarantine band.
 static func in_danger_band(colour: Color) -> bool:
 	var degrees: float = colour.h * 360.0
@@ -136,7 +184,7 @@ static func clamp_phosphor(colour: Color) -> Color:
 ## it, and TEXT is most of the way to white because body copy has to be read
 ## rather than admired.
 static func set_phosphor(colour: Color) -> void:
-	var base: Color = clamp_phosphor(colour)
+	var base: Color = clamp_phosphor(chrome_tint(colour))
 	SYSTEM = base
 	SYSTEM_HOT = Color.from_hsv(base.h, base.s * 0.34, 1.0)
 	DIM = Color.from_hsv(base.h, minf(base.s * 1.05, 1.0), base.v * 0.52)

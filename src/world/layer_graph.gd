@@ -146,7 +146,25 @@ const CROSSING_HALF: float = 3.2
 ## Clearance a ground-occupying deck keeps from an already-placed fixture (a
 ## Sentinel post, a Compiler, a tap, a functional prop). Decks are planned last
 ## and yield to everything that was there first.
+##
+## A POINT clearance, and correct as one only for a fixture the size of a person.
+## The three sanctuary stations are not; see `_station_clear`.
 const DECK_FIXTURE_CLEAR: float = 3.2
+
+## The three big stations' own footprint radii, metres. Each is the widest mesh
+## the thing actually assembles, which is the only definition that cannot drift:
+##
+##   uplink  Balance.EXFIL_PAD_RADIUS 4.5, plus the 0.08 half-width of the ring
+##           posts standing on the rim (ExfilUplink._assemble)
+##   shaft   a 6.4 m pad (DropShaft._assemble), so 3.2 out from the middle
+##   node    a 3.2 m pad (BackdoorNode._assemble), so 1.6
+##
+## Literals rather than reads of the other classes' constants: `const` may only
+## hold constant expressions (see CLAUDE.md), and a cross-class const read is not
+## one. The comment above is the link; the audit matrix is what catches a drift.
+const STATION_RADIUS_UPLINK: float = 4.58
+const STATION_RADIUS_SHAFT: float = 3.2
+const STATION_RADIUS_NODE: float = 1.6
 
 ## A drop-down has to be worth the noise. Below this the ledge is decoration
 ## rather than a shortcut and no marker is emitted.
@@ -1602,11 +1620,68 @@ func _floor_fixtures(index: int) -> Array[Vector3]:
 	return out
 
 
+## The three sanctuary stations' floor plates, as rectangles. Empty for any room
+## that is not the trunk room.
+func _station_pads() -> Array[Rect2]:
+	var out: Array[Rect2] = []
+	out.append(_pad_at(shaft_point, STATION_RADIUS_SHAFT))
+	if is_backdoor:
+		out.append(_pad_at(backdoor_point, STATION_RADIUS_NODE))
+		out.append(_pad_at(uplink_point, STATION_RADIUS_UPLINK))
+	return out
+
+
+static func _pad_at(at: Vector3, radius: float) -> Rect2:
+	return Rect2(Vector2(at.x, at.z) - Vector2.ONE * radius, Vector2.ONE * radius * 2.0)
+
+
+## May a deck of ANY height be laid across this footprint? No, if it lands on one
+## of the three sanctuary stations.
+##
+## ## Why this is separate from `DECK_FIXTURE_CLEAR` (M9 QA)
+##
+## The fixture clearance is a POINT keep-out, and it is honest only for a fixture
+## the size of a person: a Sentinel post, a Compiler, a rewire junction. The shaft,
+## the backdoor node and the exfil uplink are furniture the size of a room, and
+## they are furniture you STAND ON — so neither half of the point rule fits them.
+## Pushing decks 3.2 m off their rims would be wrong (a walkway along the edge of
+## the shaft pad is architecture, and demanding a gap there deletes the trunk
+## room's gantry ring on twenty layers of the matrix, 258 climbable decks down to
+## 222). Measuring 3.2 m from their CENTRES was what shipped, and that is wrong in
+## the other direction, because the pad's own rim is already further out than that.
+##
+## What is actually forbidden is a deck slab laid THROUGH a station's structure,
+## so that is what this tests, at zero clearance: overlap, not proximity.
+##
+##   `Vert_deck x ExfilUplink  0.08 m`, four times in the 48-combo audit matrix
+##       (seeds 777/4242/31337/8675309) — a sanctuary dais grazing the exfil pad.
+##       `EXFIL_PAD_RADIUS` is 4.5 and the keep-out was 3.2, so the dais was never
+##       3.2 m clear of the uplink. It was touching it, and always would.
+##   `Vert_deck x DropShaft  0.36 m / 0.25 m`, twice (99 layer 1, 31337 layer 3) —
+##       a gantry slab through the shaft's corner posts, in the one room every run
+##       has to cross. Invisible until `DropShaft` joined the audit's solid list.
+##
+## Both are the same bug. Both are fixed by the same rectangle test, applied to
+## the ground decks through `_ground_clear` and to the raised ones by
+## `_plan_gantry`, which cannot use `_ground_clear` — a gantry occupies no ground.
+func _station_clear(room: Dictionary, foot: Rect2) -> bool:
+	if int(room["index"]) != shaft_index:
+		return true
+	for pad: Rect2 in _station_pads():
+		# `intersects` is false for rectangles that merely touch, which is the
+		# answer we want: a walkway flush along a pad edge is architecture.
+		if pad.intersects(foot):
+			return false
+	return true
+
+
 ## May a GROUND-OCCUPYING surface stand here? The solo invariant, as a predicate.
 func _ground_clear(room: Dictionary, foot: Rect2) -> bool:
 	for aisle: Rect2 in _aisles(room):
 		if aisle.intersects(foot):
 			return false
+	if not _station_clear(room, foot):
+		return false
 	for fixture: Vector3 in _floor_fixtures(int(room["index"])):
 		if foot.grow(DECK_FIXTURE_CLEAR).has_point(Vector2(fixture.x, fixture.z)):
 			return false
@@ -1914,6 +1989,11 @@ func _plan_gantry(room: Dictionary, rect: Rect2) -> void:
 		if not _ground_clear(room, stair):
 			continue
 		var run_a: Rect2 = split["deck"]
+		# The gantry is a metre above head height and the shaft is four metres
+		# tall, so "the drop shaft stays in the clear middle of the room" is a
+		# claim this has to actually check. See `_station_clear`.
+		if not _station_clear(room, run_a):
+			continue
 		var gantry: int = _add_deck(index, DECK_GANTRY, run_a, Y_GANTRY, false, true)
 		_add_link(index, -1, gantry, LINK_STAIR, stair, String(split["axis"]),
 				int(split["dir"]), 0.0, Y_GANTRY)
@@ -1969,7 +2049,8 @@ func _plan_gantry(room: Dictionary, rect: Rect2) -> void:
 		# by walking is one whose two halves share an edge. `grow(0.05)` because two
 		# rectangles that abut exactly do not "intersect" in float arithmetic.
 		if _within(rect, arm) and arm.size.x >= KIT_CELL \
-				and arm.size.y >= KIT_CELL and arm.grow(0.05).intersects(run_a):
+				and arm.size.y >= KIT_CELL and arm.grow(0.05).intersects(run_a) \
+				and _station_clear(room, arm):
 			var arm_id: int = _add_deck(index, DECK_GANTRY, arm, Y_GANTRY, false, false)
 			_add_link(index, gantry, arm_id, LINK_CATWALK, arm,
 					"x" if arm_side % 2 == 0 else "z", 1, Y_GANTRY, Y_GANTRY)

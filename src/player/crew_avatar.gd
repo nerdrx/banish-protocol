@@ -729,6 +729,9 @@ var _lens_materials: Array[ShaderMaterial] = []
 ## fade and the breaker's muzzle heat. See `_write_accent`.
 var _accent_lens: ShaderMaterial = null
 var _emitter_lens: ShaderMaterial = null
+## The Slime shell's gel material, kept because the first-person re-tune has to
+## be re-applied every time `repaint` builds a fresh one. See `_fit_fp_gel`.
+var _gel_material: ShaderMaterial = null
 ## Additive hold sway, chasing the lens's angular rate. See HOLD_SWAY_LAG.
 var _hold_sway: Vector2 = Vector2.ZERO
 var _last_hold_look: Vector2 = Vector2.ZERO
@@ -859,12 +862,13 @@ func repaint(colour: Color) -> void:
 	# reading through it, and the internal glow is the player's accent — the same
 	# one token as the seams and the UI phosphor, so a crewmate glows their own
 	# chosen colour from inside their shell as well as along their seams.
+	_gel_material = CreatureKit.gel_material(accent, 1.2, 0.2)
 	var palette: Dictionary = {
 		"LightMetal": plate,
 		"Armour": shell,
 		"Bone": CreatureKit.bone_material(),
 		"Mask": shell,
-		"Slime": CreatureKit.gel_material(accent, 1.2, 0.2),
+		"Slime": _gel_material,
 		"Emiss": _accent_material,
 		"Eyes": _accent_material,
 	}
@@ -872,6 +876,9 @@ func repaint(colour: Color) -> void:
 	# their own skull without hiding their hands), so the palette goes on both.
 	for name: String in [BODY_MESH, HEAD_MESH]:
 		CreatureKit.paint(_model.find_child(name, true, false) as MeshInstance3D, palette)
+	# A fresh gel material is a BODY-scale gel material. If this avatar is the
+	# local player's own, put the viewmodel frequency back on top.
+	_fit_fp_gel()
 	if _first_person and not _lens_materials.is_empty():
 		# A colour change rebuilds the palette as StandardMaterial3D, which would
 		# quietly take the viewmodel lens off the local player's own body. Put it
@@ -1557,6 +1564,11 @@ func muzzle_point() -> Vector3:
 ## trick applied to a mesh that has a face.
 func set_first_person() -> void:
 	_first_person = true
+	# `repaint` has already run by the time Player._embody gets here (the avatar
+	# is built and tinted before it is embodied), so the gel on this body is
+	# still the body-scale one. This is the call that actually re-tunes it; the
+	# one in `repaint` is only there to survive a later colour change.
+	_fit_fp_gel()
 	if _head_mesh != null:
 		_head_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
 	# The body stays fully rendered. Looking down and seeing your own chest and
@@ -1636,6 +1648,21 @@ func set_first_person() -> void:
 # the three lines of shader work. This section is the plumbing: swap the local
 # player's own materials for lens-capable copies, keep the two ANIMATED writes
 # alive across the swap, and push the scale.
+
+
+## Puts the viewmodel vein frequency on this body's gel. Local player only.
+##
+## Not conditional on the viewmodel LENS (`_fit_fp_lens`, `lens_scale`) and it
+## must not become so: the lens ships off, and the gel is wrong at hand distance
+## whether or not the projection has been rescaled. See CreatureKit.gel_viewmodel
+## for the measurement and the multiplier.
+##
+## Cheap and idempotent — two uniform pushes on one material — so both callers
+## can fire it without either having to know whether the other already did.
+func _fit_fp_gel() -> void:
+	if not _first_person:
+		return
+	CreatureKit.gel_viewmodel(_gel_material)
 
 
 ## Swaps every first-person surface onto a lens-capable material.

@@ -2351,9 +2351,15 @@ func deck_excavation(cut: Rect2, y: float) -> void:
 		var centre: Vector2 = (from + to) * 0.5
 		var length: float = from.distance_to(to)
 		var horizontal: bool = side % 2 == 0
+		# Named, so `--auditvert` can see it. A pit's retaining walls are the only
+		# vertical vocabulary that went out UNTAGGED, which meant the one deck kind
+		# that digs DOWN was the one deck kind the placement audit was blind to —
+		# a crate or a vent standing in the wall of a sump would have been reported
+		# by nothing. `Vert_pit` is the stem; Godot's `@Vert_pit@2` sigil for the
+		# other three sides is what `_collect_audit_nodes` already strips.
 		_box(Vector3(centre.x, y * 0.5, centre.y),
 				Vector3(length if horizontal else 0.3, depth,
-						0.3 if horizontal else length), MAT_MONOLITH)
+						0.3 if horizontal else length), MAT_MONOLITH).name = "Vert_pit"
 
 
 ## Overhead structure for a tall room: a girder lattice, pipe racks and the cable

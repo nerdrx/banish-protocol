@@ -2069,6 +2069,13 @@ const AUDIT_SOLID_NAMES: Array[String] = [
 	"DataBlock", "DataRack", "Crates", "DataShard", "DebrisBody",
 	"RewireJunction", "WeldVent", "LootCabinet", "CommandTerminal",
 	"SiphonTap", "CompilerTerminal", "BackdoorNode", "ExfilUplink",
+	# M9 QA: the DROP SHAFT was missing, and it is the largest fixture in the
+	# game (a 6.4 m pad with 3.8 m corner posts) standing in the one room every
+	# run has to cross. The audit had the node and the uplink beside it and not
+	# the shaft itself; adding it immediately reported two gantry slabs driven
+	# through the posts at 0.36 m and 0.25 m. An audit that cannot see the
+	# biggest thing on the layer is an audit with a hole in the middle of it.
+	"DropShaft",
 	"PILLAR_CONDUIT_HERO", "RIB_COLUMN",
 ]
 

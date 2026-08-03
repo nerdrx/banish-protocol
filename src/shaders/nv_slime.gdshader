@@ -46,6 +46,11 @@ uniform float core_energy : hint_range(0.0, 6.0) = 1.35;
 // How far inside the surface the glow lives, in metres — the parallax is the
 // difference between "glowing" and "lit from within".
 uniform float core_depth : hint_range(0.0, 0.5) = 0.085;
+// The vein field's frequency IN OBJECT SPACE — see the `deep.xy * core_scale`
+// sample below. A cell is therefore a fixed size in METRES (~18 cm at 5.5) and
+// the SURFACE decides how many of them are visible: ten across a 1.8 m body,
+// half a one across a 10 cm hand. Which is why the first-person body overrides
+// this pair — see CreatureKit.gel_viewmodel, which owns both numbers.
 uniform float core_scale = 5.5;
 uniform float core_speed = 0.28;
 uniform float core_contrast : hint_range(0.5, 8.0) = 3.2;

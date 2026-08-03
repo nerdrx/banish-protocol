@@ -56,7 +56,17 @@ signal injection_changed
 
 ## M3.5 events. These carry no new state — they name moments the run already
 ## replicates, so `Achievements` can listen instead of polling.
-signal process_deleted(by_peer: int, kind: String)  ## A breaker shot killed something.
+## A process was deleted, and `by_peer` gets the credit. THE definition of a kill
+## for everything downstream: the achievement hooks, the lifetime deletion
+## counter, MOTHER's kill acknowledgement and the music director's combat clock.
+##
+## Fired for a kill by the breaker's aimed shot (`_breaker_shot`, which is also
+## drawing the lash) AND for a kill the breaker's damage finished later — a TAIL
+## CALL chain link or a BIT ROT tick, which arrive through `announce_deletion`.
+## Those two were silent until M9 QA: the shot that started them told nobody, so
+## a crew running rot on a nest watched processes die and watched the counter not
+## move. See `Patches._on_deleted` for the one place that decides who gets credit.
+signal process_deleted(by_peer: int, kind: String)
 ## Host-side, every breaker shot (hit or miss). The muzzle flash is a light, which
 ## is why M6's Moth is drawn to it — the HauntDirector tracks these so a fighting
 ## crew feeds the one hunter that comes to light.
@@ -1854,6 +1864,35 @@ func _breaker_shot(peer_id: int, origin: Vector3, endpoint: Vector3, killed: boo
 	if avatar == null:
 		return
 	avatar.show_breaker_shot(origin, endpoint, killed, peer_id == Net.local_id())
+
+
+## A kill with no shot attached to it: the process died to a TAIL CALL link or to
+## a BIT ROT tick, seconds and metres away from the trigger pull that caused it.
+##
+## Host-only entry point, and deliberately a SEPARATE door from `_breaker_shot`
+## rather than a flag on it. That packet's other job is to draw a lash from a
+## muzzle to an endpoint, and a rot kill has neither — faking an origin so the
+## deletion could ride along would put a beam on four screens for a process that
+## quietly fell over.
+##
+## Everything downstream is unchanged, because the signal is the same signal.
+func announce_deletion(peer_id: int, kind: String) -> void:
+	# Offline (editor, `--dumplayer`, a solo automated run with no peer) there is
+	# nobody to be authority over and no RPC to send — the same shape
+	# `Patches._is_host` and `Patches._maybe_drop_slate` already use.
+	if Debug.log_ai:
+		print("[Run] deletion credited to peer %d: %s (no shot)" % [peer_id, kind])
+	if not multiplayer.has_multiplayer_peer():
+		_deletion_notice(peer_id, kind)
+		return
+	if not multiplayer.is_server():
+		return
+	_deletion_notice.rpc(peer_id, kind)
+
+
+@rpc("authority", "call_local", "reliable")
+func _deletion_notice(peer_id: int, kind: String) -> void:
+	process_deleted.emit(peer_id, kind)
 
 
 @rpc("authority", "call_local", "reliable")

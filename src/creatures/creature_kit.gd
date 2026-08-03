@@ -147,6 +147,22 @@ const GEL_SHADER: Shader = preload("res://src/shaders/nv_slime.gdshader")
 static var _gel_noise: NoiseTexture2D = null
 
 
+## The gel's vein field is a NOISE FREQUENCY IN OBJECT SPACE (nv_slime.gdshader
+## samples `v_obj * core_scale`), so a vein cell is a fixed size IN METRES and it
+## is the surface that decides how many of them you get. At 5.5 a cell is ~18 cm:
+## a 1.8 m body is ten cells of marbling across, which is the look M4.9 tuned.
+##
+## Mirrors the shader's own defaults so there is one number to read and one place
+## to change it; `gel_viewmodel` needs both of them written down to rescale from.
+const GEL_CORE_SCALE: float = 5.5
+const GEL_CORE_DEPTH: float = 0.085
+
+## First-person magnification of the vein field, and the contrast that goes with
+## it. Neither is meaningful without the other — see `gel_viewmodel`.
+const GEL_VIEWMODEL_SCALE: float = 8.0
+const GEL_VIEWMODEL_CONTRAST: float = 5.0
+
+
 ## The Slime slot: dark-glass gel with an internal glow (M4.9, ported from the
 ## limbo-lookdev2 recipe). `core_color` is the one faction token — the crew's
 ## player-phosphor accent, or the Sentinel's deep red circulating between shell and
@@ -161,7 +177,60 @@ static func gel_material(core_color: Color, energy: float,
 	mat.set_shader_parameter("core_energy", energy)
 	mat.set_shader_parameter("pulse_amount", pulse)
 	mat.set_shader_parameter("core_noise", _gel_noise_texture())
+	# Written explicitly rather than left to the shader defaults, so the body
+	# arm of the A/B is the same two numbers `gel_viewmodel` divides and
+	# multiplies. Identical values, so a third-person gel renders unchanged.
+	mat.set_shader_parameter("core_scale", GEL_CORE_SCALE)
+	mat.set_shader_parameter("core_depth", GEL_CORE_DEPTH)
 	return mat
+
+
+## Re-tunes one gel material for FIRST-PERSON viewing distance. Local player only,
+## called by CrewAvatar once it knows it is somebody's own body.
+##
+## The bug this fixes: `core_scale` is a BODY-scale frequency, and the surfaces a
+## first-person player actually sees — the wrist cuff, the clawed fingertips, the
+## chest they look down at — are 10-30 cm of geometry held 30-50 cm from the eye.
+## A 10 cm hand spans half an 18 cm vein cell, so it does not render marbling at
+## all: it renders the INSIDE of one vein, smeared across the whole surface. The
+## purple crystal. Third person never showed it because the same body is three and
+## a half metres away and its ten cells are all on screen at once.
+##
+## So this is a magnification, not a new look. x8 is roughly the ratio between the
+## two viewing distances (a crewmate read across the room at ~3 m against your own
+## hold at ~0.35 m), which is the number that puts the same count of vein cells per
+## screen-degree in front of a first-person player as third person already gets.
+##
+## `core_depth` is DIVIDED by the same number, and that is not cosmetic. It is how
+## far the internal glow is parallaxed under the surface, in metres, and the shader
+## converts it to noise space by multiplying by `core_scale` — so leaving it alone
+## at x8 frequency would slide the glow eight cells for every centimetre of view
+## change and the veins would boil rather than circulate. One multiplier, applied
+## in both directions, keeps "light circulating under glass" reading as it does on
+## the body.
+##
+## ## The contrast is not optional, and it is what the capture ladder found
+##
+## Frequency alone made it WORSE, which is worth writing down because the obvious
+## reading of the bug ("just turn the frequency up") stops one step short. `veins`
+## is `pow(a * b * 2.2, core_contrast)` — a coverage curve tuned so that ~10 cells
+## across a body yields a few fat veins and a lot of dark gel. Multiply the cell
+## count by eight and hold the curve still and you do not get more veins, you get
+## the vein PEAKS at eight times the density: an even, pale, fizzing static that
+## washes the shell out and buries the Bone geometry the gel exists to show. The
+## capture ladder (x1 / x2 / x3 / x4.5 / x6 / x8 / x11 / x15 at the shipped 3.2
+## contrast) reads as blob -> smear -> gel -> gel -> busy -> static -> static.
+##
+## Raising the contrast with the frequency puts the coverage back: at 5.0 the
+## field is dark again and the bright filaments are sparse, so eight times as many
+## cells still reads as VEINS IN GLASS rather than as noise, and the ribs and claws
+## stay countable through it — which is the whole brief for this material.
+static func gel_viewmodel(mat: ShaderMaterial) -> void:
+	if mat == null or mat.shader != GEL_SHADER:
+		return
+	mat.set_shader_parameter("core_scale", GEL_CORE_SCALE * GEL_VIEWMODEL_SCALE)
+	mat.set_shader_parameter("core_depth", GEL_CORE_DEPTH / GEL_VIEWMODEL_SCALE)
+	mat.set_shader_parameter("core_contrast", GEL_VIEWMODEL_CONTRAST)
 
 
 ## One shared animated noise field for the gel veins, built once.

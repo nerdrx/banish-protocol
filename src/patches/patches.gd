@@ -623,7 +623,9 @@ func on_breaker_hit(peer_id: int, creature: Antivirus, damage: float,
 		}
 
 	if killed:
-		_on_deleted(peer_id, creature)
+		# `announce` false: `Run._breaker_shot` is already carrying this kill to
+		# every peer along with the lash. See `_on_deleted`.
+		_on_deleted(peer_id, creature, false)
 		return
 
 	# BIT ROT. Refreshed, never stacked into a second timer: six stacks is one
@@ -679,7 +681,8 @@ func _run_tail_call(peer_id: int, from: Antivirus, damage: float, chain_stacks: 
 		path.append(next.aim_point())
 		hops.append("%s(%.0f)" % [String(next.name), landed])
 		if next.health <= 0.0:
-			_on_deleted(peer_id, next)
+			# A chain link kill. No shot packet is carrying it, so it announces.
+			_on_deleted(peer_id, next, true)
 		here = next
 		carry *= Balance.PATCH_TAILCALL_DECAY
 	if path.size() < 2:
@@ -729,9 +732,31 @@ func _nearest_unvisited(from: Vector3, visited: Dictionary) -> Antivirus:
 ## A process this peer deleted, however it died (aimed cut, chain link or rot).
 ## GARBAGE COLLECT's refund and the slate drop both live here so there is one
 ## definition of "deleted by you".
-func _on_deleted(peer_id: int, creature: Antivirus) -> void:
+##
+## ## `announce` and why it is not defaulted
+##
+## `Run.process_deleted` is what the achievements, the lifetime deletion counter,
+## MOTHER's kill acknowledgement and the music director's combat clock all listen
+## to, and until M9 QA only ONE of this function's three callers ever reached it:
+## the aimed shot, because `Run._breaker_shot` emits the signal itself on the way
+## past. A chain link and a rot tick deleted a process and told nobody — the same
+## kill, worth nothing, because of which line of code finished it.
+##
+## So the announcement belongs here, where "deleted by you" is defined... except
+## for the one caller whose packet has already said it. Emitting unconditionally
+## would double-fire every ordinary breaker kill: two deletions counted, two
+## achievements ticked, one process.
+##
+## Hence a parameter, and hence no default on it. A fourth caller has to decide,
+## in one word, whether it has already announced — which is exactly the question
+## the three existing ones each got wrong or right silently.
+func _on_deleted(peer_id: int, creature: Antivirus, announce: bool) -> void:
 	_rot.erase(creature.get_instance_id())
 	_maybe_drop_slate(creature)
+	if announce:
+		var script: Script = creature.get_script() as Script
+		Run.announce_deletion(peer_id,
+				"" if script == null else script.get_global_name())
 	var gc: int = stacks(peer_id, "garbage_collect")
 	if gc <= 0:
 		return
@@ -820,7 +845,9 @@ func _process(delta: float) -> void:
 		entry["left"] = float(entry["left"]) - bite
 		creature.take_damage(bite, creature.global_position)
 		if creature.health <= 0.0:
-			_on_deleted(int(entry["peer"]), creature)
+			# A rot kill, seconds after the cut that seeded it. Announces, for the
+			# same reason the chain does.
+			_on_deleted(int(entry["peer"]), creature, true)
 			dead.append(int(key))
 		elif float(entry["left"]) <= 0.0:
 			dead.append(int(key))

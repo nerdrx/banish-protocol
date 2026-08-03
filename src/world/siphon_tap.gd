@@ -20,7 +20,23 @@ extends Interactable
 ## fewer listener.
 signal antivirus_ping(where: Vector3)
 
-const LIVE_COLOUR: Color = Color(0.34, 1.0, 0.78)
+## A live tap's core, and the M8 colour script's business rather than this file's
+## taste. It shipped as Color(0.34, 1.00, 0.78) — a saturated spring green at hue
+## 160 — and green is SPOKEN FOR: `LightRig.PHOSPHOR` is the data channel, and a
+## terminal, a rack and a shard all read green because the player has to be able
+## to tell "there is data here" from twenty metres in the dark. A siphon is not
+## data. It is plumbing you bleed compute out of, and it was wearing the data
+## colour purely because "glowing green machine" is the reflex.
+##
+## Re-hued into the SIPHON row of the colour script (`LightRig.SCRIPT_*`), whose
+## key is TEAL and whose accent is SODIUM: hue 186, which is coolant-cyan, on the
+## teal side of the boundary and clear of green with a good margin. Kept a little
+## greener and a lot brighter than the room's own TEAL key (hue 195, value 0.94)
+## so the tap still separates from the wash it stands in — it is the machine, not
+## the wall. Saturation is exactly `LightRig.MAX_SATURATION` (0.66), which is
+## also what the old colour happened to be, so nothing about the restraint
+## budget moves.
+const LIVE_COLOUR: Color = Color(0.34, 0.93, 1.0)
 const SPENT_COLOUR: Color = Color(0.22, 0.26, 0.3)
 const PULSE_TIME: float = 1.4
 

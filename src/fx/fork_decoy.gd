@@ -201,6 +201,22 @@ func _apply_ghost(mesh: MeshInstance3D) -> void:
 	material.set_shader_parameter("band_height", BAND_HEIGHT)
 	material.set_shader_parameter("pulse", 1.0)
 	material.set_shader_parameter("slip", 0.0)
+	# Take the crew palette OFF before putting the ghost on.
+	#
+	# `CrewAvatar.create` paints the body it just built — twelve surface override
+	# materials across CrewBody and CrewHead — and a fork then hides all twelve
+	# behind one `material_override`. Leaving them there is not free: a mesh
+	# carrying both a full set of surface overrides AND an instance override made
+	# the renderer emit `Parameter "material" is null` once per surface, twelve
+	# times, on every fork cast on every peer. (M7 shipped it; M9 QA counted it.
+	# 12 = 5 CrewBody surfaces + 7 CrewHead. The headless renderer's dummy storage
+	# reports it three times for the same cast, which is why it read as a smaller
+	# problem than it was.) Clearing them first silences it exactly, and it is the
+	# honest thing to do anyway: a decoy is not wearing the crew's paint, so it
+	# should not be holding twelve materials' worth of it.
+	if mesh.mesh != null:
+		for surface: int in mesh.mesh.get_surface_count():
+			mesh.set_surface_override_material(surface, null)
 	mesh.material_override = material
 	mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_shells.append(mesh)
