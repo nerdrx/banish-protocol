@@ -1,13 +1,22 @@
 class_name Breaker
 extends Node3D
-## The crew's cutter: a short-range hitscan tool with no ammunition and no
-## patience.
+## The crew's cutter: a hitscan tool with no ammunition and no patience.
 ##
-## DESIGN.md kit v1 calls it "a tool, not a gun", and the numbers say so —
-## eight metres of reach, three hits to cut a Scrubber, and heat instead of a
-## magazine so you cannot simply hold it down. It kills everything MOTHER has,
-## but not equally: a Sentinel is eighteen Scrubbers of armour with one exposed
-## core, so what it costs is a question of where you are standing.
+## M12 SENSATION CHANGED WHAT THIS IS. It used to reach eight metres, which the
+## first live playtest correctly called clunky: the player's own beam reaches
+## thirty, so the thing ending an engagement was never the dark — it was the
+## tool, and DESIGN.md pillar 2 says it should always be the dark. The base
+## cutter now reaches exactly as far as the base beam does (30 m; see the M12
+## section of `Balance`), so what limits a shot is whether you can SEE the thing,
+## and firing at a half-lit shape at the edge of your light is a real decision
+## instead of an impossibility.
+##
+## It is still a tool rather than a gun in every way that made that phrase mean
+## something: no ammunition, heat instead of a magazine so you cannot hold it
+## down, three hits to cut a Scrubber, and a beam you have to aim in the dark. It
+## kills everything MOTHER has, but not equally: a Sentinel is eighteen Scrubbers
+## of armour with one exposed core, so what it costs is a question of where you
+## are standing.
 ##
 ## Split of responsibility, the same one M1 established for interaction: the
 ## trigger, the heat and the lash are local feel, and the *kill* is a host
@@ -31,12 +40,24 @@ const LASH_TIME: float = 0.1
 ## on-screen mass of a fifteen-metre shot by 40%. Same number on every peer: the
 ## width is a constant, not replicated state, so a crewmate's lash is exactly as
 ## thin as your own.
+##
+## M12: SUPERSEDED AS A RENDERING NUMBER, kept as the reference it was tuned to.
+## A constant world thickness cannot be right at both eight metres and thirty —
+## it is either a hairline at range or a slab at point-blank — so the streak now
+## holds a constant APPARENT width in `nv_lash.gdshader`, calibrated to reproduce
+## exactly this value at the old eight-metre range. Nothing about a close shot
+## changed; the far half of a long one is now visible. The mesh cross-section is
+## authored at 1x1 and the shader owns the scale, so this no longer sizes it.
 const LASH_WIDTH: float = 0.045
 const COLOUR: Color = Color(0.72, 0.96, 1.0)
 ## Energy of the impact-end glow, lighting whatever the cut lands on. Fires on
 ## every shot, point-blank ones included — where, with the muzzle flash at the
 ## other end, it does most of the reading.
 const GLOW_ENERGY: float = 4.0
+
+## M12: the constant-apparent-width beam. See the shader's own header for why a
+## constant world width could not survive the range change.
+const LASH_SHADER: String = "res://src/shaders/nv_lash.gdshader"
 
 ## 0..1. At 1.0 the cutter locks out until it falls back below the reset point.
 var heat: float = 0.0
@@ -52,7 +73,7 @@ var _heat_grad: int = 0
 var _cooldown: float = 0.0
 var _lash: MeshInstance3D = null
 var _lash_mesh: BoxMesh = null
-var _lash_material: StandardMaterial3D = null
+var _lash_material: ShaderMaterial = null
 var _lash_time: float = 0.0
 var _sparks: CPUParticles3D = null
 var _glow: OmniLight3D = null
@@ -66,15 +87,15 @@ static func create() -> Breaker:
 
 
 func _assemble() -> void:
-	_lash_material = StandardMaterial3D.new()
-	_lash_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_lash_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_lash_material.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	_lash_material.albedo_color = COLOUR
-	_lash_material.disable_receive_shadows = true
+	_lash_material = ShaderMaterial.new()
+	_lash_material.shader = load(LASH_SHADER) as Shader
+	_lash_material.set_shader_parameter("beam_colour", COLOUR)
+	_lash_material.set_shader_parameter("fade", 1.0)
 
+	# 1 x 1 cross-section: the shader multiplies it by the per-vertex width, so
+	# authoring any other number here would be scaling the beam twice.
 	_lash_mesh = BoxMesh.new()
-	_lash_mesh.size = Vector3(LASH_WIDTH, LASH_WIDTH, 1.0)
+	_lash_mesh.size = Vector3(1.0, 1.0, 1.0)
 	_lash = MeshInstance3D.new()
 	_lash.name = "Lash"
 	_lash.mesh = _lash_mesh
@@ -156,11 +177,20 @@ func pull_trigger() -> void:
 ## there is a surface at all, because a burn mark projected onto a creature that
 ## is about to be deleted is a burn mark hanging in mid-air a second later.
 ##
-## Both default to the safe approximation (spray back along the shot, no decal),
-## which is what the host's echo path uses — it re-broadcasts an endpoint, not a
-## surface, and adding a normal to that packet would be paying for a garnish.
+## M12 adds `surface`, which is what the ray landed ON — plating, gel, a glyph
+## panel, a cable run, grating, or a body. It is the single biggest perceived
+## -quality win in the milestone and it costs nothing at runtime: the caller
+## already had the collider in its hand when it cast the ray, and passing what it
+## found is cheaper than every alternative for finding out later.
+##
+## All three default to the safe approximation (spray back along the shot,
+## unclassified surface, no decal), which is what the host's echo path uses — it
+## re-broadcasts an endpoint, not a collider, and putting a surface tag on that
+## packet would be paying wire for a garnish that only the shooter can see
+## precisely anyway.
 func show_lash(from: Vector3, to: Vector3, on_world: bool = false,
-		normal: Vector3 = Vector3.ZERO) -> void:
+		normal: Vector3 = Vector3.ZERO,
+		surface: StringName = Fx.SURF_METAL) -> void:
 	var delta: Vector3 = to - from
 	var length: float = delta.length()
 
@@ -183,7 +213,14 @@ func show_lash(from: Vector3, to: Vector3, on_world: bool = false,
 	var away: Vector3 = normal
 	if away.length_squared() < 0.0001:
 		away = (from - to).normalized() if length > 0.001 else Vector3.UP
-	Fx.impact(to, away, COLOUR, on_world)
+	# M12: the same cut, told apart by what it landed on. A body goes through
+	# `creature_hit`, which reads the bestiary entry standing there and picks the
+	# spray for it — a Sentinel's gel torso and a Scrubber's dry shell should not
+	# come apart the same way.
+	if surface == Fx.SURF_CREATURE:
+		Fx.creature_hit(to, away, COLOUR)
+	else:
+		Fx.impact_on(to, away, surface, COLOUR, on_world)
 
 	# The shot itself, spatialised at the muzzle. `show_lash` runs exactly once per
 	# peer per shot (locally as prediction for the shooter, via the host echo for a
@@ -198,7 +235,7 @@ func show_lash(from: Vector3, to: Vector3, on_world: bool = false,
 	if length < 0.02:
 		return
 
-	_lash_mesh.size = Vector3(LASH_WIDTH, LASH_WIDTH, length)
+	_lash_mesh.size = Vector3(1.0, 1.0, length)
 	_lash.global_position = (from + to) * 0.5
 	_lash.look_at(to, Vector3.UP)
 	# look_at points -Z at the target and the box is built along +Z; the mesh
@@ -223,7 +260,8 @@ func _process(delta: float) -> void:
 	if _lash_time > 0.0:
 		_lash_time -= delta
 		# Fade the streak out over its life instead of blinking it off.
-		_lash_material.albedo_color.a = clampf(_lash_time / LASH_TIME, 0.0, 1.0)
+		_lash_material.set_shader_parameter("fade",
+				clampf(_lash_time / LASH_TIME, 0.0, 1.0))
 		if _lash_time <= 0.0:
 			_lash.visible = false
 	_glow.light_energy = maxf(_glow.light_energy - delta * 26.0, 0.0)

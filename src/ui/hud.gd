@@ -30,6 +30,26 @@ extends CanvasLayer
 const PING_INTERVAL: float = 0.5
 const NOTICE_DURATION: float = 4.0
 
+# --- the pickup moment (CODEX) ------------------------------------------------
+#
+# `PATCH INJECTED · OVERFLOW x1` told a player they had got a thing and nothing
+# about what the thing does, which is the whole complaint. The effect clause goes
+# UNDER the notice, in the gloss colour, for a beat — a player who reads it learns
+# the patch without opening anything, and a player who does not is not detained.
+#
+# Quiet-instrument rules (DESIGN.md M4.9): it is one line, it fades, it never
+# takes a plate, and it is gone before the notice above it is. The only thing that
+# animates is a single monotone brighten on arrival — no second peak, so there is
+# nothing for a rate governor to govern — and it is scaled by `A11y.effect_scale`
+# anyway, so Reduced Flashing removes it and leaves the TEXT at full legibility.
+# Calming a comfort setting must never cost a player the words.
+
+## How long the effect clause holds, and how long it takes to go.
+const PATCH_LINE_HOLD: float = 3.4
+const PATCH_LINE_FADE: float = 1.0
+## The arrival brighten, in seconds. Monotone rise-and-fall, a11y-scaled.
+const PATCH_LINE_FLARE: float = 0.35
+
 ## Local aliases for the palette. Members rather than constants since M4.7: the
 ## nominal phosphor is the player's own colour and is not known until the program
 ## file has loaded, so it cannot be baked into a `const` at parse time. The three
@@ -142,6 +162,12 @@ var _link_bad: bool = false
 
 var _ping_clock: float = 0.0
 var _notice_clock: float = 0.0
+## The patch effect clause under the notice: the label, and its own clock. Built
+## in code beside `NoticeLabel` rather than added to hud.tscn — a scene file is
+## the one thing several agents in one working copy cannot merge, and this widget
+## is four properties.
+var _patch_line: Label = null
+var _patch_clock: float = 0.0
 var _pulse: float = 0.0
 var _ghost: float = 0.0
 var _player: Player = null
@@ -299,6 +325,16 @@ func _ready() -> void:
 		leave_parent.add_child(settings_button)
 		leave_parent.move_child(settings_button, _leave_button.get_index())
 		settings_button.pressed.connect(func() -> void: SettingsPanel.open(self))
+		# CODEX, above SETTINGS. The reference has to be reachable from inside a run
+		# — "what does the thing I am carrying do" is a question you have while
+		# carrying it, and a reference only reachable from the main menu is a
+		# reference you read once and never again. Built in code beside the existing
+		# buttons for the same reason the settings entry is.
+		var codex_button: Button = Button.new()
+		codex_button.text = "CODEX"
+		leave_parent.add_child(codex_button)
+		leave_parent.move_child(codex_button, settings_button.get_index())
+		codex_button.pressed.connect(func() -> void: CodexPanel.open(self))
 	_invite_button.pressed.connect(func() -> void: SteamHub.open_invite_overlay())
 	_summary_button.pressed.connect(_on_summary_pressed)
 
@@ -330,6 +366,20 @@ func _ready() -> void:
 	# surfacing, expansion and drawing, and draws nothing at all until this run
 	# has actually found a patch.
 	_root.add_child(PatchStrip.create())
+	# THE DIRECTIVE: one line saying what the intrusion's next step is, plus the
+	# once-ever hints for the verbs a player cannot discover alone. ONE line here,
+	# for the third time and the same reason — see Directive, which owns its own
+	# anchors, its surfacing and its hint queue, and consults `Run` and
+	# `Cartography` read-only.
+	_root.add_child(Directive.create())
+	_build_patch_line()
+	# `--codex [SECTION]`: open the reference once the HUD is standing, so it can be
+	# photographed without a human holding a mouse. Read off the command line here
+	# rather than through a new `Debug` case — `src/core/debug.gd` is append-only
+	# while several agents share this working copy (CLAUDE.md), and this is the same
+	# argument `Patches._parse_forced` makes for `--patches`.
+	if CodexPanel.flagged_section() >= 0:
+		CodexPanel.open.bind(self).call_deferred()
 
 	_build_tube()
 	_install_depth()
@@ -417,6 +467,8 @@ func _process(delta: float) -> void:
 		_notice_label.modulate.a = fade
 		if _notice_clock <= 0.0:
 			_notice_label.text = ""
+
+	_update_patch_line(delta)
 
 	_update_cycles(delta)
 	_update_integrity()
@@ -1954,6 +2006,86 @@ func _show_notice(message: String) -> void:
 	_notice_label.text = message
 	_notice_label.modulate.a = 1.0
 	_notice_clock = NOTICE_DURATION
+
+
+# ------------------------------------------------------- the pickup moment --
+
+## The clause that says what you just picked up, one line under the notice.
+##
+## Built here rather than in `hud.tscn` on purpose: the scene file is the single
+## artefact in this project that two agents cannot merge, and everything this
+## widget needs is four properties and an anchor. It sits in the 18 rows between
+## the notice (which ends 74 above the instrument box's bottom edge) and the
+## Cycles gauge's own band, which is empty at every aspect the box supports.
+func _build_patch_line() -> void:
+	if _notice_label == null:
+		return
+	_patch_line = Label.new()
+	_patch_line.name = "PatchEffectLine"
+	# Spans the instrument box rather than a fixed 660 px, and the difference is a
+	# capture: at 660 the first shot came back `...eaten over 4 s  ·  c…`, because a
+	# mechanism clause is up to 90 characters and the notice above it is three
+	# words. Anchored 0..1 with margins instead of a hard width, so it gets whatever
+	# room the box has at any aspect and any UI SCALE, and can never be the element
+	# that pokes out of the tube. Centred on the notice's axis, so the two read as
+	# one block rather than as two labels that happen to be near each other.
+	_patch_line.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_patch_line.anchor_top = 1.0
+	_patch_line.anchor_bottom = 1.0
+	_patch_line.anchor_left = 0.0
+	_patch_line.anchor_right = 1.0
+	_patch_line.offset_left = 40.0
+	_patch_line.offset_right = -40.0
+	_patch_line.offset_top = -74.0
+	_patch_line.offset_bottom = -52.0
+	_patch_line.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_patch_line.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_patch_line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_patch_line.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# PT2 legibility: gloss colour, tight dark outline, no chromatic fringe. The
+	# outline is what makes 13 px body copy survive a bright wall behind it.
+	_patch_line.add_theme_font_size_override("font_size", UiFx.FONT_SMALL)
+	_patch_line.add_theme_color_override("font_color", UiFx.CAPTION)
+	_patch_line.add_theme_color_override("font_outline_color", Color(0.0, 0.01, 0.02, 0.9))
+	_patch_line.add_theme_constant_override("outline_size", 4)
+	_patch_line.clip_text = true
+	_patch_line.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_patch_line.text = ""
+	_patch_line.modulate.a = 0.0
+	_notice_label.get_parent().add_child(_patch_line)
+	Patches.patch_gained.connect(_on_patch_gained)
+
+
+## Somebody picked one up. Only the peer who got it gets the clause — patches are
+## per-player and the crew negotiates over voice, which is the same rule
+## `PatchStrip._on_gained` already follows.
+func _on_patch_gained(peer_id: int, patch_id: String, stacks: int) -> void:
+	if _patch_line == null or peer_id != Net.local_id():
+		return
+	# The live value at the stack count they now hold — so the second OVERFLOW says
+	# something different from the first, which is the entire point of a stacking
+	# item and was invisible before.
+	_patch_line.text = UpgradeText.patch_line(patch_id, stacks)
+	_patch_clock = PATCH_LINE_HOLD
+
+
+func _update_patch_line(delta: float) -> void:
+	if _patch_line == null or _patch_clock <= 0.0:
+		return
+	_patch_clock -= delta
+	if _patch_clock <= 0.0:
+		_patch_line.text = ""
+		_patch_line.modulate.a = 0.0
+		return
+	_patch_line.modulate.a = clampf(_patch_clock / PATCH_LINE_FADE, 0.0, 1.0)
+	# The arrival brighten: one rise and fall on the way in, comfort-scaled. The
+	# TEXT COLOUR is what moves, never the alpha — a player with Reduced Flashing on
+	# gets the same words at the same opacity, just without the ember on them.
+	var since: float = PATCH_LINE_HOLD - _patch_clock
+	var heat: float = clampf(1.0 - since / PATCH_LINE_FLARE, 0.0, 1.0) \
+			* A11y.effect_scale("notice")
+	_patch_line.add_theme_color_override("font_color",
+			UiFx.CAPTION.lerp(UiFx.SYSTEM_HOT, heat))
 
 
 # ----------------------------------------------------------------- overlays --

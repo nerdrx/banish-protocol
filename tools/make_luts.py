@@ -151,6 +151,87 @@ def filmic_curve(c: np.ndarray, toe: float, shoulder: float,
 
 # ------------------------------------------------------------------- bands --
 
+# ============================================================ M10b THE CHROMA ==
+#
+# THE FINDING THIS CONSTANT EXISTS TO CARRY, and it is the reason two separate
+# milestones of fixture-colour work measured as null results.
+#
+# M10 photographed a generated layer and found that ~93% of the frame's
+# luminance was cool, concluded the game reads Tron rather than Alien, and named
+# four suspects: the kit's emissive channels, the wall-variant table, the floor
+# inlay and the colour of the light rig. M10b cut all four — fewer trace
+# modules, a channel wash with a channel's reach instead of a room's, no floor
+# spine outside her own infrastructure, teal out of the colour script wherever
+# it was decoration, and a saturation cap on the "cool white" that turned out to
+# be a blue light. Measured: THE FRAME DID NOT MOVE. Cyan 57.3% -> 56.6%, blue
+# 41.3% -> 42.0%, on an A/B of the same build with one flag between the arms.
+#
+# The reason is in this file, and it is one probe away from obvious. Push a
+# perfectly NEUTRAL grey through the three bands and read the hue and saturation
+# that come out the other side:
+#
+#     input grey     surface band        mid band            deep band
+#     0.06           hue 224  sat 0.47   hue 189  sat 0.66   hue  40  sat 0.73
+#     0.10           hue 223  sat 0.31   hue 186  sat 0.38   hue  38  sat 0.46
+#     0.20           hue 222  sat 0.18   hue 180  sat 0.22   hue  35  sat 0.31
+#     0.00 (BLACK)   (0, 0.001, 0.0143)  (0, 0.008, 0.012)   (0.016, 0.011, 0)
+#
+# A grey wall in this game is not rendered grey. On the surface rings it is
+# rendered as a 30%-saturated BLUE and through the mid rings — layers 6 to 15,
+# which is most of a run — as a 38%-saturated CYAN. The bottom row is worse: the
+# grade puts a coloured floor UNDER TRUE BLACK, so an unlit pixel is not black,
+# it is dark blue. No lighting change can survive that, because the grade is
+# applied to every pixel after the lighting has already happened. The colour of
+# the game was never coming from the lights; it was coming from here.
+#
+# The fix keeps the depth story exactly and spends a third of the chroma on it.
+# Every colour-splitting term below — the CDL slope/offset/power triples and the
+# split-tone shadow/highlight pairs — is passed through `chroma()`, which holds
+# the triple's ACHROMATIC MEAN and shrinks only its spread. So the luminance
+# transfer of each band is preserved to within a few percent at every stop (the
+# darkness law is untouched, and the surface band's black actually gets DARKER,
+# from Y 0.0018 to 0.0020 of a much less blue colour), the hue DIRECTION of each
+# band is unchanged — surface 222 cool, mid 185 teal-drain, deep 39 warm-wrong —
+# and the saturation of a neutral surface falls by about 3x.
+#
+# What that buys is the thing the whole milestone is for: the grade goes back to
+# being the MOOD and the fixtures go back to being the COLOUR. A tungsten lamp
+# now reads as tungsten instead of as a slightly less blue patch of blue.
+#
+# THE DOSE, and it was set twice. 0.35 was the first cut and it left the frame's
+# large DIM areas — the lit haze filling half a vault, which is most of the
+# picture by area — sitting at saturation 0.20, i.e. exactly on the line where a
+# cool grey stops being grey. Re-measured at 0.25 the same areas land at 0.13 and
+# read as unlit metal in cold air, which is the reference frame.
+#
+# Not 0.0: a band with no chroma at all is three identical LUTs and a descent
+# that no longer changes colour, which would throw away DESIGN.md's aesthetic
+# gradient to fix a different problem. At 0.25 the direction of every band is
+# intact — surface 222 cool, mid 185 teal-drain, deep 39 warm-wrong — and it is
+# the FIXTURES that carry the colour, which is the whole point.
+CHROMA = 0.25
+
+# The legacy dose, written to `lut_*_legacy.png` so `-- --cyan legacy` can put
+# the pre-M10b photograph back in the SAME BUILD. An A/B across two builds is
+# two photographs, not a comparison.
+CHROMA_LEGACY = 1.0
+
+_chroma_dose = CHROMA
+
+
+def chroma(t) -> tuple:
+    """Hold a colour-split triple's mean, shrink its spread to `_chroma_dose`.
+
+    Works for every kind of triple in this file — a CDL slope sits around 1.0,
+    an offset around 0.0, a split-tone push around 0.0 — precisely because it is
+    defined against the triple's OWN mean rather than against an assumed
+    neutral. Shrinking toward 1.0 would have quietly re-graded the exposure of
+    every band the moment somebody used it on an offset.
+    """
+    mu = sum(t) / 3.0
+    return tuple(mu + (x - mu) * _chroma_dose for x in t)
+
+
 def band_surface(c: np.ndarray) -> np.ndarray:
     """Layers 1-5. Clean, cold, clinical. The system is working."""
     # 1.05, not 1.12. The Environment's linear contrast was the ONLY contrast
@@ -159,12 +240,14 @@ def band_surface(c: np.ndarray) -> np.ndarray:
     # luma — 48% darker than the baseline, which fails the darkness law from
     # the other direction. Measured either side and interpolated.
     c = contrast(c, 1.05)
-    c = cdl(c, slope=(0.99, 1.00, 1.03), offset=(-0.004, -0.002, 0.006),
-            power=(1.02, 1.00, 0.97))
+    c = cdl(c, slope=chroma((0.99, 1.00, 1.03)),
+            offset=chroma((-0.004, -0.002, 0.006)),
+            power=chroma((1.02, 1.00, 0.97)))
     c = filmic_curve(c, toe=0.020, shoulder=0.10, contrast=0.20)
     c = saturate(c, 0.94, pivot_shift=0.10)
-    c = split_tone(c, shadow=(-0.002, 0.001, 0.008),
-                   highlight=(0.010, 0.008, 0.000), balance=0.42, strength=1.0)
+    c = split_tone(c, shadow=chroma((-0.002, 0.001, 0.008)),
+                   highlight=chroma((0.010, 0.008, 0.000)),
+                   balance=0.42, strength=1.0)
     return c
 
 
@@ -173,30 +256,34 @@ def band_mid(c: np.ndarray) -> np.ndarray:
     # A shade more contrast than the surface band: the mid rings are further
     # from maintenance and the image should be harder, not just greener.
     c = contrast(c, 1.075)
-    c = cdl(c, slope=(0.94, 1.00, 0.99), offset=(-0.006, 0.004, 0.008),
-            power=(1.06, 0.99, 1.00))
+    c = cdl(c, slope=chroma((0.94, 1.00, 0.99)),
+            offset=chroma((-0.006, 0.004, 0.008)),
+            power=chroma((1.06, 0.99, 1.00)))
     c = filmic_curve(c, toe=0.016, shoulder=0.13, contrast=0.26)
     # Chroma drains out of the architecture but the emissives are near the top
     # of the range, so a saturation that RISES with luma keeps the neon and
     # kills the rest. This is the trick the Environment sliders cannot do.
     c = saturate(c, 0.76, pivot_shift=0.52)
-    c = split_tone(c, shadow=(-0.005, 0.004, 0.006),
-                   highlight=(0.005, 0.010, 0.007), balance=0.40, strength=1.0)
+    c = split_tone(c, shadow=chroma((-0.005, 0.004, 0.006)),
+                   highlight=chroma((0.005, 0.010, 0.007)),
+                   balance=0.40, strength=1.0)
     return c
 
 
 def band_deep(c: np.ndarray) -> np.ndarray:
     """Layers 16+. Warm-wrong. The colour pipeline itself is failing."""
     c = contrast(c, 1.10)
-    c = cdl(c, slope=(1.02, 0.95, 0.88), offset=(0.010, 0.006, -0.002),
-            power=(0.97, 1.02, 1.10))
+    c = cdl(c, slope=chroma((1.02, 0.95, 0.88)),
+            offset=chroma((0.010, 0.006, -0.002)),
+            power=chroma((0.97, 1.02, 1.10)))
     c = filmic_curve(c, toe=0.012, shoulder=0.18, contrast=0.32)
     c = saturate(c, 0.62, pivot_shift=0.70)
     # Amber-green in the shadows, magenta in the highlights: two casts that do
     # not belong to the same white balance, so the eye cannot resolve the frame
     # into one light source. That unresolvable quality is the effect.
-    c = split_tone(c, shadow=(0.008, 0.006, -0.003),
-                   highlight=(0.016, -0.005, 0.013), balance=0.38, strength=1.0)
+    c = split_tone(c, shadow=chroma((0.008, 0.006, -0.003)),
+                   highlight=chroma((0.016, -0.005, 0.013)),
+                   balance=0.38, strength=1.0)
     return c
 
 
@@ -225,9 +312,17 @@ def write_lut(name: str, fn) -> None:
 
 
 def main() -> None:
+    global _chroma_dose
     print("LUTs -> %s" % OUT)
     for name, fn in BANDS.items():
         write_lut(name, fn)
+    # The legacy set, for `-- --cyan legacy`. Same code path, one constant moved.
+    _chroma_dose = CHROMA_LEGACY
+    for name, fn in BANDS.items():
+        if name == "neutral":
+            continue
+        write_lut(name + "_legacy", fn)
+    _chroma_dose = CHROMA
     # A visual sanity strip: the neutral LUT must round-trip a ramp exactly, and
     # the others must not move the ramp's ends by more than a hair or the
     # darkness law is being broken by the grade rather than by the lighting.

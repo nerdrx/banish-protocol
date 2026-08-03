@@ -172,7 +172,11 @@ var _stutter_armed: bool = false
 
 
 func _extra_sync_properties() -> Array[String]:
-	return [".:sync_sweep"]
+	# M11b adds the slam wind-up. Streamed rather than sent as an event, and
+	# streamed rather than derived: a wind-up only the host could see would be the
+	# least fair thing in the game, and a client that had to infer it from a state
+	# change would start its 1.35 s warning a packet late.
+	return [".:sync_sweep", ".:sync_slam"]
 
 
 ## It looks down from head height on a two-and-a-half-metre body, so a rack of
@@ -420,6 +424,7 @@ func _emissive(colour: Color, energy: float) -> StandardMaterial3D:
 ## something a crew can finish.
 func breaker_damage(from: Vector3, base: float = Balance.BREAKER_DAMAGE) -> float:
 	if not core_exposed():
+		_last_hit_weakpoint = false
 		return base
 	var to_shooter: Vector3 = from - global_position
 	to_shooter.y = 0.0
@@ -427,7 +432,13 @@ func breaker_damage(from: Vector3, base: float = Balance.BREAKER_DAMAGE) -> floa
 		return base
 	var facing: Vector3 = Vector3(-sin(rotation.y), 0.0, -cos(rotation.y))
 	if to_shooter.normalized().dot(facing) < cos(deg_to_rad(Balance.SENTINEL_CORE_ARC_DEG)):
+		_last_hit_weakpoint = false
 		return base
+	# M15: the ONE place in the game that can honestly say "that was the core".
+	# The multiplier and the claim are computed together and cannot disagree —
+	# which is the whole reason the flag is set here rather than inferred from a
+	# damage number downstream, where a Breaker upgrade would forge it.
+	_last_hit_weakpoint = true
 	return base * Balance.SENTINEL_CORE_MULTIPLIER
 
 
@@ -439,25 +450,99 @@ func core_exposed() -> bool:
 
 # ---------------------------------------------------------------- decisions --
 
+# ============================================ M11 doctrine: AREA DENIAL ======
+#
+# The Sentinel is the one hunter whose character is a PLACE. It does not pursue,
+# it holds — and the M6 spelling of that was a leash on the chase plus a 22 m
+# wake radius that saw through walls. M11 keeps the leash (it is the doctrine)
+# and replaces the radius with real eyes: the best eyes in the game, inside its
+# zone, and nothing at all outside it.
+#
+# The behavioural difference: you can now cross a vault in the dark behind one,
+# and you cannot walk past its face however dark it is. It searches — but only
+# within `AI_SENTINEL_ZONE` of its post, so a crew that breaks contact by LEAVING
+# has genuinely beaten it, and a crew that breaks contact by hiding in the corner
+# it is guarding has not. That asymmetry is the whole of area denial: it punishes
+# standing still in its room and rewards giving the room up.
+
+func ai_kind() -> String:
+	return "sentinel"
+
+
+func sight_range() -> float:
+	return Balance.AI_SIGHT_SENTINEL
+
+
+func sight_cone_deg() -> float:
+	return Balance.AI_CONE_SENTINEL
+
+
+func hearing_rooms() -> int:
+	return Balance.AI_HEAR_ROOMS_SENTINEL
+
+
+func _telegraph_sound(state_now: int) -> StringName:
+	match state_now:
+		Suspicion.State.HUNTING:
+			return &"sentinel_scan"
+		Suspicion.State.ALERT, Suspicion.State.LOST:
+			return &"sentinel_glide"
+		_:
+			return &""
+
+
+## THE ZONE. Search candidates are the base's, filtered to what it is willing to
+## walk to — which is the single line that makes this creature area denial rather
+## than a slow Hound. Everything past the leash is somebody else's problem, and
+## the crew can see that it is, because they can watch it turn round.
+func _search_candidates(kinds: Array[String]) -> Array[Vector3]:
+	var all: Array[Vector3] = super(kinds)
+	var inside: Array[Vector3] = []
+	var kept: Array[String] = []
+	for i: int in all.size():
+		if all[i].distance_to(home) > Balance.AI_SENTINEL_ZONE:
+			continue
+		inside.append(all[i])
+		kept.append(kinds[i] if i < kinds.size() else "spot")
+	kinds.clear()
+	kinds.append_array(kept)
+	return inside
+
+
 func _think() -> void:
 	var tick: float = Balance.AI_TICK
 	if _swing_cooldown > 0.0:
 		_swing_cooldown -= tick
 
+	# M11b: the OVERLOAD SLAM. Considered before the state machine so a wind-up in
+	# flight owns the creature — it does not swing, advance or re-decide while it
+	# is committing, which is what makes the tell trustworthy.
+	_consider_slam(tick)
+	if _slam_windup > 0.0:
+		return
+
 	match state:
 		State.DORMANT:
-			if _nearest_player(Balance.SENTINEL_WAKE_RANGE, false) != null:
+			# M11: it wakes because it BELIEVES something is here, not because
+			# something crossed a radius through a wall. Its shielding is down
+			# while it is awake (`core_exposed`), so waking is a real cost to it
+			# and waking it needlessly used to be free.
+			if suspicion >= Suspicion.State.CURIOUS:
 				_enter(State.SCAN)
 		State.SCAN:
+			# The red sweep still owns the acquisition — being caught in it is the
+			# Sentinel's signature and M11 does not touch that. What the sweep now
+			# also does is feed the shared mind, in `_sense_extra`, so the ladder
+			# and the sweep can never disagree about whether it has seen you.
 			var seen: Node3D = _swept_player()
-			if seen != null:
+			if seen != null and _within_leash(seen.global_position):
 				_target = seen
 				_last_seen = seen.global_position
 				_enter(State.PURGE)
-			elif _nearest_player(Balance.SENTINEL_WAKE_RANGE + 6.0, false) == null:
+			elif suspicion == Suspicion.State.UNAWARE:
 				_enter(State.DORMANT)
 		State.PURGE:
-			var prey: Node3D = _nearest_player(Balance.SENTINEL_SCAN_RANGE, false)
+			var prey: Node3D = hunted_body()
 			if prey != null and _within_leash(prey.global_position):
 				_target = prey
 				_last_seen = prey.global_position
@@ -467,6 +552,127 @@ func _think() -> void:
 				_calm -= tick
 				if _calm <= 0.0:
 					_enter(State.SCAN)
+
+
+## The sweep IS the Sentinel's sense, so it goes through the mind like every
+## other sense — at full strength, because being caught in a scan sweep is the
+## least ambiguous evidence in the game. Fed on top of the base's cone rather
+## than instead of it: the cone is what stops you walking up behind it, the sweep
+## is what catches you crossing the room.
+# ------------------------------------------- M11b: THE OVERLOAD SLAM --------
+#
+# Area denial expressed violently. It plants, dumps its core into the deck, and
+# the deck answers radially.
+#
+# WHY RADIAL. Every other attack in the game has a facing you can get behind. The
+# Sentinel's job is to make a ROOM expensive, and an attack you beat by walking
+# round it does not make a room expensive — it makes the Sentinel's back
+# expensive. There is no arc to flank here; there is only OUT. That is what
+# "punishes standing still" has to mean mechanically.
+#
+# WHY IT IS FAIR. The wind-up is 1.35 s of unmistakable telegraph — the core
+# flares, the halo spins up, a rising tone, a caption that says GET CLEAR — and
+# `AI_SLAM_RADIUS` is 6 m. A sprinting agent starting at the dead centre clears it
+# with metres to spare, and a walking one still gets out; `--selftest` asserts
+# that arithmetic rather than trusting the tuning. It staggers and costs under a
+# third of a bar; it cannot corrupt a healthy agent.
+#
+# AND IT MAKES IT MORE KILLABLE, WHICH IS THE POINT. Its shielding is already
+# down whenever it is awake, and during the wind-up it is stationary with its core
+# lit. The greedy play — stand in, put shots into the core, leave late — is real,
+# priced, and exactly the decision an armoured enemy ought to be asking.
+
+var _slam_windup: float = 0.0
+var _slam_cooldown: float = 0.0
+## Cosmetic, every peer: 0..1 rising through the wind-up. Streamed so a client
+## sees the same tell at the same time — a wind-up that only the host could see
+## would be the least fair thing in the game.
+var sync_slam: float = 0.0
+
+
+## Host-side, from `_think`. Commits only when somebody is close enough to be
+## worth it, so it never slams an empty room and the move stays an event.
+func _consider_slam(tick: float) -> void:
+	_slam_cooldown = maxf(_slam_cooldown - tick, 0.0)
+	if _slam_windup > 0.0:
+		_slam_windup -= tick
+		sync_slam = clampf(1.0 - _slam_windup / Balance.AI_SLAM_WINDUP, 0.0, 1.0)
+		if _slam_windup <= 0.0:
+			_fire_slam()
+		return
+	if _slam_cooldown > 0.0 or state != State.PURGE:
+		return
+	var prey: Node3D = hunted_body()
+	if prey == null or prey.global_position.distance_to(global_position) > Balance.AI_SLAM_TRIGGER:
+		return
+	_slam_windup = Balance.AI_SLAM_WINDUP
+	_slam_cooldown = Balance.AI_SLAM_COOLDOWN
+	sync_slam = 0.0
+	# THE WARNING. Audio and caption from the same call site, so the deaf player's
+	# window and the hearing player's window are the same window.
+	Audio.play_3d(&"sentinel_alarm", global_position)
+	Captions.emit(&"hunter_slam", global_position, 30.0)
+	_tell_crew(&"_slam_windup_fx")
+
+
+func _fire_slam() -> void:
+	sync_slam = 0.0
+	# Damage falls off from the centre, so being ALMOST clear is worth something.
+	# Everything goes through `_land_hit`, which is where forks, surge-step
+	# i-frames, checksum barriers and hot patches are all already answered — the
+	# new move gets every one of those interactions for free and cannot bypass one.
+	for body: Node3D in _running_players():
+		var reach: float = body.global_position.distance_to(global_position)
+		if reach > Balance.AI_SLAM_RADIUS:
+			continue
+		var falloff: float = clampf(1.0 - reach / Balance.AI_SLAM_RADIUS, 0.0, 1.0)
+		_land_hit(body, Balance.AI_SLAM_DAMAGE * falloff)
+	_slam_fx()
+	_tell_crew(&"_slam_fx")
+
+
+## Runs on every peer. Local, cosmetic, and routed through the governed systems:
+## `Fx.shake` is rate-limited and scaled by the a11y comfort setting, the ring and
+## dust come out of the existing pools, and nothing here lights the room.
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _slam_fx() -> void:
+	Audio.play_3d(&"sentinel_purge", global_position)
+	Fx.pulse_ring(global_position, Balance.AI_SLAM_RADIUS, ALARM_COLOUR, 0.45)
+	Fx.land_dust(global_position, 2)
+	Fx.impact(global_position + Vector3.UP * 0.1, Vector3.UP, ALARM_COLOUR, 1.4)
+	_proximity_shake(Balance.AI_SLAM_SHAKE)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _slam_windup_fx() -> void:
+	Audio.play_3d(&"sentinel_alarm", global_position)
+	Captions.emit(&"hunter_slam", global_position, 30.0)
+
+
+## Weight, felt rather than seen. Scaled by how close this peer's own agent is,
+## so a Sentinel across the layer is silent in the hands and one in the room with
+## you is not. `Fx.shake` owns the governor and the comfort scaling.
+func _proximity_shake(amount: float) -> void:
+	var body: Node = Net.get_player(Net.local_id())
+	var me: Node3D = body as Node3D
+	if me == null or not is_instance_valid(me):
+		return
+	var reach: float = me.global_position.distance_to(global_position)
+	if reach > Balance.AI_PRESENCE_SHAKE_RANGE:
+		return
+	Fx.shake(amount * clampf(1.0 - reach / Balance.AI_PRESENCE_SHAKE_RANGE, 0.0, 1.0))
+
+
+func _sense_extra(delta: float, fed: Dictionary) -> void:
+	var seen: Node3D = _swept_player()
+	if seen == null:
+		return
+	var key: String = String(seen.name)
+	if mind.feed(key, 1.0, seen.global_position, "scan", delta, seen):
+		fed[key] = true
+		mind.last_sight = 1.0
+		if graph != null:
+			memory.mark_seen(seen.global_position, graph.region_of(seen.global_position))
 
 
 func _enter(next: State) -> void:
@@ -517,6 +723,13 @@ func _act(delta: float) -> void:
 	_advance_sweep(delta)
 	_watch_heading(delta)
 
+	# Planted. A committed heavy move must be COMMITTED: it stops dead for the
+	# whole wind-up, which is both the honest telegraph and the reason the greedy
+	# core-shot play is available.
+	if _slam_windup > 0.0:
+		_steer(global_position, 0.0, delta)
+		return
+
 	match state:
 		State.DORMANT:
 			# Walk home if something dragged it off its post, otherwise stand.
@@ -525,7 +738,18 @@ func _act(delta: float) -> void:
 			else:
 				_steer(global_position, 0.0, delta)
 		State.SCAN:
-			_steer(global_position, 0.0, delta)
+			# M11: a scanning Sentinel that BELIEVES something is in its zone walks
+			# the zone. Slowly, at walk speed, never past the leash — which is the
+			# visible difference between this and a Hound, and the thing that makes
+			# hiding in the corner it is guarding stop working.
+			var sweep_goal: Vector3 = hunt_goal()
+			if sweep_goal != Vector3.INF and _within_leash(sweep_goal):
+				_steer(_route_to(sweep_goal),
+						Balance.SENTINEL_WALK_SPEED * suspicion_speed(), delta)
+			elif global_position.distance_to(home) > 2.0:
+				_steer(_route_to(home), Balance.SENTINEL_WALK_SPEED, delta)
+			else:
+				_steer(global_position, 0.0, delta)
 		State.PURGE:
 			_act_purge(delta)
 
@@ -566,6 +790,13 @@ func _act_purge(delta: float) -> void:
 	var goal: Vector3 = _last_seen
 	if _target != null and is_instance_valid(_target):
 		goal = _target.global_position
+	else:
+		# M11: no live contact, so it works the mind's search instead of standing
+		# on a stale `_last_seen`. Still leashed below, so this can only ever move
+		# it around inside its own zone.
+		var searched: Vector3 = hunt_goal()
+		if searched != Vector3.INF:
+			goal = searched
 	if not _within_leash(goal):
 		goal = home
 
@@ -841,6 +1072,7 @@ func _process(delta: float) -> void:
 	_track_head(delta)
 	_apply_stutter(delta)
 	_update_audio()
+	_tick_footfalls(delta)
 
 	var t: float = float(Time.get_ticks_msec()) / 1000.0
 	var breath: float = 0.85 + sin(t * 1.1) * 0.15
@@ -876,6 +1108,52 @@ func _process(delta: float) -> void:
 ## the damage window opening; the klaxon loops while it purges and ducks the
 ## music (two klaxons, two authors — this is MOTHER's, distinct from the crew's
 ## exfil horn); the glide-stutter clicks on every direction change.
+# ------------------------------------------- M11b: PRESENCE AND WEIGHT ------
+#
+# A hunter arriving should be an EVENT, and the Sentinel is 2.6 m of mass. Before
+# this it moved in near silence and shook nothing — which made the heavy authored
+# gait M6.5 built read as an animation rather than as a thing with weight.
+#
+# So every stride plants: a low hit, dust off the deck, and a small shake scaled
+# by how close this peer's own agent is standing. All of it is LOCAL and cosmetic,
+# driven off `_measured_speed` (the pose this peer can already see), so a client
+# feels the same footfalls the host does with nothing extra on the wire.
+#
+# Deliberately restrained. This is on screen for a whole fight, so it has to be
+# weight rather than a screen effect: `AI_FOOTFALL_SHAKE` is a fourteenth of the
+# slam and everything goes through `Fx.shake`, which is rate-limited and scaled to
+# nothing by the Reduced Flashing / comfort setting.
+
+## Metres of travel per planted stride, measured off the same authored clip the
+## no-skate playback rate is derived from — so the thump lands with the foot
+## rather than on a timer that drifts against it.
+const FOOTFALL_STRIDE: float = 1.45
+
+var _footfall_travel: float = 0.0
+var _footfall_last: Vector3 = Vector3.INF
+
+
+func _tick_footfalls(_delta: float) -> void:
+	if _footfall_last == Vector3.INF:
+		_footfall_last = global_position
+		return
+	var moved: float = Vector2(global_position.x - _footfall_last.x,
+			global_position.z - _footfall_last.z).length()
+	_footfall_last = global_position
+	# A stationary Sentinel does not stomp, and neither does a sliding one: the
+	# gate is real ground travel, which is what the authored stride is measured in.
+	if _measured_speed < 0.3:
+		_footfall_travel = 0.0
+		return
+	_footfall_travel += moved
+	if _footfall_travel < FOOTFALL_STRIDE:
+		return
+	_footfall_travel = 0.0
+	Audio.play_3d(&"sentinel_glide", global_position)
+	Fx.land_dust(global_position, 0)
+	_proximity_shake(Balance.AI_FOOTFALL_SHAKE)
+
+
 func _update_audio() -> void:
 	var s: int = int(sync_state)
 	if s != _audio_state:

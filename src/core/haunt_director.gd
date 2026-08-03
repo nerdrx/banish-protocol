@@ -95,6 +95,15 @@ func _ready() -> void:
 	Run.exfil_changed.connect(_on_exfil_changed)
 	Run.backdoor_rooted_changed.connect(_on_backdoor_changed)
 	Run.breaker_fired.connect(_on_breaker_fired)
+	# M15. Two moments the writer cannot see from anywhere else.
+	#
+	# `decompiled` is the crewmate's actual death instant, not a debrief summary —
+	# which is precisely the objection that kept the epitaph hook unwritten ("a
+	# death comment arriving 40 s late is worse than none"). It is not late: this
+	# signal fires the moment the process is deleted, in the room it happened in,
+	# so the 49 written lines about losing a crewmate are live and TIMELY.
+	Run.decompiled.connect(_on_crew_decompiled)
+	Run.run_ended.connect(_on_run_ended_lore)
 	NoiseBus.heard.connect(_on_noise)
 	set_process(true)
 
@@ -120,6 +129,9 @@ func begin(layout: LayerGraph, layer_number: int, director: AntivirusDirector) -
 	_auditor_deleted = false
 	_has_noise = false
 	withholding = false
+	# The index does not follow you down a drop shaft. A ring you have left is a
+	# ring that has stopped caring about you.
+	_marked.clear()
 	_first_delay = Balance.HAUNT_FIRST_DELAY
 	_address_layer = 0
 
@@ -158,6 +170,9 @@ func _process(delta: float) -> void:
 				_muzzle.erase(peer)
 
 	_combat_recency = minf(_combat_recency + delta, 99.0)
+	# M11b: the index fades on every peer against its own clock, exactly like the
+	# muzzle pulse above and for the same reason.
+	_tick_marks(delta)
 
 	# Music: whenever a hunter is on the layer (this peer can see them in the
 	# group), drive the score from perceived stress; otherwise hand the wheel back
@@ -207,7 +222,69 @@ func _host_tick(step: float) -> void:
 		if _pressure >= Balance.HAUNT_PRESSURE_THRESHOLD:
 			_try_spawn()
 
+	_tick_hints(step)
 	_tick_barks(step)
+
+
+# ---------------------------------------------------------------- M11 hints --
+#
+# THE DIRECTOR HINTS, THE CREATURE HUNTS.
+#
+# DESIGN.md's two-brain setup says MOTHER always knows where the crew is and her
+# processes only know what she tells them. The dangerous reading of that is "she
+# tells them where you are", which is a wallhack with a lore justification — and
+# it is precisely the thing that would make all the perception work in M11
+# pointless, because a hunter handed a position never has to sense anything.
+#
+# So she tells them a ZONE and nothing finer: a room centre, refreshed every
+# `AI_HINT_INTERVAL`, decaying over `AI_HINT_LIFETIME`. A hinted hunter arrives in
+# the right part of the layer and then has to find you with its own eyes and ears,
+# which is where all the searching behaviour actually gets used. Three registers,
+# all of them already implied by the M6 pacing this extends:
+#
+#   PRESSURE  the crew has been loud somewhere: press there.
+#   RELIEF    the crew is broken: `withholding` is already true, so she stops
+#             hinting entirely and the hunters fall back to their own doctrine —
+#             which reads as the predator losing interest, not as a difficulty
+#             slider moving.
+#   PATTERN   nothing loud recently: press the region the crew keeps returning
+#             to, which is the noisiest room of the layer so far.
+
+## Where she is currently pressing, and how long since she last re-picked.
+var _press_point: Vector3 = Vector3.INF
+var _press_clock: float = 0.0
+
+
+func _tick_hints(step: float) -> void:
+	_press_clock -= step
+	if _press_clock > 0.0:
+		return
+	_press_clock = Balance.AI_HINT_INTERVAL
+	# RELIEF: a broken crew is not pressed. The withhold already stops pressure
+	# accruing and eases the score; this is the same decision expressed in the
+	# channel the hunters actually feel.
+	if withholding or graph == null:
+		_press_point = Vector3.INF
+		return
+	# PRESSURE, then PATTERN. The loudest recent thing if there was one, else the
+	# region the crew has been spending its noise in.
+	var zone: Vector3 = _last_noise if _has_noise else _crew_centroid()
+	if zone == Vector3.ZERO:
+		return
+	# A ZONE, not a position: snapped to the centre of the room it fell in, so
+	# the finest thing that can ever cross this boundary is "somewhere in the bus
+	# hall". The last twenty metres are the creature's own problem.
+	var room: int = graph.region_of(zone)
+	if room < 0:
+		return
+	_press_point = graph.centre_of(room)
+	for node: Node in get_tree().get_nodes_in_group(Hunter.HUNTER_GROUP):
+		var hunter: Hunter = node as Hunter
+		if hunter == null or not is_instance_valid(hunter):
+			continue
+		hunter.hint_zone(_press_point)
+	if Debug.log_ai:
+		print("[Haunt] pressing %s" % graph.room_name(room))
 
 
 # -------------------------------------------------------------------- spawns --
@@ -418,13 +495,12 @@ func _crew_broken() -> bool:
 		return true
 	var sum: float = 0.0
 	var n: int = 0
-	for id: int in Net.crew.keys():
-		var peer: int = int(id)
-		if not Run.is_running(peer):
-			continue
-		var cap: float = Run.integrity_max_of(peer)
+	# PT-MULTI: off the tree, so a four-crew withhold is computed from four
+	# crewmates' integrity rather than from the host's alone. See `_crew_bodies`.
+	for body: Player in _running_crew():
+		var cap: float = Run.integrity_max_of(body.peer_id)
 		if cap > 0.0:
-			sum += Run.integrity_of(peer) / cap
+			sum += Run.integrity_of(body.peer_id) / cap
 			n += 1
 	if n > 0 and sum / float(n) < Balance.HAUNT_BROKEN_INTEGRITY:
 		return true
@@ -436,6 +512,60 @@ func _crew_broken() -> bool:
 ## The Moth reads this: how bright the muzzle flash of `peer`'s recent breaker
 ## fire still is, 0..1, fading over MOTH_MUZZLE_PULSE. A shot is a light even in
 ## the dark, which is what makes fighting a Moth feed it.
+# --------------------------------------------------------- M11b: THE INDEX --
+#
+# The Auditor's signature move lives here rather than on the creature, for the
+# same reason the muzzle pulse does: it is a fact about a CREWMATE that outlives
+# the process that created it. A marked agent stays marked after the Auditor has
+# walked into the next room, and — the whole point — after it has been deleted.
+#
+# What the mark does is make you readable. `Antivirus._target_illumination` asks
+# this, so a marked crewmate is perceived as brightly lit by EVERY process on the
+# ring whether or not their beam is on. It is the exact inverse of the game's one
+# reliable defence, which is why it is frightening and why it does no damage: the
+# cost of being indexed is that going dark stops working, and that is enough.
+#
+# Bounded and self-clearing: it expires on its own timer, and on descent. Nothing
+# about it is permanent and nothing about it can end a run.
+
+## peer -> seconds of index remaining.
+var _marked: Dictionary = {}
+
+
+## Host-side. The audit completed on this crewmate.
+func mark_agent(peer: int) -> void:
+	if not _is_host():
+		return
+	_marked[peer] = Balance.AI_MARK_LIFETIME
+	if Debug.log_ai:
+		print("[Haunt] INDEXED %s for %.0fs" % [Net.crew_name(peer), Balance.AI_MARK_LIFETIME])
+
+
+## How indexed `peer` currently is, 0..1, fading over the last few seconds so the
+## dark comes back gradually rather than snapping on. Read by the perception
+## model as an illumination floor.
+func audit_mark(peer: int) -> float:
+	if not _marked.has(peer):
+		return 0.0
+	return clampf(float(_marked[peer]) / 6.0, 0.0, 1.0)
+
+
+func is_marked(peer: int) -> bool:
+	return _marked.has(peer)
+
+
+func _tick_marks(delta: float) -> void:
+	if _marked.is_empty():
+		return
+	for peer: int in _marked.keys():
+		_marked[peer] = float(_marked[peer]) - delta
+		if float(_marked[peer]) <= 0.0:
+			_marked.erase(peer)
+			var body: Node = Net.get_player(peer)
+			if body != null and is_instance_valid(body):
+				Captions.emit(&"hunter_unmarked", (body as Node3D).global_position, 8.0)
+
+
 func muzzle_light(peer: int) -> float:
 	if not _muzzle.has(peer):
 		return 0.0
@@ -518,7 +648,14 @@ func _bark(category: String, target: int = -1) -> void:
 		if GameState.mother_said_go_up:
 			exclude = ["addr.go_up"]
 
-	var rendered: Dictionary = _barks.pick(category, _layer, callsign, exclude)
+	# M15: the writer's director owns the choice now — 848 barks across 103
+	# trigger pools, with cross-run memory. Same arguments, same return shape, and
+	# `_barks` goes in as the FALLBACK: if the corpus fails to load, `pick` hands
+	# straight back to `MotherBarks` and the failure mode is the old behaviour
+	# rather than a silent MOTHER. That is the only reason this is a one-line
+	# change instead of a migration.
+	var rendered: Dictionary = LoreDirector.get_instance().pick(
+			category, _layer, callsign, exclude, _barks)
 	if rendered.is_empty():
 		return
 
@@ -586,14 +723,9 @@ func _tick_barks(step: float) -> void:
 func _address_target() -> int:
 	var best: int = -1
 	var best_score: float = -1.0
-	for id: int in Net.crew.keys():
-		var peer: int = int(id)
-		if not Run.is_running(peer):
-			continue
-		var node: Node = Net.get_player(peer)
-		var body: Node3D = node as Node3D
-		if body == null or not is_instance_valid(body):
-			continue
+	# PT-MULTI: off the tree. She could only ever have addressed the host before.
+	for body: Player in _running_crew():
+		var peer: int = body.peer_id
 		var nearest_hunter: float = 1e9
 		for hn: Node in get_tree().get_nodes_in_group(Hunter.HUNTER_GROUP):
 			var h: Node3D = hn as Node3D
@@ -613,15 +745,42 @@ func _address_target() -> int:
 
 
 func _is_isolated(body: Node3D) -> bool:
-	for id: int in Net.crew.keys():
-		var peer: int = int(id)
-		var node: Node = Net.get_player(peer)
-		var other: Node3D = node as Node3D
-		if other == null or other == body or not is_instance_valid(other):
+	# PT-MULTI: off the tree. Driven off the roster this answered "yes, isolated"
+	# for everybody on a host whose roster was short, which is the opposite of the
+	# question — it exists to find the one crewmate who has wandered off.
+	for other: Player in _crew_bodies():
+		if other == body or not is_instance_valid(other):
 			continue
 		if other.global_position.distance_to(body.global_position) < 16.0:
 			return false
 	return true
+
+
+# ------------------------------------------------------------- M15 lore notes --
+
+## Deletions this run, for `kill.none`. Counted rather than read back off a
+## summary so a run abandoned mid-layer still answers the question honestly.
+var _deletions_this_run: int = 0
+
+
+## A crewmate was permanently deleted, at the instant it happened.
+func _on_crew_decompiled(peer_id: int) -> void:
+	if not _is_host():
+		return
+	LoreDirector.get_instance().note(&"death.crew", {
+		"callsign": Net.crew_name(peer_id), "layer": _layer})
+
+
+## The run is over. THE ODD ONE OUT, and worth the wiring: a run that ends with
+## zero deletions earns the best line in the corpus, and it is a fact only the
+## end of a run can establish — there is no moment during play when "they never
+## killed anything" is yet true.
+func _on_run_ended_lore(_summary: Dictionary) -> void:
+	if not _is_host():
+		return
+	if _deletions_this_run == 0:
+		LoreDirector.get_instance().note(&"kill.none", {"layer": _layer})
+	_deletions_this_run = 0
 
 
 func _on_damaged(_from: Vector3) -> void:
@@ -630,6 +789,8 @@ func _on_damaged(_from: Vector3) -> void:
 
 func _on_process_deleted(_by: int, kind: String) -> void:
 	_combat_recency = 0.0
+	# M15: the tally `kill.none` is decided against at the end of the run.
+	_deletions_this_run += 1
 	# A Scrubber or Sentinel kill is acknowledged too, but the hunter kills route
 	# their kill_ack through `on_hunter_killed` with the recompile timer attached,
 	# so only the ordinary processes are handled here.
@@ -740,18 +901,50 @@ func _local_body() -> Node3D:
 	return node as Node3D if node is Node3D and is_instance_valid(node) else null
 
 
+## PT-MULTI. Every crew avatar in this world, whoever owns it.
+##
+## Shares its argument — and its implementation — with
+## `Antivirus._running_players`: a live four-player session reported the
+## antivirus responding only to the host, and every crew read in this file was
+## driven off `Net.crew.keys()`, which makes the roster rather than the tree the
+## source of truth for who exists. That is a silent failure mode, and in HERE it
+## is a nasty one: `_crew_centroid` decides which nest a hunter enters from (so a
+## roster that sees one player spawns hunters on top of the other three), and
+## `_crew_broken` decides the WITHHOLD (so the mercy layer would have been
+## computed off one crewmate's integrity for a crew of four).
+##
+## The tree wins. `Player` is a class test, never an ownership test — a single
+## `is_multiplayer_authority()` anywhere on a crew-enumeration path produces
+## exactly the reported bug, because on the host that predicate is true only for
+## the host's own avatar.
+func _crew_bodies() -> Array[Player]:
+	var anchor: Node = Net.get_player(Net.local_id())
+	if anchor == null or not is_instance_valid(anchor):
+		for id: int in Net.crew.keys():
+			var candidate: Node = Net.get_player(int(id))
+			if candidate != null and is_instance_valid(candidate):
+				anchor = candidate
+				break
+	if anchor == null or not is_instance_valid(anchor):
+		return [] as Array[Player]
+	return Antivirus.crew_avatars_under(anchor.get_parent())
+
+
+## Just the ones on their feet.
+func _running_crew() -> Array[Player]:
+	var out: Array[Player] = []
+	for body: Player in _crew_bodies():
+		if Run.is_running(body.peer_id):
+			out.append(body)
+	return out
+
+
 func _crew_centroid() -> Vector3:
 	var sum: Vector3 = Vector3.ZERO
 	var n: int = 0
-	for id: int in Net.crew.keys():
-		var peer: int = int(id)
-		if not Run.is_running(peer):
-			continue
-		var node: Node = Net.get_player(peer)
-		var body: Node3D = node as Node3D
-		if body != null and is_instance_valid(body):
-			sum += body.global_position
-			n += 1
+	for body: Player in _running_crew():
+		sum += body.global_position
+		n += 1
 	return sum / float(n) if n > 0 else Vector3.ZERO
 
 

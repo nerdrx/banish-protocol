@@ -59,7 +59,20 @@ static func of(layer_number: int) -> Dictionary:
 		# decayed and run fewer of them.
 		"trace_density": lerpf(1.0, 0.55, depth),
 		# Ceiling heights compress as the architecture gets older and heavier.
-		"height_range": Vector2(lerpf(4.2, 3.4, depth), lerpf(7.0, 5.0, depth)),
+		#
+		# M10 SCALE: the whole band lifted about one kit storey, on the live
+		# playtest note "more rooms should have a higher ceiling ... sometimes the
+		# game feels claustrophobic". The measurement it answers: 61% of rooms were
+		# a single 4 m storey and the median ceiling was 5.2 m, so the modal NULLVOID
+		# room was a low box. At 5.6-11.2 on the surface the median lands just under
+		# two storeys and three-storey machinery halls stop being rare; deep rings
+		# still compress (4.8-8.4), because the gradient — old architecture is
+		# heavier and lower — is the thing that makes depth feel different, and
+		# flattening it to make everything big would trade one monotony for another.
+		#
+		# The shape of the draw inside this band is reshaped upward too; see
+		# LayerGraph.SIZE_BIAS.
+		"height_range": Vector2(lerpf(5.6, 4.8, depth), lerpf(11.2, 8.4, depth)),
 
 		# --- M3 hooks (defined, not yet consumed) -------------------------
 		# M4.9 (balance lab): base 2 -> 4. The director reserves a Scrubber floor

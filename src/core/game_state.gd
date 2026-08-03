@@ -95,6 +95,33 @@ var modules: Dictionary = {}
 ## Lifetime totals. Presentation only — nothing in the simulation reads these.
 var stats: Dictionary = {}
 
+## CODEX: which hot-patches this program has ever had injected into it. `id: true`,
+## and never a false — an absent key is exactly "never seen one", which is what
+## makes the Codex a collection rather than a list with holes in it.
+##
+## Persisted in the program file rather than in a file of its own, for the same
+## reason the module tiers are: it is a fact about a player's history with the
+## game, it is worth exactly as much as their archive is, and the one thing this
+## project has learned about save files is that a second one is a second thing to
+## get out of step. A PATCH itself is never persisted — it dies with the instance,
+## which is the whole design (see `Patches`) — but the MEMORY of having held one is
+## not a patch, it is a page of documentation the player has earned.
+##
+## Presentation only. Nothing in the simulation reads it, nothing crosses the wire,
+## and a player who deletes it loses reading material and no power whatsoever.
+var codex: Dictionary = {}
+
+## Which one-shot contextual hints this player has already been shown. `key: true`,
+## same shape and same file as `codex`, and for the same reason: it is a fact about
+## a player's history and it is worth nothing to anybody else.
+##
+## The design constraint that makes this a saved dictionary rather than a session
+## flag is the only one that matters — DESIGN.md has no tutorial and this game does
+## not explain itself twice. A hint a returning player sees again is a hint that has
+## become furniture, and furniture is what the quiet-instrument rule exists to
+## refuse. Seen once, ever, per program.
+var hints: Dictionary = {}
+
 ## Which layer the host injects the crew at. Chosen in the menu, applied by Net.
 var injection_layer: int = 1
 
@@ -116,6 +143,10 @@ func _ready() -> void:
 		stats[key] = 0
 	load_progress()
 	_bind_stats()
+	# Deferred for the reason `Modules._bind` and `Patches._bind` are: this autoload
+	# is created sixth and `Patches` is created last, so the signal it hangs off does
+	# not exist until the whole list is standing.
+	_bind_codex.call_deferred()
 
 
 func sanitize_name(raw: String) -> String:
@@ -243,6 +274,79 @@ func module_tier(track: String) -> int:
 	return int(modules.get(track, 0))
 
 
+# ------------------------------------------------------------------- codex --
+
+## Hang the Codex's discovery on the one signal that means "this machine's player
+## has now held one of these". Host or client, aimed cut or anomaly cache: the
+## grant is broadcast to every peer and filtered here to the local one, so a
+## crewmate's find fills THEIR codex and not yours.
+func _bind_codex() -> void:
+	Patches.patch_gained.connect(func(peer_id: int, patch_id: String, _n: int) -> void:
+		if peer_id == Net.local_id():
+			record_patch_seen(patch_id))
+
+
+func patch_seen(id: String) -> bool:
+	return bool(codex.get(id, false))
+
+
+## How many of the catalogue this program has met, for the Codex's own header.
+func codex_seen_count() -> int:
+	var found: int = 0
+	for id: String in Balance.PATCH_TRACKS:
+		if patch_seen(id):
+			found += 1
+	return found
+
+
+## First contact with a patch. Committed immediately, like installing a backdoor:
+## the whole value of the entry is that it survives the run it was earned in, and a
+## run that ends in a wipe is exactly the run a player wants the page from.
+##
+## A sandboxed session still learns the entry for as long as it is running — a
+## capture that picked up a patch and then showed a redacted page for it would be
+## documenting something that cannot happen — but `save_progress` is a no-op there,
+## so nothing reaches the file. A dev tool must not edit the thing it is measuring;
+## it is allowed to be internally consistent while it measures.
+func record_patch_seen(id: String) -> void:
+	if not Balance.PATCHES.has(id) or patch_seen(id):
+		return
+	codex[id] = true
+	save_progress()
+	print("[GameState] codex: first contact with %s (%d/%d catalogued)%s" % [
+		Patches.display_name(id), codex_seen_count(), Balance.PATCH_TRACKS.size(),
+		"  [sandboxed: not written]" if sandboxed else ""])
+
+
+# --------------------------------------------------------- contextual hints --
+
+func hint_seen(key: String) -> bool:
+	return bool(hints.get(key, false))
+
+
+## Mark a one-shot hint spent. Committed immediately for the same reason first
+## contact is: the moment worth remembering is the one that just happened, and a
+## player who is shown "TAB — LAYER MAP" twice has been shown it once too often.
+## Returns whether this call is the one that spent it, so a caller can use it as
+## the "may I say this" test and the "I said it" record in one line.
+func spend_hint(key: String) -> bool:
+	if key.is_empty() or hint_seen(key):
+		return false
+	hints[key] = true
+	save_progress()
+	print("[GameState] hint shown once: %s%s" % [
+		key, "  [sandboxed: not written]" if sandboxed else ""])
+	return true
+
+
+## Every hint back on the table. Not reachable from the interface — it exists so a
+## playtest can re-run a fresh player's first ten minutes without deleting a save,
+## which is the thing that was impossible while onboarding was being tuned.
+func forget_hints() -> void:
+	hints.clear()
+	save_progress()
+
+
 func load_progress() -> void:
 	# A corrupt or hand-edited save must never stop the game booting, and must
 	# never be silently replaced either: `load_json` walks file -> .bak ->
@@ -276,6 +380,16 @@ func load_progress() -> void:
 	var stored: Dictionary = sub_dict(data, "stats")
 	for key: String in STAT_KEYS:
 		stats[key] = maxi(int(stored.get(key, 0)), 0)
+	# Absent in any file written before the CODEX pass, which is exactly what the
+	# empty default covers: a returning player starts with an unwritten reference
+	# and fills it in from the next patch they touch. Cleaned on the way in for the
+	# same reason `modules` is — a save naming a patch this build does not have must
+	# not be able to put a key into a dictionary the Codex then indexes with.
+	codex = _clean_codex(sub_dict(data, "codex"))
+	# Same treatment, same reason. An unknown hint key is harmless (nothing indexes
+	# an array with it) but it is still noise in a file a player might open, and a
+	# `true`-only dictionary has exactly one readable shape.
+	hints = _clean_flags(sub_dict(data, "hints"))
 
 	if version < SAVE_VERSION:
 		_migrate(version, text)
@@ -299,6 +413,35 @@ func _clean_modules(raw: Dictionary) -> Dictionary:
 		var tier: int = clampi(int(raw[key]), 0, tiers.size())
 		if tier > 0:
 			out[track] = tier
+	return out
+
+
+## Drops any id this build's catalogue does not have, and stores only `true`. An
+## entry that is neither present nor true has no meaning, so there is exactly one
+## shape a saved codex can be in.
+func _clean_codex(raw: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	for key: Variant in raw.keys():
+		if typeof(key) != TYPE_STRING and typeof(key) != TYPE_STRING_NAME:
+			continue
+		var id: String = String(key)
+		if not Balance.PATCHES.has(id):
+			push_warning("[GameState] save names an unknown patch '%s'; dropped" % id)
+			continue
+		if bool(raw[key]):
+			out[id] = true
+	return out
+
+
+## A `key: true` flag set from an untrusted file, made safe: string keys only, and
+## only the ones that were actually true.
+func _clean_flags(raw: Dictionary) -> Dictionary:
+	var out: Dictionary = {}
+	for key: Variant in raw.keys():
+		if typeof(key) != TYPE_STRING and typeof(key) != TYPE_STRING_NAME:
+			continue
+		if bool(raw[key]):
+			out[String(key)] = true
 	return out
 
 
@@ -514,6 +657,11 @@ func save_progress() -> void:
 		"modules": modules,
 		"stats": stats,
 		"mother_said_go_up": mother_said_go_up,
+		# Which patches this program has met, and which one-shot hints it has been
+		# shown. Neither is a power, neither is replicated, and neither is a new file
+		# — see `codex` and `hints`.
+		"codex": codex,
+		"hints": hints,
 		# The shell marker, which since M4.7 is also the phosphor the player's own
 		# interface is coated with — so it is a setting worth surviving a restart
 		# rather than something re-picked every launch. Stored as a hex string

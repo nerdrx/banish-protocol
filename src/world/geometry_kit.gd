@@ -26,6 +26,24 @@ const SLAB_THICKNESS: float = 0.4
 const DOOR_WIDTH: float = 3.2
 const DOOR_HEIGHT: float = 3.4
 
+## M10: the separation anything MOUNTED ON something else is held at.
+##
+## The live playtest reported "visible z fighting issues in parts of the maps"
+## and `--auditz` (src/world/audit_zfight.gd) found the shape of it: the kit is
+## full of elements laid exactly flush on the surface they belong to — skirting
+## on a wall panel, a deck slab into the wall it hangs off, a plinth on the floor
+## — and "exactly flush" means two same-facing coplanar faces at zero separation,
+## which is the textbook depth-buffer fight.
+##
+## Six millimetres, and the number is measured rather than chosen: 1 mm standoffs
+## still shimmered on the far wall of the machine hall at 3440x1440 and 4 mm did
+## not, so `AuditZFight.EPS` reports anything under 4 mm and the fixes sit clear
+## of it. At 30 cm it is a third of the kit's smallest chamfer and invisible; at
+## 40 m it is unambiguous to the depth buffer. It is also PHYSICALLY the right
+## answer — real skirting stands proud of the plaster it is nailed to — which is
+## why this is a standoff and not a depth bias.
+const ZFIGHT_STANDOFF: float = 0.006
+
 ## How far proud of a wall boundary a surface trace sits.
 const TRACE_FACE: float = WALL_THICKNESS * 0.5 + 0.015
 const TRACE_WIDTH: float = 0.035
@@ -35,6 +53,17 @@ const TRACE_HEIGHT: float = 0.95
 ## Clearance left around a gate so traces stop short of the frame instead of
 ## sailing across the opening.
 const TRACE_GATE_MARGIN: float = 0.5
+
+## M10b SIGNAGE. A designation stencil is 2.4 m of wall at 0.9 m tall, hung with
+## its centre at chest-and-a-bit so the cap height reads as roughly half a metre
+## from across the room — a real industrial stencil, and a scale cue.
+const SIGN_SIZE: Vector2 = Vector2(2.4, 0.9)
+const SIGN_HEIGHT: float = 2.15
+## One module slot clear of the doorway.
+const SIGN_SIDESTEP: float = 3.2
+## Decals project INTO a surface, so this only has to clear the boundary plane;
+## the 0.9 m projection depth swallows the deepest wall relief in the kit.
+const SIGN_STANDOFF: float = 0.10
 
 ## The system's own colour. Traces, gates and most conduits run this teal;
 ## anything warm is a deliberate accent, anything red is hostile.
@@ -98,9 +127,19 @@ const STOREY: float = 4.0
 ## showcase corridor a third of the walls glowing reads as infrastructure; across
 ## a 24 m generated room it reads as a lit grid, which is the exact "neon lines
 ## on black" look the kit was built to kill.
+## M10b cuts it again, to one in thirteen — see `NeonBudget.WALL_VARIANTS_CUT`,
+## which is the table this one is A/B'd against under `-- --cyan legacy`.
 const WALL_VARIANTS: Array = [
 	"WALL_4x4_PANEL", "WALL_4x4_ARMOR", "WALL_4x4_PANEL",
 	"WALL_4x4_TRACE", "WALL_4x4_ARMOR", "SPLIT_2M", "WALL_4x4_PANEL",
+]
+
+## Blind variants for the nests. Named rather than repeated at the two call sites
+## that need it — `wall_variant_at` and `_wall_slot` MUST agree about what stands
+## in a slot, because a prop asks the first one where to hang itself and the
+## second one is what actually builds the wall it hangs on.
+const WALL_VARIANTS_DARK: Array = [
+	"WALL_4x4_PANEL", "WALL_4x4_ARMOR", "WALL_2x4_CABLE",
 ]
 
 var _geometry: Node3D
@@ -117,6 +156,12 @@ var ceiling_apertures: Dictionary = {}
 ## from the slab collider both — same contract as the ceiling apertures above, and
 ## filled from the same place (ProcLayerBuilder, before the shells go up).
 var floor_cuts: Dictionary = {}
+## M10b SIGNAGE: room index -> the name `LayerGraph.room_name` gives that room,
+## e.g. `VAULT-3A`. Filled by ProcLayerBuilder before the shells go up, exactly
+## like `ceiling_apertures` and `floor_cuts` above and for the same reason: the
+## kit builds the walls and only the graph knows what the rooms are called, and
+## a designation stencil that does not match the map is worse than none at all.
+var room_designations: Dictionary = {}
 var _gate_material: StandardMaterial3D
 var _trace_material: StandardMaterial3D
 var _grid_material: StandardMaterial3D
@@ -190,8 +235,11 @@ func build() -> void:
 	# curve into a featureless white blob once glow is applied. The hierarchy is
 	# deliberate — gates brightest (they are the exits), then wall traces, then
 	# the floor grid, which should be barely more than a suggestion.
-	_gate_material = _make_emissive(SYSTEM_TEAL, 0.85)
-	_trace_material = _make_emissive(SYSTEM_TEAL, 0.38)
+	# M10: scaled by the neon budget. See NeonBudget — the arm decides how much of
+	# a frame the decorative inlay is allowed to own, and it is a measured
+	# decision rather than a taste one.
+	_gate_material = _make_emissive(SYSTEM_TEAL, 0.85 * NeonBudget.gate_energy())
+	_trace_material = _make_emissive(SYSTEM_TEAL, 0.38 * NeonBudget.trace_energy())
 	_grid_material = _make_emissive(Color(0.22, 0.6, 0.95), 0.22)
 
 	_build_content()
@@ -225,8 +273,15 @@ func _build_room(room: Dictionary) -> void:
 	_wall_at_x(lo.x, lo.y, hi.y, h, _doors_on(doors, "w"))
 	_wall_at_x(hi.x, lo.y, hi.y, h, _doors_on(doors, "e"))
 
-	_floor_grid(lo, hi, 4.0)
-	_room_wall_traces(room)
+	# M10 NEON BUDGET. Both of these are decorative emissive rather than hardware,
+	# and both are gated by the arm — the floor grid on whether this room is a
+	# data surface, the perimeter inlay on whether the room IS one of MOTHER's
+	# systems rather than merely a room she built. See NeonBudget.
+	var archetype: String = String(room.get("archetype", ""))
+	if NeonBudget.floor_grid(archetype):
+		_floor_grid(lo, hi, 4.0)
+	if NeonBudget.room_perimeter(archetype):
+		_room_wall_traces(room)
 
 
 func _build_corridor(corridor: Dictionary) -> void:
@@ -245,19 +300,24 @@ func _build_corridor(corridor: Dictionary) -> void:
 		# path you are walking along, and it points both ways in the dark.
 		_trace(Vector3((lo.x + hi.x) * 0.5, 0.014, lo.y + 0.6),
 				Vector3((lo.x + hi.x) * 0.5, 0.014, hi.y - 0.6), _grid_material)
-		_wall_trace_run(Vector3(lo.x + TRACE_FACE, TRACE_HEIGHT, lo.y + 0.6),
-				Vector3(lo.x + TRACE_FACE, TRACE_HEIGHT, hi.y - 0.6), top, 4.0)
-		_wall_trace_run(Vector3(hi.x - TRACE_FACE, TRACE_HEIGHT, lo.y + 0.6),
-				Vector3(hi.x - TRACE_FACE, TRACE_HEIGHT, hi.y - 0.6), top, 4.0)
+		# The centre floor run above is NEVER gated: it is wayfinding, it points
+		# both ways in the dark, and it is the one emissive in a corridor that is
+		# doing a job. The two waist-height wall runs are the pinstripes.
+		if NeonBudget.corridor_walls():
+			_wall_trace_run(Vector3(lo.x + TRACE_FACE, TRACE_HEIGHT, lo.y + 0.6),
+					Vector3(lo.x + TRACE_FACE, TRACE_HEIGHT, hi.y - 0.6), top, 4.0)
+			_wall_trace_run(Vector3(hi.x - TRACE_FACE, TRACE_HEIGHT, lo.y + 0.6),
+					Vector3(hi.x - TRACE_FACE, TRACE_HEIGHT, hi.y - 0.6), top, 4.0)
 	else:
 		_wall_at_z(lo.y, lo.x, hi.x, h, [])
 		_wall_at_z(hi.y, lo.x, hi.x, h, [])
 		_trace(Vector3(lo.x + 0.6, 0.014, (lo.y + hi.y) * 0.5),
 				Vector3(hi.x - 0.6, 0.014, (lo.y + hi.y) * 0.5), _grid_material)
-		_wall_trace_run(Vector3(lo.x + 0.6, TRACE_HEIGHT, lo.y + TRACE_FACE),
-				Vector3(hi.x - 0.6, TRACE_HEIGHT, lo.y + TRACE_FACE), top, 4.0)
-		_wall_trace_run(Vector3(lo.x + 0.6, TRACE_HEIGHT, hi.y - TRACE_FACE),
-				Vector3(hi.x - 0.6, TRACE_HEIGHT, hi.y - TRACE_FACE), top, 4.0)
+		if NeonBudget.corridor_walls():
+			_wall_trace_run(Vector3(lo.x + 0.6, TRACE_HEIGHT, lo.y + TRACE_FACE),
+					Vector3(hi.x - 0.6, TRACE_HEIGHT, lo.y + TRACE_FACE), top, 4.0)
+			_wall_trace_run(Vector3(lo.x + 0.6, TRACE_HEIGHT, hi.y - TRACE_FACE),
+					Vector3(hi.x - 0.6, TRACE_HEIGHT, hi.y - TRACE_FACE), top, 4.0)
 	_rib_run(lo, hi, h, String(corridor["axis"]))
 
 
@@ -416,6 +476,13 @@ func _trace(from: Vector3, to: Vector3, material: Material,
 func _wall_trace_run(from: Vector3, to: Vector3, top: float, branch_every: float) -> void:
 	_trace(from, to, _trace_material)
 	var length: float = (to - from).length()
+	# M10 NEON BUDGET: the vertical branches are most of the pinstripe COUNT in a
+	# frame — one horizontal run becomes five lines the moment it starts sprouting
+	# — so they are the first thing the budget takes away. They also produced the
+	# largest remaining `--auditz` class once rooms got taller: two branches
+	# climbing the same wall slot at the same x/z.
+	if not NeonBudget.trace_branches():
+		return
 	if length < 0.5 or branch_every <= 0.0:
 		return
 	var direction: Vector3 = (to - from) / length
@@ -1236,11 +1303,19 @@ const WALL_RELIEF_OK: float = 0.24
 const WALL_PROP_CLEAR: float = 0.015
 
 
+## The variant table in force. ONE function, because `wall_variant_at` and
+## `_wall_slot` asking different questions is how a wall prop ends up buried in a
+## module the generator never told it about.
+static func wall_options(dark: bool) -> Array:
+	if dark:
+		return WALL_VARIANTS_DARK
+	return NeonBudget.WALL_VARIANTS_CUT if NeonBudget.cyan_cut() else WALL_VARIANTS
+
+
 ## Which module the variant table puts at a given slot centre. Exactly the choice
 ## `_wall_slot` makes, factored out so a prop can ask the same question.
 static func wall_variant_at(centre: Vector3, dark: bool) -> String:
-	var options: Array = ["WALL_4x4_PANEL", "WALL_4x4_ARMOR", "WALL_2x4_CABLE"] if dark \
-			else WALL_VARIANTS
+	var options: Array = wall_options(dark)
 	var variant: String = _pick(centre.x, centre.z, 11, options)
 	if variant == "SPLIT_2M":
 		# Two 2 m service modules; take the deeper of the pair.
@@ -1312,8 +1387,7 @@ static func _pick(x: float, z: float, salt: int, options: Array) -> String:
 ## to be the darkest thing on the layer — it is the only place a Scrubber is
 ## comfortable, and that fact and the absence of light are the same fact.
 func _wall_slot(center: Vector3, yaw: float, dark: bool = false) -> void:
-	var options: Array = ["WALL_4x4_PANEL", "WALL_4x4_ARMOR", "WALL_2x4_CABLE"] if dark \
-			else WALL_VARIANTS
+	var options: Array = wall_options(dark)
 	var variant: String = _pick(center.x, center.z, 11, options)
 	# One roll per slot, taken before anything is placed so the fault a slot draws
 	# never depends on which module the variant table happened to hand it.
@@ -1357,8 +1431,13 @@ func _trace_glow(center: Vector3, yaw: float, failing: bool = false) -> void:
 	light.name = "Practical_trace"
 	light.position = center + Vector3(0.0, 1.90, 0.0) + normal * 0.95
 	light.light_color = LightRig.TEAL
-	light.light_energy = 1.5 * light_scale
-	light.omni_range = 6.4
+	# M10: the neon budget's real lever. See NeonBudget.trace_glow — this fixture,
+	# multiplied by the dozens of trace modules on a layer, is what makes a
+	# NULLVOID room read as lit BY cyan rather than as containing some.
+	light.light_energy = 1.5 * light_scale * NeonBudget.trace_glow()
+	# M10b: 6.4 m was a room light with a channel's name on it. See
+	# NeonBudget.TRACE_GLOW_RANGE — the reach is the lever, not the energy.
+	light.omni_range = NeonBudget.TRACE_GLOW_RANGE if NeonBudget.cyan_cut() else 6.4
 	# M8 SOFT LIGHT: 1.1 -> the rig's soft decay. A trace channel's wash is
 	# supposed to bleed across the panel it is cut into; at 1.1 it died inside a
 	# metre and left the emissive line floating on black again, which is the exact
@@ -1617,7 +1696,12 @@ func kit_room(room: Dictionary) -> Rect2:
 	var east: Array = _kit_doors(doors, "e")
 
 	var cuts: Array = floor_cuts.get(int(room["index"]), []) as Array
-	_kit_floor_field(rect, "z", cuts)
+	# M10b: the inlaid floor spine is wayfinding in a corridor and decoration in a
+	# room. It survives only where the floor is genuinely a data surface — and
+	# never in a nest, which used to get one despite being the layer's dark room.
+	var spine: String = "z" if NeonBudget.room_floor_spine(
+			String(room.get("archetype", "")), dark) else ""
+	_kit_floor_field(rect, spine, cuts)
 	_kit_ceiling_field(rect, height,
 			ceiling_apertures.get(int(room["index"]), Vector2(INF, INF)))
 
@@ -1643,6 +1727,8 @@ func kit_room(room: Dictionary) -> Rect2:
 	_kit_wall_colliders("z", rect.end.x, rect.position.y, rect.end.y, height, east)
 	_kit_shell_colliders(rect, height, cuts)
 
+	_room_designation(room, rect, north, south, west, east)
+
 	# Rib columns just inside the corners, so a beam sweeping the room breaks on
 	# something with depth instead of running flat along a wall.
 	for corner: Vector2 in [rect.position + Vector2(2.0, 2.0),
@@ -1653,6 +1739,83 @@ func kit_room(room: Dictionary) -> Rect2:
 		if storeys > 1:
 			_put("RIB_COLUMN", Vector3(corner.x, STOREY, corner.y), 0.0)
 	return rect
+
+
+## THE ROOM'S OWN NAME, STENCILLED BESIDE ITS DOOR.
+##
+## `LayerGraph.room_name` has always given every room a real designation, and the
+## command terminal, the minimap and MOTHER's wayfinding have always spoken it —
+## `QUERY` will tell you that you are standing in VAULT-3A. Until M10b nothing in
+## the room agreed. That is the gap this closes: the building now says the same
+## word the map does, in the same grammar, on the wall you walk past to enter.
+##
+## Signage that is INFORMATION rather than dressing is the standard DecalLib's
+## header sets for the trunk arrows ("a TRUNK 0N arrow points at the real drop
+## shaft"), and this is the same claim for room names. It also earns its place
+## twice over after M10 tripled the rooms: a 0.5 m stencil at 2.15 m is a SCALE
+## CUE, and a scale cue is exactly what a 438 m² hall needs and a 211 m² one did
+## not.
+##
+## One per room. A designation repeated on four walls is a wayfinding system that
+## has stopped trusting you.
+##
+## Determinism: no RNG. The wall is chosen by a fixed preference order over the
+## room's own door lists and the side-step is a constant, so two peers stencil
+## the same wall without a byte on the wire and `--dumplayer` is untouched.
+func _room_designation(room: Dictionary, rect: Rect2, north: Array, south: Array,
+		west: Array, east: Array) -> void:
+	var name: String = String(room_designations.get(int(room.get("index", -1)), ""))
+	if name.is_empty():
+		return
+	# `PREFIX-LAYERLETTER` -> the plate is `PREFIX-LETTER`; the layer digit is
+	# already on the wall as the arrival room's big numerals and a building does
+	# not print its own floor number in every room. See tools/build_signage.py.
+	var dash: int = name.find("-")
+	if dash < 0 or dash + 1 >= name.length():
+		return
+	var plate: String = "desig_%s_%s" % [name.substr(0, dash).to_lower(),
+			name.substr(name.length() - 1, 1).to_lower()]
+
+	# Wall preference: whichever boundary actually has a doorway, in a fixed
+	# order. A room always has at least one or it is unreachable.
+	var at: Vector3 = Vector3.ZERO
+	var yaw: float = 0.0
+	var face: float = WALL_THICKNESS * 0.5 + SIGN_STANDOFF
+	if not north.is_empty():
+		at = Vector3(_sign_slide(float(north[0]), rect.position.x, rect.end.x),
+				SIGN_HEIGHT, rect.position.y + face)
+		yaw = 0.0
+	elif not south.is_empty():
+		at = Vector3(_sign_slide(float(south[0]), rect.position.x, rect.end.x),
+				SIGN_HEIGHT, rect.end.y - face)
+		yaw = 180.0
+	elif not west.is_empty():
+		at = Vector3(rect.position.x + face, SIGN_HEIGHT,
+				_sign_slide(float(west[0]), rect.position.y, rect.end.y))
+		yaw = 90.0
+	elif not east.is_empty():
+		at = Vector3(rect.end.x - face, SIGN_HEIGHT,
+				_sign_slide(float(east[0]), rect.position.y, rect.end.y))
+		yaw = -90.0
+	else:
+		return
+	# A nest is the darkest room on the layer and that is load-bearing, so its
+	# plate is printed matter with almost no glow left in it. It still says
+	# SECTOR UNPOWERED, which is the one thing a player wants to read there.
+	var fade: float = 0.52 if bool(room.get("unlit", false)) else 0.85
+	# `_geometry`, where every other decal on the layer lives — a sign is part of
+	# the building, not a fixture.
+	DecalLib.place(_geometry, plate, at, yaw, SIGN_SIZE, fade)
+
+
+## Slide the plate one slot clear of the doorway it belongs to, staying inside
+## the room's own wall. A designation centred ON the door is a sign nobody can
+## read while walking through it.
+func _sign_slide(door: float, lo: float, hi: float) -> float:
+	var left: float = door - SIGN_SIDESTEP
+	if left >= lo + SIGN_SIZE.x * 0.5 + 0.4:
+		return left
+	return minf(door + SIGN_SIDESTEP, hi - SIGN_SIZE.x * 0.5 - 0.4)
 
 
 ## Floor and ceiling proxies. One box each rather than one per cell: a hundred
@@ -1981,6 +2144,12 @@ func _flush_detail() -> int:
 # second author changing its arity is how a merge eats a milestone.
 var _bevel_batches: Dictionary = {}
 
+## Millimetre-keyed sets of railing pieces already stood up on this layer, so an
+## edge two decks share does not get two of everything. See the duplicate guards
+## in `_railing`.
+var _rail_posts: Dictionary = {}
+var _rail_runs: Dictionary = {}
+
 
 ## Same contract as `_detail_box`, but the instances carry no scale and the mesh
 ## is a real chamfered box at the real size.
@@ -2094,8 +2263,39 @@ func deck_platform(rect: Rect2, y: float, grated: bool, open: Array,
 		x += CELL
 
 	# The slab it is laid on, and its collider. One box for the whole deck.
-	_named(_mesh_box(Vector3(mid.x, y - DECK_THICKNESS * 0.5, mid.y),
-			Vector3(rect.size.x, DECK_THICKNESS, rect.size.y), MAT_MONOLITH), "Vert_deck")
+	#
+	# M10 Z-FIGHT: the slab is TUCKED INTO the walls it hangs off.
+	#
+	# A gallery's footprint comes off the graph and lands exactly on the room
+	# shell boundary, which is exactly where the wall modules' own faces are — so
+	# the slab's edge and the wall panel presented two coplanar same-facing
+	# surfaces about a square metre each, at eye level, on every wall-hung deck in
+	# the game (`--auditz`: `Vert_deck vs mat_pbr_panel_dark`, 1.19 m2 apiece).
+	# Growing the slab 6 mm INTO the wall buries the edge instead of shaving the
+	# deck back, which would open a sliver you can see down. Only the closed sides
+	# grow: an open edge carries the fascia and the railing, and moving it would
+	# move the handrail the player's hand is on.
+	var closed: Rect2 = rect
+	for side: int in 4:
+		if open.has(side):
+			continue
+		match side:
+			0:
+				closed = Rect2(closed.position - Vector2(0.0, ZFIGHT_STANDOFF),
+						closed.size + Vector2(0.0, ZFIGHT_STANDOFF))
+			1:
+				closed.size.x += ZFIGHT_STANDOFF
+			2:
+				closed.size.y += ZFIGHT_STANDOFF
+			_:
+				closed = Rect2(closed.position - Vector2(ZFIGHT_STANDOFF, 0.0),
+						closed.size + Vector2(ZFIGHT_STANDOFF, 0.0))
+	var slab_mid: Vector2 = closed.position + closed.size * 0.5
+	_named(_mesh_box(Vector3(slab_mid.x, y - DECK_THICKNESS * 0.5, slab_mid.y),
+			Vector3(closed.size.x, DECK_THICKNESS, closed.size.y), MAT_MONOLITH), "Vert_deck")
+	# The COLLIDER keeps the authored footprint. A 6 mm cosmetic tuck must not
+	# change where the crew can stand, or `--deckwalk` is measuring a different
+	# deck from the one the generator planned.
 	_collider_box(Vector3(mid.x, y - DECK_THICKNESS * 0.5, mid.y),
 			Vector3(rect.size.x, DECK_THICKNESS, rect.size.y))
 
@@ -2248,6 +2448,21 @@ func _railing(from: Vector3, to: Vector3, gaps: Array) -> void:
 		var centre: Vector3 = from + step * ((run.x + run.y) * 0.5) + base
 		var size: Vector3 = Vector3(absf(step.x) * run_length + 0.08, 0.07,
 				absf(step.z) * run_length + 0.08)
+		# M10 Z-FIGHT: one rail per place, same argument as the posts below.
+		#
+		# Two decks that share an open edge — a gallery and the catwalk that lands
+		# on it — each run their own railing along it, so the shared edge got two
+		# identical handrails inside each other. This was the largest class left
+		# after the standoff pass (162 of 254 findings across the seed matrix) and,
+		# like the posts, it is on the hardware the player stands closest to.
+		# Height is in the key: two galleries stacked one above the other share an
+		# x/z footprint and their rails are not duplicates of each other.
+		var rail_key: Vector4i = Vector4i(int(roundf(centre.x * 1000.0)),
+				int(roundf(centre.y * 1000.0)), int(roundf(centre.z * 1000.0)),
+				int(roundf(run_length * 1000.0)))
+		if _rail_runs.has(rail_key):
+			continue
+		_rail_runs[rail_key] = true
 		# M8: chamfered. See `_detail_bevel` — the handrail is the one piece of the
 		# kit the player's hand is on, so it is the one that earns a mesh per size.
 		for height: float in [RAIL_HEIGHT, RAIL_HEIGHT * 0.5]:
@@ -2255,6 +2470,20 @@ func _railing(from: Vector3, to: Vector3, gaps: Array) -> void:
 		var posts: int = maxi(int(run_length / 2.0), 1)
 		for i: int in posts + 1:
 			var at: Vector3 = from + step * lerpf(run.x, run.y, float(i) / float(posts)) + base
+			# M10 Z-FIGHT: one post per place.
+			#
+			# `_railing` runs once per open edge, and each run stands a post at both
+			# of its ends — so wherever two open edges meet, the corner got TWO
+			# identical 9 cm posts in the same spot. Six pairs of coincident faces
+			# on the piece of hardware the player's hand is nearest, which is the
+			# worst possible place to put a shimmer. Keyed on the millimetre so the
+			# test is exact rather than a tolerance, and the table is a member so it
+			# spans the four edges of one deck.
+			var key: Vector3i = Vector3i(int(roundf(at.x * 1000.0)),
+					int(roundf(at.y * 1000.0)), int(roundf(at.z * 1000.0)))
+			if _rail_posts.has(key):
+				continue
+			_rail_posts[key] = true
 			# One size for every post in the game, therefore one batch, therefore
 			# free.
 			_detail_bevel(at + Vector3(0.0, RAIL_HEIGHT * 0.5, 0.0),

@@ -47,8 +47,40 @@ extends RefCounted
 const CELL: float = 34.0
 const GRID: int = 4
 
-const MIN_HALF: float = 5.5
-const MAX_HALF: float = 9.0
+# M10 SCALE. Live playtest, verbatim: "more rooms should have a higher ceiling,
+# maybe also add in BIGGER rooms, sometimes the game feels claustrophobic."
+#
+# The measurement behind these numbers (240 rooms, 6 seeds x 5 layers, before):
+# 77.5% of every room in the game fell in one 150-250 m2 band, nothing anywhere
+# exceeded 316 m2, and 61% were a single 4 m storey. That is not a distribution
+# with a small tail — it is a distribution with no tail at all, and it is exactly
+# what "the average room is small" feels like from the inside.
+#
+# So the whole distribution moves, rather than the maximum: the floor comes up
+# harder than the ceiling does (5.5 -> 7.5 against 9.0 -> 12.5), which is what
+# kills the cramped MEDIAN instead of adding rare outliers nobody reaches.
+#
+# 12.5 is bounded by the lattice, not by taste: CELL is 34 m and two adjacent
+# rooms at worst case leave 34 - 2 * (12.5 + 1.5) = 6 m of gap, which is still a
+# real corridor between them. Going further means moving CELL, which moves every
+# room further apart, which lengthens the critical path — the opposite of what
+# the request is about.
+const MIN_HALF: float = 7.5
+const MAX_HALF: float = 12.5
+
+## Bias applied to both half-extent draws, as an exponent on the normalised roll.
+##
+## Below 1.0 this pushes the distribution UP: a uniform roll spends most of its
+## mass near the top of the range instead of in the middle, so "large" becomes the
+## common case and "small" becomes the variation. At 0.7 the mean half-extent
+## lands at about 59% of the way up the range rather than 50%.
+##
+## Done as a remap of the existing `randf_range` result rather than as a
+## different draw, deliberately: `randf_range` consumes exactly one `randf()`
+## whatever its bounds, so reshaping here leaves the RNG STREAM byte-for-byte
+## where it was and every downstream roll — crates, taps, Sentinel posts — still
+## lands in the same order. The room rects change; nothing else shifts under them.
+const SIZE_BIAS: float = 0.7
 ## Room centres wander this far off their cell centre. Bounded so the
 ## perpendicular overlap of two adjacent rooms is always wide enough for a door.
 const JITTER: float = 1.5
@@ -451,6 +483,15 @@ func _neighbours(cell: Vector2i, taken: Dictionary) -> Array[Vector2i]:
 	return result
 
 
+## Reshape a uniform draw from [lo, hi] toward the top of its own range.
+## See SIZE_BIAS — this consumes nothing, so the RNG stream is untouched.
+static func _biased(value: float, lo: float, hi: float) -> float:
+	if hi - lo < 0.0001:
+		return value
+	var t: float = clampf((value - lo) / (hi - lo), 0.0, 1.0)
+	return lo + (hi - lo) * pow(t, SIZE_BIAS)
+
+
 func _build_rooms(cells: Array[Vector2i], plan: Dictionary) -> void:
 	var heights: Vector2 = params["height_range"]
 	var archetypes: Array = plan["archetypes"]
@@ -467,9 +508,12 @@ func _build_rooms(cells: Array[Vector2i], plan: Dictionary) -> void:
 		var jitter: Vector2 = Vector2(
 				_rng.randf_range(-JITTER, JITTER), _rng.randf_range(-JITTER, JITTER))
 		var half: Vector2 = Vector2(
-				_rng.randf_range(MIN_HALF, MAX_HALF),
-				_rng.randf_range(MIN_HALF, MAX_HALF))
-		var height: float = _rng.randf_range(heights.x, heights.y)
+				_biased(_rng.randf_range(MIN_HALF, MAX_HALF), MIN_HALF, MAX_HALF),
+				_biased(_rng.randf_range(MIN_HALF, MAX_HALF), MIN_HALF, MAX_HALF))
+		# Same reshaping on the ceiling, and for the same complaint: a room that is
+		# wider but no taller is a bigger box, not a bigger SPACE. See SIZE_BIAS.
+		var height: float = _biased(_rng.randf_range(heights.x, heights.y),
+				heights.x, heights.y)
 
 		var archetype: String = String(archetypes[i])
 		if archetype == BACKDOOR:

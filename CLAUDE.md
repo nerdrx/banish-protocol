@@ -20,7 +20,16 @@ commit or an incident behind it.
   that produces NO output is a bug signal, not a slow machine.
 - Determinism law: seeded generation derives from position+seed hashing, never
   from consuming the shared RNG stream in order-dependent ways. Cross-peer
-  byte-identical `--dumplayer` output is the invariant.
+  byte-identical `--dumplayer` output is the invariant. Cosmetic systems
+  (audio, fx, decoration) may use a PRIVATE `RandomNumberGenerator` seeded from
+  content — that is the correct pattern and it makes results content-addressed
+  and cacheable. What is forbidden is drawing from the shared stream.
+- **A check that polices a law can break it too.** A grep for `randf(` as a
+  substring flags `rng.randf()` on a legal private generator — a false positive
+  that cost real time. Use `(?<![\w.])(randf|randi|randfn|randf_range|randi_range|randomize)\s*\(`
+  so a preceding dot or word character exempts a private generator. More
+  generally: when an audit fires, confirm what it is actually matching before
+  anyone changes code.
 
 ## Tree discipline (especially with multiple agents in one working copy)
 
@@ -52,6 +61,17 @@ commit or an incident behind it.
   grip-to-muzzle chord for five rounds while the visible barrel pointed 13.35
   degrees nose-down. When a human report contradicts a clean measurement,
   first ask what the instrument is actually pointed at.
+- **ASSERT ON THE CLIENT, NOT THE HOST.** Every creature test in this project's
+  history was run and read from the HOST's screen, where the AI is real and the
+  creatures move — so nobody noticed that every antivirus was a frozen statue in
+  every client's world, for months, in a co-op game. A single-client test would
+  have caught it on any day. Multiplayer verification asserts on what the
+  NON-AUTHORITATIVE peer receives; the host's view proves nothing about the game
+  three quarters of a crew are playing. Use `tools/crewsync/crewsync.py`
+  (headless, 1 host + N clients, per-peer JSONL censuses read off the scene tree).
+- **4 peers is the standard.** Two-instance testing hid this class for the whole
+  project. The harness runs seven join orders including latecomers and the hub
+  crossings; a human never starts in a layer, so test the path they take.
 - UI verification happens at the user's real aspects (3440x1440, 5120x1440),
   not just the 1280x720 design resolution. `--window-size` + the tube-safe-area
   rule exist for this.

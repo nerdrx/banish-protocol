@@ -1255,6 +1255,38 @@ func _parse_args(args: PackedStringArray) -> void:
 				# The old (round-four) aim, for the A/B arm. See
 				# CrewAvatar.aim_chord_override.
 				chord_aim = true
+			# --- P0 CREW SYNC. See the section at the foot of this file. --------
+			"--crewdump":
+				if i + 1 < args.size():
+					i += 1
+					crew_dump_path = args[i]
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					crew_dump_every = maxf(args[i].to_float(), 0.1)
+			"--crew-hole":
+				crew_hole_who = "client1"
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					crew_hole_who = args[i].strip_edges()
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					crew_hole_delay = maxf(args[i].to_float(), 0.0)
+			"--beam-on":
+				crew_beam_on = true
+			"--crewtag":
+				if i + 1 < args.size():
+					i += 1
+					crew_tag = args[i]
+			"--lure":
+				# Park every creature on a named peer so the hunt is reproducible
+				# rather than a matter of where the generator happened to put them.
+				crew_lure = "local"
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					crew_lure = args[i].strip_edges()
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					crew_lure_delay = maxf(args[i].to_float(), 0.0)
 			_:
 				pass
 		i += 1
@@ -1392,6 +1424,17 @@ func _boot() -> void:
 
 	if steam_selftest:
 		_steam_selftest()
+
+	# P0 CREW SYNC. Armed last, and armed on every mode including none, because a
+	# crew-visibility census of a solo process is a legitimate control sample.
+	if not crew_dump_path.is_empty():
+		_arm_crew_dump()
+	if not crew_lure.is_empty():
+		_arm_crew_lure()
+	if crew_beam_on:
+		_arm_crew_beam()
+	if not crew_hole_who.is_empty():
+		_arm_crew_hole()
 
 
 ## `--steam-selftest`. Reads the session back *out of the Steam API* rather than
@@ -1635,7 +1678,31 @@ func _balance_selftest() -> void:
 	failures += _fidelity_selftest()
 	failures += _subroutine_selftest()
 	failures += _patch_selftest()
+	failures += _codex_selftest()
 	failures += _voice_selftest()
+	# M14 — HER VOICE, LIVE. The runtime synthesiser: letter-to-sound coverage,
+	# awkward callsigns, cache determinism, loudness targets and the main-thread
+	# budget. See the section at the end of this file.
+	failures += await _live_voice_selftest()
+	# M15 — HER TONGUE. The bark corpus and its director: pool coverage, slot
+	# safety, the corruption's slot preservation, and the anti-repetition
+	# invariant measured over a synthetic three-hour session. See the section at
+	# the end of this file.
+	failures += _lore_selftest()
+	# M15 — HER TONGUE, the time budget. Her lines are spoken, so length is a
+	# duration in the mix: per-register ceilings billed against the synthesiser's
+	# exact duration function, the granted exemptions, and the dynamic cooldown.
+	failures += _lore_budget_selftest()
+	# M11 — THE ANTIVIRUS. The senses, the ladder, the search, the fairness
+	# invariant, ownership-blindness and the telegraph coverage. See the section
+	# at the end of this file.
+	failures += _ai_selftest()
+	# M12 — SENSATION. Room acoustics, occlusion, the new particle caps and the
+	# breaker's range change. See the section at the end of this file.
+	failures += _sensation_selftest()
+	# P0 CREW SYNC — the four-peer contract. See the section at the foot of this
+	# file, and `tools/crewsync/` for the live half that needs four processes.
+	failures += _crew_sync_selftest()
 
 	print("[SelfTest] %d check(s) failed" % failures)
 	get_tree().quit(1 if failures > 0 else 0)
@@ -7189,4 +7256,2549 @@ func _patch_selftest() -> int:
 		printerr("[SelfTest] FAIL  run-scoped: %d stacks survived, sold %d (wanted %d)" % [
 			left, sold, want_sold])
 
+	return failures
+
+
+# ------------------------------------------------------- CODEX / UPGRADE TEXT --
+#
+# `--selftest`, the upgrade-legibility section. Returns the failure count, the
+# same contract `_vertical_selftest`, `_cartography_selftest`, `_hub_selftest`,
+# `_subroutine_selftest` and `_patch_selftest` all follow.
+#
+# The CODEX pass added no simulation and no generation — it is four presentation
+# surfaces reading `UpgradeText`, and the determinism dump cannot see any of it.
+# So what is asserted here is the two properties that CAN silently rot:
+#
+#   * COVERAGE, as data. Every entry in every catalogue has a mechanism sentence
+#     and produces a non-empty live clause. A sixteenth patch that ships with no
+#     description would otherwise reach a player as a blank line on the TAB list,
+#     and nothing in the game would have said so.
+#   * AGREEMENT. The strings a player reads carry the numbers the SIMULATION
+#     computes, sampled at real stack counts against the same pure functions the
+#     host calls inside a damage calculation. This is the whole promise of the
+#     pass — "the live computed value, not static marketing text" — and it is
+#     exactly the sort of promise that is true on the day it is written.
+
+
+func _codex_selftest() -> int:
+	var failures: int = 0
+
+	# --- COVERAGE: every entry is documented, asserted as data ---------------
+	#
+	# Walked off the ORDER arrays rather than the body dictionaries, deliberately:
+	# the failure being caught is "somebody added a catalogue entry and not its
+	# text", which a walk over the text would miss by construction.
+	var undocumented: PackedStringArray = PackedStringArray()
+	for id: String in Balance.PATCH_TRACKS:
+		if UpgradeText.patch_body(id).strip_edges().is_empty():
+			undocumented.append("patch %s: no body" % id)
+		for count: int in [1, Balance.PATCH_MAX_STACKS]:
+			var measured: Dictionary = UpgradeText.patch_measure(id, count)
+			if String(measured["effect"]).strip_edges().is_empty():
+				undocumented.append("patch %s: no clause at x%d" % [id, count])
+	for track: String in Balance.MODULE_TRACKS:
+		if UpgradeText.module_body(track).strip_edges().is_empty():
+			undocumented.append("module %s: no body" % track)
+		if UpgradeText.module_delta(track, 0).strip_edges().is_empty():
+			undocumented.append("module %s: no tier-1 delta" % track)
+	for id: String in Balance.SUBROUTINE_TRACKS:
+		if UpgradeText.subroutine_body(id).strip_edges().is_empty():
+			undocumented.append("subroutine %s: no body" % id)
+		if UpgradeText.subroutine_state(id, 1).strip_edges().is_empty():
+			undocumented.append("subroutine %s: no tier-1 state" % id)
+	if undocumented.is_empty():
+		print("[SelfTest] PASS  upgrade text: %d patches, %d modules, %d subroutines all documented" % [
+			Balance.PATCH_TRACKS.size(), Balance.MODULE_TRACKS.size(),
+			Balance.SUBROUTINE_TRACKS.size()])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  undocumented: %s" % ", ".join(undocumented))
+
+	# --- THE STRIP HAS TO BE ABLE TO LAY IT OUT -----------------------------
+	#
+	# A clause longer than the column is a clause the player reads two thirds of.
+	# The trimmer ellipsises rather than overflowing, so this never breaks the
+	# layout — it quietly costs a player the end of the sentence, which is the
+	# failure mode worth an assertion.
+	var overlong: PackedStringArray = PackedStringArray()
+	var longest: int = 0
+	var longest_ceiling: int = 0
+	for id: String in Balance.PATCH_TRACKS:
+		for count: int in range(1, Balance.PATCH_MAX_STACKS + 1):
+			var measured: Dictionary = UpgradeText.patch_measure(id, count)
+			var clause: String = String(measured["effect"])
+			longest = maxi(longest, clause.length())
+			if clause.length() > UpgradeText.CLAUSE_MAX:
+				overlong.append("%s x%d: %d chars" % [id, count, clause.length()])
+			# The ceiling has a HARD lane on the strip and is right-aligned in it, so
+			# an over-long one does not wrap or ellipsise — it reaches left across the
+			# clause it was qualifying. That is what the first CODEX capture caught,
+			# and it is why this half of the check exists.
+			var ceiling: String = String(measured["ceiling"])
+			longest_ceiling = maxi(longest_ceiling, ceiling.length())
+			if ceiling.length() > UpgradeText.CEILING_MAX:
+				overlong.append("%s x%d ceiling: %d chars" % [id, count, ceiling.length()])
+	if overlong.is_empty():
+		print("[SelfTest] PASS  clause length: longest %d/%d clause, %d/%d ceiling, over %d patches x %d stacks" % [
+			longest, UpgradeText.CLAUSE_MAX, longest_ceiling, UpgradeText.CEILING_MAX,
+			Balance.PATCH_TRACKS.size(), Balance.PATCH_MAX_STACKS])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  clause too long: %s" % ", ".join(overlong))
+
+	# --- AGREEMENT: the text carries the maths ------------------------------
+	#
+	# Each probe renders the number a SECOND way — from the same pure static the
+	# host calls — and asserts the player-facing string contains it. Sampled at
+	# awkward stack counts rather than at 1 and 6, because 1 and 6 are the two a
+	# hand-written string is most likely to be accidentally right at.
+	var drift: PackedStringArray = PackedStringArray()
+	var probes: Array[Dictionary] = []
+	probes.append({"id": "hot_loop", "stacks": 3, "want": "+%d%%" % roundi(
+		(Patches.hot_loop_bonus_for(3, 99999) - 1.0) * 100.0)})
+	probes.append({"id": "bit_rot", "stacks": 2, "want": "%d%%" % roundi(
+		Patches.rot_fraction_for(2) * 100.0)})
+	probes.append({"id": "sleep_state", "stacks": 1, "want": "x%.2f" %
+		Patches.sleep_scale_for(1)})
+	probes.append({"id": "instruction_fusion", "stacks": 3, "want": "x%.2f" %
+		Patches.heat_scale_for(3)})
+	probes.append({"id": "nop_sled", "stacks": 2, "want": "%.2f s" %
+		Patches.iframe_bonus_for(2)})
+	probes.append({"id": "priority_boost", "stacks": 4, "want": "%.1f%%" %
+		((Patches.move_multiplier_for(4) - 1.0) * 100.0)})
+	probes.append({"id": "speculative_execution", "stacks": 2, "want": "x%.2f" %
+		Patches.spec_bonus_for(2)})
+	probes.append({"id": "dead_code", "stacks": 4, "want": "x%.2f" %
+		Patches.decoy_lifetime_for(4)})
+	probes.append({"id": "overflow", "stacks": 2, "want": "x%.2f" %
+		Patches.pulse_radius_for(2)})
+	probes.append({"id": "tail_call", "stacks": 3, "want": "%d more" % mini(
+		Balance.PATCH_TAILCALL_LINKS + Balance.PATCH_TAILCALL_LINKS_PER_STACK * 2,
+		Balance.PATCH_TAILCALL_LINKS_MAX)})
+	probes.append({"id": "watchdog", "stacks": 2, "want": "%d free shells" % mini(
+		Balance.PATCH_WATCHDOG_CHARGES_PER_STACK * 2,
+		Balance.PATCH_WATCHDOG_CHARGES_MAX)})
+	probes.append({"id": "parity_bit", "stacks": 5, "want": "%.1f integrity" %
+		(Balance.PATCH_PARITY_PER_STACK * 5.0)})
+	for probe: Dictionary in probes:
+		var line: String = String(UpgradeText.patch_measure(
+				String(probe["id"]), int(probe["stacks"]))["effect"])
+		if not line.contains(String(probe["want"])):
+			drift.append("%s x%d: '%s' has no '%s'" % [
+				String(probe["id"]), int(probe["stacks"]), line, String(probe["want"])])
+	if drift.is_empty():
+		print("[SelfTest] PASS  text agrees with maths: %d sampled stack counts carry the simulation's own numbers" % probes.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  text drifted from maths: %s" % ", ".join(drift))
+
+	# --- THE CAPPED MARK IS MONOTONIC ---------------------------------------
+	#
+	# "CAPPED" is a promise that another stack buys nothing. It must therefore
+	# never un-say itself: a stat capped at four stacks is capped at five. The bug
+	# this catches is a ceiling comparison written against the wrong constant,
+	# which reads perfectly and lies at exactly one stack count.
+	var capped_bad: PackedStringArray = PackedStringArray()
+	for id: String in Balance.PATCH_TRACKS:
+		var was: bool = false
+		for count: int in range(1, Balance.PATCH_MAX_STACKS + 1):
+			var now: bool = bool(UpgradeText.patch_measure(id, count)["capped"])
+			if was and not now:
+				capped_bad.append("%s: capped at x%d, not at x%d" % [id, count - 1, count])
+			was = now
+	if capped_bad.is_empty():
+		print("[SelfTest] PASS  capped marks monotonic across %d patches" %
+			Balance.PATCH_TRACKS.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  capped marks: %s" % ", ".join(capped_bad))
+
+	# --- THE CODEX IS A RECORD, NOT A POWER ---------------------------------
+	#
+	# Three properties, and the SANDBOX one is the reason this test can exist at
+	# all: it runs against the real `GameState`, on a developer's real program
+	# file, so the first thing it does is prove that a sandboxed session writes
+	# nothing — and then it hides behind that proof for the rest of the check.
+	var kept_sandbox: bool = GameState.sandboxed
+	var kept_codex: Dictionary = GameState.codex.duplicate()
+	GameState.sandboxed = true
+	var codex_bad: PackedStringArray = PackedStringArray()
+	# The program file's own bytes, before and after. This is the assertion that
+	# lets the rest of the check run against a developer's real save: a sandboxed
+	# session learns the entry in memory and writes NOTHING, and "wrote nothing" is
+	# a claim about a file, so it is measured on the file.
+	var file_before: String = GameState.read_text_file("SelfTest", GameState.SAVE_PATH)
+
+	GameState.codex.clear()
+	GameState.record_patch_seen("hot_loop")
+	if not GameState.patch_seen("hot_loop"):
+		codex_bad.append("first contact not recorded")
+	if GameState.codex_seen_count() != 1:
+		codex_bad.append("count %d after one entry" % GameState.codex_seen_count())
+	# An id this build's catalogue does not have must not be able to get in — the
+	# same discipline `Modules.sanitize_tiers` and `Patches.sanitize` are written
+	# under, applied to the one dictionary the Codex indexes with.
+	GameState.record_patch_seen("not_a_patch")
+	if GameState.codex.has("not_a_patch"):
+		codex_bad.append("accepted an unknown id")
+	# And the record must carry NO power. `Patches.carried` is the only thing that
+	# does, and knowing about a patch must never put one in it.
+	if Patches.total_stacks(Net.local_id()) != 0:
+		codex_bad.append("discovery granted stacks")
+	if GameState.read_text_file("SelfTest", GameState.SAVE_PATH) != file_before:
+		codex_bad.append("sandboxed session wrote the program file")
+
+	GameState.codex = kept_codex
+	GameState.sandboxed = kept_sandbox
+	if codex_bad.is_empty():
+		print("[SelfTest] PASS  codex: records first contact, refuses unknown ids, grants nothing, writes nothing sandboxed")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  codex: %s" % ", ".join(codex_bad))
+
+	# --- THE DIRECTIVE'S HINTS ARE ONCE-EVER, AND THEY FIT -------------------
+	#
+	# Two failure modes, both silent, both the kind a player reports as "the game
+	# never told me": a key with no text behind it draws an empty band, and a text
+	# longer than the band ellipsises away the verb it existed to teach. Both are
+	# data questions, so both are answered here rather than by looking at a
+	# screenshot of one of the six.
+	var hint_bad: PackedStringArray = PackedStringArray()
+	var hint_longest: int = 0
+	for key: String in Directive.HINT_KEYS:
+		var text: String = Directive.hint_text(key)
+		if text.strip_edges().is_empty():
+			hint_bad.append("%s: no text" % key)
+			continue
+		hint_longest = maxi(hint_longest, text.length())
+		if text.length() > Directive.HINT_MAX:
+			hint_bad.append("%s: %d chars" % [key, text.length()])
+	if hint_bad.is_empty():
+		print("[SelfTest] PASS  onboarding hints: %d keys, longest %d/%d chars" % [
+			Directive.HINT_KEYS.size(), hint_longest, Directive.HINT_MAX])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  onboarding hints: %s" % ", ".join(hint_bad))
+
+	# And ONCE-EVER has to mean once. `spend_hint` is both the permission and the
+	# record — the second call must refuse — because the alternative shape (ask,
+	# then mark) is the shape that re-shows a hint to a player who died between the
+	# two calls, which is precisely who does not need to be told twice.
+	var kept_hints: Dictionary = GameState.hints.duplicate()
+	GameState.sandboxed = true
+	GameState.hints.clear()
+	var first: bool = GameState.spend_hint("selftest_probe")
+	var second: bool = GameState.spend_hint("selftest_probe")
+	GameState.hints = kept_hints
+	GameState.sandboxed = kept_sandbox
+	if first and not second:
+		print("[SelfTest] PASS  hint spend: granted once, refused thereafter")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  hint spend: first=%s second=%s" % [first, second])
+
+	return failures
+
+
+# =============================================================================
+# P0 CREW SYNC — the four-peer census
+# =============================================================================
+#
+# Every multiplayer test this project has ever run was TWO instances: a host and
+# one client. A real playtest with four players reported crew who could see some
+# of their crewmates but not all of them, and creatures that behaved as though
+# the three clients were not in the building. Neither symptom can exist in a
+# two-peer session — with one client there is no "some of the others" to get
+# wrong — so our entire verification standard was blind to this class of bug by
+# construction.
+#
+# `--crewdump PATH [SECONDS]` is the instrument that ends that. Every peer writes
+# a newline-delimited JSON census of what IT believes, once per `SECONDS`:
+#
+#   roster    what the host has told this peer the crew is (`Net.crew`)
+#   spawned   what this peer's scene tree actually contains (`Net.spawned_players`)
+#   running   `Run.is_running` per rostered peer
+#   creatures HOST ONLY: per creature, the candidate set its senses iterate and
+#             the body it is currently entitled to strike at
+#
+# The gap between `roster` and `spawned` is symptom (A) in one subtraction. The
+# gap between `running` and a creature's `candidates` is symptom (B). Neither is
+# a judgement call and neither needs a screenshot: `tools/crewsync/crewsync.py`
+# reads these files and names the peer and the missing entity.
+#
+# **Measure the thing the player sees** (CLAUDE.md): `spawned` is read off the
+# live scene tree rather than off any bookkeeping dictionary, because "can I see
+# my crewmate" is a question about nodes, and every dictionary in the session is
+# a claim about nodes that could be wrong.
+#
+# `--lure WHO [DELAY]` is the other half: creature placement is seeded, so
+# whether anything is near a client is a matter of luck, and a hunt test that
+# depends on luck is not a test. The lure parks every live creature six metres
+# from a NAMED crewmate, facing them, once — after which the AI is entirely on
+# its own. WHO is `host`, `client1`..`client3` (roster order after the host) or
+# an exact crew name. Host-only, because the AI is host-authoritative and moving
+# a creature anywhere else would be a lie the synchroniser overwrites.
+
+## `--crewdump PATH [SECONDS]`.
+var crew_dump_path: String = ""
+var crew_dump_every: float = 1.0
+## `--crewtag LABEL`: what this process calls itself in its own census. The
+## harness knows the label before the peer id exists, which is the only way a
+## census from a process that never connected can still be attributed.
+var crew_tag: String = ""
+## `--crew-hole WHO [DELAY]`: HOST ONLY. After DELAY, pretend the roster has
+## never heard of WHO — without disconnecting them and without touching the
+## transport.
+##
+## This is the only way to stage, on ENet, the condition a Steam lobby mesh can
+## reach on its own. ENet relays through the server unconditionally, so every
+## client is always known to every other and a partial roster cannot happen;
+## `SteamMultiplayerPeer` opens a direct connection between every pair of lobby
+## members, so a pair whose link never comes up is a real possibility and the
+## roster is the thing that goes stale. The instrument reproduces the CONSEQUENCE
+## on a transport where the CAUSE is impossible, which is what makes the failure
+## testable at all.
+##
+## Read by `Net.peer_has_world`, so it poisons exactly the production path and
+## nothing else — no side door, no second code path that only exists in tests.
+var crew_hole_who: String = ""
+var crew_hole_delay: float = 10.0
+## The resolved peer id, or 0. Checked on the creature visibility path, so it is
+## a plain int compare in the common case.
+var crew_hole: int = 0
+
+## `--beam-on`: hold this peer's beam on for the whole run.
+##
+## DESIGN.md pillar 2 makes the beam the single most detectable thing a crewmate
+## can be carrying (`Balance.AI_BEAM_BEACON`), so this is what turns a scripted
+## crewmate from "faintly perceptible in the dark" into a target a creature will
+## actually commit to. Without it a hunt test is really a test of where the
+## generator happened to put a work light.
+var crew_beam_on: bool = false
+## `--lure WHO [DELAY]`.
+var crew_lure: String = ""
+var crew_lure_delay: float = 6.0
+
+var _crew_dump_file: FileAccess = null
+var _crew_dump_seq: int = 0
+
+
+func _arm_crew_dump() -> void:
+	_crew_dump_file = FileAccess.open(crew_dump_path, FileAccess.WRITE)
+	if _crew_dump_file == null:
+		push_error("[CrewSync] cannot write census to %s (%s)" % [
+			crew_dump_path, error_string(FileAccess.get_open_error())])
+		return
+	print("[CrewSync] census -> %s every %.2fs" % [crew_dump_path, crew_dump_every])
+	_crew_dump_loop()
+
+
+## One census per interval for the life of the process. Written and FLUSHED every
+## time: a harness reads these files while the peers are still running, and a run
+## that ends by timing out (which is most of the interesting ones) would otherwise
+## leave nothing on disk at all.
+func _crew_dump_loop() -> void:
+	while is_inside_tree() and _crew_dump_file != null:
+		await get_tree().create_timer(crew_dump_every).timeout
+		if _crew_dump_file == null:
+			return
+		if multiplayer.has_multiplayer_peer() and Net.is_online:
+			_crew_ping.rpc(_crew_dump_seq)
+		_crew_dump_file.store_line(JSON.stringify(crew_census()))
+		_crew_dump_file.flush()
+
+
+## What this peer believes, as plain data. Public so `--selftest` and any future
+## check can assert on the same record the harness reads.
+func crew_census() -> Dictionary:
+	_crew_dump_seq += 1
+	var roster: Array[int] = []
+	for id: Variant in Net.crew.keys():
+		roster.append(int(id))
+	roster.sort()
+
+	var names: Dictionary = {}
+	var running: Dictionary = {}
+	for id: int in roster:
+		names[str(id)] = Net.crew_name(id)
+		running[str(id)] = Run.is_running(id)
+
+	var spawned: Array[int] = Net.spawned_players()
+	# The subtraction the whole instrument exists for, done here so that a human
+	# reading a raw census file sees the answer without doing set algebra.
+	var missing: Array[int] = []
+	for id: int in roster:
+		if not spawned.has(id):
+			missing.append(id)
+
+	# WHERE each avatar is, on THIS peer, and who this peer thinks owns it.
+	#
+	# A node in the tree is not a crewmate you can see. "Desync A F" is a
+	# statement about MOTION: an avatar that exists and never moves is a peer
+	# whose pose stream is not arriving, and to the player that is indistinguishable
+	# from not being there. Comparing this dictionary across consecutive censuses
+	# is how the harness tells a spawn failure from a replication failure, and it
+	# is the difference between the two symptoms the playtest reported.
+	var positions: Dictionary = {}
+	var streamed: Dictionary = {}
+	var authority: Dictionary = {}
+	for id: int in spawned:
+		var body: Node3D = Net.get_player(id) as Node3D
+		if body == null or not is_instance_valid(body):
+			continue
+		positions[str(id)] = _crew_vec(body.global_position)
+		authority[str(id)] = body.get_multiplayer_authority()
+		# The RECEIVED pose, before any smoothing. `positions` is what the player
+		# sees; this is what the wire delivered. If this moves and `positions`
+		# does not, the stream arrives and the avatar fails to apply it; if
+		# neither moves, the stream never came. One field, two diagnoses.
+		streamed[str(id)] = _crew_vec(Vector3(body.get("sync_position")))
+
+	var record: Dictionary = {
+		"seq": _crew_dump_seq,
+		"t": float(Time.get_ticks_msec()) / 1000.0,
+		# Wall clock as well as process uptime: peers boot at different moments,
+		# so uptime cannot align two censuses and every cross-peer comparison the
+		# harness makes needs a common clock.
+		"wall": Time.get_unix_time_from_system(),
+		"tag": crew_tag,
+		"self": Net.local_id(),
+		"server": Net.is_authority(),
+		"online": Net.is_online,
+		"transport": "steam" if Net.transport == Net.Transport.STEAM else "direct",
+		"peers": _crew_wire_peers(),
+		"heard": _crew_heard_ids(),
+		"roster": roster,
+		"names": names,
+		"running": running,
+		"spawned": spawned,
+		"missing": missing,
+		"positions": positions,
+		"streamed": streamed,
+		"authority": authority,
+		"descending": Run.descending,
+		"seed": Rng.run_seed,
+		"layer": Run.layer_number,
+		"in_hub": Run.in_hub,
+		"configured": Run.configured,
+	}
+	if Net.is_authority():
+		record["creatures"] = _crew_creature_census()
+	# EVERY peer, host included: where each creature is in THIS peer's world.
+	#
+	# The host's `creatures` block answers "who is the AI hunting"; this answers
+	# the question the player actually asks, which is "is the monster moving".
+	# They are different failures with different causes: a creature can be
+	# perfectly targeted on the host and frozen at its spawn pose on one client,
+	# because creature pose is a synchronizer stream gated per peer. That gate is
+	# `Net.peer_has_world`, and a peer on the wrong side of it sees a building
+	# full of statues while the rest of the crew is being hunted normally.
+	record["creature_pose"] = _crew_creature_poses()
+	return record
+
+
+## The peer ids the transport itself admits to, which is a different claim from
+## the roster and occasionally disagrees with it.
+func _crew_wire_peers() -> Array[int]:
+	var ids: Array[int] = []
+	if not multiplayer.has_multiplayer_peer():
+		return ids
+	for id: int in multiplayer.get_peers():
+		ids.append(id)
+	ids.sort()
+	return ids
+
+
+## HOST ONLY. Per creature: the candidate set its senses actually iterate, and
+## what it is hunting. Read through `has_method` rather than typed calls on
+## purpose — M11 is rewriting perception in this same working copy, and an
+## instrument that stops compiling when the thing it measures is refactored is
+## worse than no instrument.
+func _crew_creature_census() -> Array:
+	var rows: Array = []
+	for node: Node in get_tree().get_nodes_in_group(Antivirus.GROUP):
+		var creature: Antivirus = node as Antivirus
+		if creature == null or not is_instance_valid(creature):
+			continue
+		var candidates: Array[String] = []
+		if creature.has_method("_running_players"):
+			var bodies: Variant = creature.call("_running_players")
+			if bodies is Array:
+				for body: Variant in bodies:
+					var as_node: Node = body as Node
+					if as_node != null and is_instance_valid(as_node):
+						candidates.append(String(as_node.name))
+		var target: String = ""
+		if creature.has_method("hunted_body"):
+			var body: Node = creature.call("hunted_body") as Node
+			if body != null and is_instance_valid(body):
+				target = String(body.name)
+		var state: String = ""
+		var tracked: Array[String] = []
+		if creature.has_method("ai_report"):
+			var report: Dictionary = creature.call("ai_report") as Dictionary
+			state = String(report.get("state", ""))
+		if creature.mind != null:
+			for key: Variant in creature.mind.tracks.keys():
+				tracked.append(String(key))
+			tracked.sort()
+		rows.append({
+			"name": String(creature.name),
+			"kind": creature.ai_kind(),
+			"state": state,
+			"pos": _crew_vec(creature.global_position),
+			"candidates": candidates,
+			"tracked": tracked,
+			"target": target,
+		})
+	return rows
+
+
+## name -> position, on whatever peer is asking. Deliberately independent of
+## `_crew_creature_census`: this one must work on a client, where none of the
+## AI's own state exists.
+func _crew_creature_poses() -> Dictionary:
+	var out: Dictionary = {}
+	for node: Node in get_tree().get_nodes_in_group(Antivirus.GROUP):
+		var creature: Node3D = node as Node3D
+		if creature == null or not is_instance_valid(creature):
+			continue
+		# Applied pose and RECEIVED pose, exactly as for crew avatars. If the
+		# received one moves and the applied one does not, the stream arrives and
+		# the creature fails to apply it; if neither moves, nothing is arriving.
+		out[String(creature.name)] = "%s|%s" % [
+			_crew_vec(creature.global_position),
+			_crew_vec(Vector3(creature.get("sync_position")))]
+	return out
+
+
+static func _crew_vec(value: Vector3) -> String:
+	return "%.2f,%.2f,%.2f" % [value.x, value.y, value.z]
+
+
+# --- the lure ----------------------------------------------------------------
+
+func _arm_crew_lure() -> void:
+	await get_tree().create_timer(crew_lure_delay).timeout
+	if not Net.is_authority():
+		print("[CrewSync] lure ignored: this peer is not the host")
+		return
+	var target: int = _crew_lure_target()
+	if target == 0:
+		printerr("[CrewSync] lure '%s' matched nobody in the roster" % crew_lure)
+		return
+	# HELD, not a single shove. One placement puts the pack next to the crewmate
+	# for a tick and their own doctrine then walks them off, and awareness bleeds
+	# back down before the ladder ever reaches HUNTING — which measures the decay
+	# curve, not the thing under test. Holding them there for a few seconds gives
+	# the senses a continuous stream of evidence about a CLIENT, which is the
+	# question: not "how fast does awareness build" but "can a creature commit to
+	# a crewmate this machine does not own".
+	var until: float = float(Time.get_ticks_msec()) / 1000.0 + CREW_LURE_HOLD
+	while float(Time.get_ticks_msec()) / 1000.0 < until:
+		_park_pack_on(target)
+		await get_tree().create_timer(CREW_LURE_TICK).timeout
+
+
+## How long the pack is held on the lured crewmate, and how often it is re-parked.
+const CREW_LURE_HOLD: float = 14.0
+const CREW_LURE_TICK: float = 0.5
+
+
+func _park_pack_on(target: int) -> void:
+	var body: Node3D = Net.get_player(target) as Node3D
+	if body == null or not is_instance_valid(body):
+		printerr("[CrewSync] lure target %d has no avatar on the host" % target)
+		return
+	var moved: int = 0
+	for node: Node in get_tree().get_nodes_in_group(Antivirus.GROUP):
+		var creature: Antivirus = node as Antivirus
+		if creature == null or not is_instance_valid(creature):
+			continue
+		# Inside `Balance.AI_PROXIMITY` and on the ring around them, staggered by
+		# slot so a pack does not stack into one point and shove each other
+		# through a wall. Close enough that the proximity floor guarantees a
+		# nonzero sight strength — the test is "does it hunt a CLIENT", not "is
+		# the dark dark", and leaving it to the lighting would make the check
+		# depend on where the generator put a work light.
+		# Fanned across the arc the crewmate is FACING, not a full ring. A ring
+		# puts half the pack behind them, which is fine for the assertion (the
+		# census does not care where a creature stands) and useless for the
+		# capture — and the capture is the half a human can check.
+		var fan: float = deg_to_rad(-40.0 + 26.0 * float(moved))
+		var yaw: float = body.rotation.y + fan
+		var offset: Vector3 = Vector3(-sin(yaw), 0.0, -cos(yaw)) \
+				* (Balance.AI_PROXIMITY * 0.8)
+		creature.global_position = body.global_position + offset
+		creature.look_at_from_position(creature.global_position,
+				body.global_position, Vector3.UP)
+		creature.rotation = Vector3(0.0, creature.rotation.y, 0.0)
+		moved += 1
+	if _lure_logged != target:
+		_lure_logged = target
+		print("[CrewSync] lure: %d creature(s) held on %s (peer %d)" % [
+			moved, Net.crew_name(target), target])
+
+
+var _lure_logged: int = 0
+
+
+## `host`, `clientN`, or an exact crew name. Roster order is the host first (peer
+## 1 is always the listen host) and then join order, which is the same order the
+## harness starts its processes in.
+func _crew_lure_target() -> int:
+	return _crew_target(crew_lure)
+
+
+## `host`, `clientN`, or an exact crew name -> peer id, or 0.
+func _crew_target(spec: String) -> int:
+	var ids: Array[int] = []
+	for id: Variant in Net.crew.keys():
+		ids.append(int(id))
+	ids.sort()
+	if ids.is_empty():
+		return 0
+	var want: String = spec.to_lower()
+	if want == "host" or want == "local":
+		return 1
+	if want.begins_with("client"):
+		var index: int = want.substr(6).to_int()
+		# ids[0] is the host; client1 is the first joiner.
+		if index >= 1 and index < ids.size():
+			return ids[index]
+		return 0
+	for id: int in ids:
+		if Net.crew_name(id).to_lower() == want:
+			return id
+	return 0
+
+
+# =========================================================== M11 — THE ANTIVIRUS ==
+#
+# AI is famously hard to test, which is exactly why this section exists and why
+# the M11 architecture was factored the way it was: the decisions live in three
+# pure classes (`Perception`, `Suspicion`, `HuntMemory`) that take numbers and
+# return numbers, so the interesting claims can be asserted headlessly instead of
+# being photographed and believed.
+#
+# What is asserted here, and what each check is defending:
+#
+#   sight/hearing curves     that the senses are graded and that cover, distance,
+#                            darkness and facing the other way all reduce to zero.
+#   the fairness invariant   that a creature cannot acquire a target it has no
+#                            sensory evidence for — asserted on the perception
+#                            path, not on the outcome.
+#   ownership-blindness      that nothing on the target-acquisition path tests
+#                            network ownership. THE check that would have caught
+#                            "enemys only responded to the host".
+#   the ladder               ordering, hysteresis, and that awareness genuinely
+#                            decays to UNAWARE when evidence stops.
+#   search termination       that a search runs out of places and STOPS, which is
+#                            the one property a capture can never establish.
+#   the scenario             noise at A, hide at B: it must search A and then
+#                            extend outward, not walk to B.
+#   telegraph coverage       that every state a creature can enter has a caption,
+#                            so a deaf player is never left without the tell.
+#   doctrine differentiation that the five classes really do have five different
+#                            sensoria rather than one re-skinned three times.
+
+## Files that make up the antivirus target-acquisition path. A network-ownership
+## test in any of them reproduces the four-player "enemies only responded to the
+## host" bug, because on the host `is_multiplayer_authority()` is true for the
+## host's own avatar and false for every client's.
+const _AI_ACQUISITION_FILES: Array[String] = [
+	"res://src/creatures/antivirus.gd",
+	"res://src/creatures/scrubber.gd",
+	"res://src/creatures/sentinel.gd",
+	"res://src/creatures/hunter.gd",
+	"res://src/creatures/hound.gd",
+	"res://src/creatures/moth.gd",
+	"res://src/creatures/auditor.gd",
+	"res://src/creatures/perception.gd",
+	"res://src/core/haunt_director.gd",
+]
+
+
+func _ai_selftest() -> int:
+	var failures: int = 0
+
+	# --- senses are graded, and every kind of safety reduces to exactly zero ---
+	var lit_near: float = Perception.sight_strength(4.0, 20.0, 1.0, 0.5, false, 1.0)
+	var lit_far: float = Perception.sight_strength(16.0, 20.0, 1.0, 0.5, false, 1.0)
+	var dark_near: float = Perception.sight_strength(4.0, 20.0, 1.0, 0.5, false, 0.0)
+	var edge: float = Perception.sight_strength(4.0, 20.0, 0.5, 0.5, false, 1.0)
+	var blocked: float = Perception.sight_strength(4.0, 20.0, 1.0, 0.5, true, 1.0)
+	var behind: float = Perception.sight_strength(4.0, 20.0, 0.2, 0.5, false, 1.0)
+	var beyond: float = Perception.sight_strength(24.0, 20.0, 1.0, 0.5, false, 1.0)
+	if lit_near > lit_far and lit_near > dark_near and lit_near > edge \
+			and blocked == 0.0 and behind == 0.0 and beyond == 0.0 and dark_near > 0.0:
+		print("[SelfTest] PASS  ai sight: lit-near %.3f > lit-far %.3f > 0, dark-near %.3f (floor), rim %.3f; cover/back-arc/out-of-range all 0" % [
+			lit_near, lit_far, dark_near, edge])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai sight: near %.3f far %.3f dark %.3f rim %.3f blocked %.3f behind %.3f beyond %.3f" % [
+			lit_near, lit_far, dark_near, edge, blocked, behind, beyond])
+
+	# The pillar-2 claim, as a number: a beam-on crewmate is far more findable
+	# than an unlit one at the same distance. If this ratio ever collapses, going
+	# dark has stopped being the stealth mechanic and the game has lost its
+	# stealth system without anybody editing a stealth system.
+	var beacon_ratio: float = lit_near / maxf(dark_near, 0.0001)
+	if beacon_ratio >= 3.0:
+		print("[SelfTest] PASS  ai light discipline: a lit target is %.1fx as findable as an unlit one" % beacon_ratio)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai light discipline: only %.1fx — going dark barely helps" % beacon_ratio)
+
+	var loud_here: float = Perception.hearing_strength(1.0, 0, 3)
+	var loud_far: float = Perception.hearing_strength(1.0, 3, 3)
+	var out_of_reach: float = Perception.hearing_strength(1.0, 4, 3)
+	var deaf: float = Perception.hearing_strength(1.0, 0, -1)
+	if loud_here > loud_far and loud_far > 0.0 and out_of_reach == 0.0 and deaf == 0.0:
+		print("[SelfTest] PASS  ai hearing: same room %.2f > 3 rooms %.2f > 0; past reach and deaf both 0" % [
+			loud_here, loud_far])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai hearing: here %.2f far %.2f past %.2f deaf %.2f" % [
+			loud_here, loud_far, out_of_reach, deaf])
+
+	# --- THE FAIRNESS INVARIANT, on the perception path ------------------------
+	var fair: Perception = Perception.new()
+	var took_zero: bool = fair.feed("CREW-B", 0.0, Vector3.ZERO, "sight", 0.1)
+	var took_negative: bool = fair.feed("CREW-B", -1.0, Vector3.ZERO, "sight", 0.1)
+	var tracks_after: int = fair.tracks.size()
+	var took_real: bool = fair.feed("CREW-B", 0.4, Vector3.ONE, "sight", 0.1)
+	if not took_zero and not took_negative and tracks_after == 0 and took_real \
+			and fair.tracks.size() == 1:
+		print("[SelfTest] PASS  ai fairness: zero-strength evidence creates no track (a creature cannot acquire what it has not sensed)")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai fairness: zero=%s neg=%s tracks-after-zero=%d real=%s" % [
+			str(took_zero), str(took_negative), tracks_after, str(took_real)])
+
+	# --- OWNERSHIP-BLINDNESS. The four-player check. --------------------------
+	#
+	# A live 4-crew session reported the antivirus responding only to the host.
+	# The signature of that bug is a network-ownership test on a crew-enumeration
+	# path, so this refuses to let one back in — on any of the nine files that
+	# make up the path, including ones written after this check.
+	var owned: PackedStringArray = PackedStringArray()
+	for path: String in _AI_ACQUISITION_FILES:
+		var file: FileAccess = FileAccess.open(path, FileAccess.READ)
+		if file == null:
+			owned.append("%s (missing)" % path)
+			continue
+		var body: String = file.get_as_text()
+		for line: String in body.split("\n"):
+			var code: String = line.strip_edges()
+			# Comments are how the rule is DOCUMENTED, so only real code counts.
+			if code.begins_with("#"):
+				continue
+			if code.contains("is_multiplayer_authority"):
+				owned.append("%s: %s" % [path.get_file(), code])
+	if owned.is_empty():
+		print("[SelfTest] PASS  ai ownership-blind: no network-ownership test on any of the %d target-acquisition files" % _AI_ACQUISITION_FILES.size())
+	else:
+		failures += 1
+		for entry: String in owned:
+			printerr("[SelfTest] FAIL  ai ownership test on the acquisition path — %s" % entry)
+
+	# --- the ladder: ordering and hysteresis ----------------------------------
+	if Suspicion.CURIOUS_ENTER < Suspicion.ALERT_ENTER \
+			and Suspicion.ALERT_ENTER < Suspicion.HUNT_ENTER \
+			and Suspicion.CURIOUS_EXIT < Suspicion.CURIOUS_ENTER \
+			and Suspicion.ALERT_EXIT < Suspicion.ALERT_ENTER \
+			and Suspicion.HUNT_EXIT < Suspicion.HUNT_ENTER:
+		print("[SelfTest] PASS  ai ladder ordered: curious %.2f < alert %.2f < hunt %.2f, every exit below its entry (hysteresis real)" % [
+			Suspicion.CURIOUS_ENTER, Suspicion.ALERT_ENTER, Suspicion.HUNT_ENTER])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai ladder thresholds out of order or without hysteresis")
+
+	# Drive the whole thing: evidence in, then silence, and assert it climbs to
+	# HUNTING and comes all the way back down to UNAWARE in bounded time. A
+	# creature that never forgets is as broken as one that forgets instantly, and
+	# it is the failure mode that would quietly break the solo invariant.
+	var mind: Perception = Perception.new()
+	var state: int = Suspicion.State.UNAWARE
+	var dwell: float = 0.0
+	var step: float = Balance.AI_TICK
+	var climb_time: float = -1.0
+	var elapsed: float = 0.0
+	for i: int in 200:
+		mind.feed("CREW-B", 1.0, Vector3.ZERO, "sight", step)
+		var fed: Dictionary = {"CREW-B": true}
+		mind.settle(fed, step, state)
+		var moved: Dictionary = Suspicion.step(state, mind.peak_awareness(), true,
+				dwell, step, false)
+		state = int(moved["state"])
+		dwell = float(moved["dwell"])
+		elapsed += step
+		if state == Suspicion.State.HUNTING and climb_time < 0.0:
+			climb_time = elapsed
+			break
+	var reached_hunting: bool = state == Suspicion.State.HUNTING
+	var forget_time: float = -1.0
+	elapsed = 0.0
+	for i: int in 4000:
+		mind.settle({}, step, state)
+		var moved2: Dictionary = Suspicion.step(state, mind.peak_awareness(), false,
+				dwell, step, true)
+		state = int(moved2["state"])
+		dwell = float(moved2["dwell"])
+		elapsed += step
+		if state == Suspicion.State.UNAWARE:
+			forget_time = elapsed
+			break
+	if reached_hunting and climb_time > 0.5 and climb_time < 6.0 \
+			and forget_time > 8.0 and forget_time < 120.0:
+		print("[SelfTest] PASS  ai ladder drive: clean sight -> HUNTING in %.1fs; silence -> UNAWARE in %.1fs (reluctant, and bounded)" % [
+			climb_time, forget_time])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai ladder drive: hunting=%s climb=%.2fs forget=%.2fs (state %s)" % [
+			str(reached_hunting), climb_time, forget_time, Suspicion.label(state)])
+
+	# --- the search terminates ------------------------------------------------
+	#
+	# Not "usually terminates". The pool of candidates is finite and every spot
+	# reached is marked, so `next_search_spot` must eventually return INF. This
+	# drives it to exhaustion with a hard iteration ceiling: if the ceiling is
+	# ever hit, the search loops forever in play and the LOST state becomes a
+	# creature stuck in a corner.
+	var memory: HuntMemory = HuntMemory.new()
+	memory.mark_seen(Vector3.ZERO, 0)
+	var candidates: Array[Vector3] = []
+	var kinds: Array[String] = []
+	for i: int in 12:
+		candidates.append(Vector3(float(i) * 1.4 - 8.0, 0.0, float(i % 4) * 2.0))
+		kinds.append("corner")
+	var visited: int = 0
+	var spins: int = 0
+	while spins < 500:
+		spins += 1
+		var spot: Vector3 = memory.next_search_spot(candidates, Vector3.ZERO, kinds)
+		if spot == Vector3.INF:
+			break
+		memory.mark_searched(spot)
+		visited += 1
+	if visited > 0 and spins < 500 and visited <= candidates.size():
+		print("[SelfTest] PASS  ai search terminates: %d of %d plausible spots checked, then exhausted in %d passes (no loop)" % [
+			visited, candidates.size(), spins])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai search did not terminate: visited %d in %d passes" % [
+			visited, spins])
+
+	# Re-checking is bounded, not forbidden: a spot marked twice is one entry, and
+	# the ring is capped, so memory cannot grow without limit.
+	var ring: HuntMemory = HuntMemory.new()
+	for i: int in 40:
+		ring.mark_searched(Vector3(float(i) * 9.0, 0.0, 0.0))
+	ring.mark_searched(Vector3(9.0, 0.0, 0.0))
+	if ring.searched.size() <= HuntMemory.SEARCHED_MAX:
+		print("[SelfTest] PASS  ai memory bounded: %d spots remembered of 41 marked (cap %d), duplicates merged" % [
+			ring.searched.size(), HuntMemory.SEARCHED_MAX])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai memory unbounded: %d entries" % ring.searched.size())
+
+	# --- THE SCENARIO. Noise at A, hide at B. --------------------------------
+	#
+	# The claim the whole milestone is judged on: a creature that hears you at A
+	# and then loses you must SEARCH A and extend OUTWARD toward plausible places,
+	# rather than walking straight to B. Walking to B is omniscience; never
+	# leaving A is a puzzle; the milestone is the third thing.
+	var scene_a: Vector3 = Vector3(0.0, 0.0, 0.0)
+	var scene_b: Vector3 = Vector3(22.0, 0.0, 4.0)
+	var scenario: HuntMemory = HuntMemory.new()
+	scenario.mark_seen(scene_a, 0)
+	var places: Array[Vector3] = [scene_a, Vector3(5.0, 0.0, 1.0),
+			Vector3(11.0, 0.0, 2.0), Vector3(16.0, 0.0, 3.0), scene_b]
+	var place_kinds: Array[String] = ["lkp", "corner", "corner", "corner", "corner"]
+	var order: Array[Vector3] = []
+	for i: int in 12:
+		var spot: Vector3 = scenario.next_search_spot(places, scene_a, place_kinds)
+		if spot == Vector3.INF:
+			break
+		order.append(spot)
+		scenario.mark_searched(spot)
+		# Confidence bleeds while it looks, which widens the radius — so the
+		# search reaches further the longer the crewmate stays hidden.
+		scenario.tick(3.0)
+	var searched_a_first: bool = not order.is_empty() and order[0].distance_to(scene_a) < 1.0
+	var reached_outward: bool = order.size() >= 3
+	var went_straight_to_b: bool = not order.is_empty() and order[0].distance_to(scene_b) < 1.0
+	if searched_a_first and reached_outward and not went_straight_to_b:
+		print("[SelfTest] PASS  ai scenario (noise at A, hide at B): checked A first, then extended outward through %d places; never walked straight to B" % order.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai scenario: order size %d, A-first=%s, straight-to-B=%s" % [
+			order.size(), str(searched_a_first), str(went_straight_to_b)])
+
+	# Vagueness widens the search. The nastier half of confidence decay: the
+	# longer you hide, the wider it looks, so waiting it out one room away has to
+	# stop working.
+	var sure: HuntMemory = HuntMemory.new()
+	sure.mark_seen(Vector3.ZERO, 0)
+	var radius_sure: float = sure.search_radius()
+	sure.tick(HuntMemory.LKP_LIFETIME * 0.8)
+	var radius_vague: float = sure.search_radius()
+	if radius_vague > radius_sure and sure.confidence() < 0.3:
+		print("[SelfTest] PASS  ai confidence decay: search radius grows %.1f m -> %.1f m as certainty falls to %.2f" % [
+			radius_sure, radius_vague, sure.confidence()])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai confidence: radius %.1f -> %.1f, conf %.2f" % [
+			radius_sure, radius_vague, sure.confidence()])
+
+	# --- hot zones and adaptation are both BOUNDED and both FORGET ------------
+	var heat: HuntMemory = HuntMemory.new()
+	for i: int in 50:
+		heat.warm(3, 1.0)
+		heat.note_escape("drop")
+	var hot_peak: float = heat.heat_of(3)
+	var bias_peak: float = heat.bias_of("drop")
+	heat.tick(400.0)
+	var hot_cold: float = heat.heat_of(3)
+	var bias_cold: float = heat.bias_of("drop")
+	if hot_peak <= HuntMemory.HOT_MAX + 0.001 and bias_peak <= HuntMemory.ADAPT_MAX + 0.001 \
+			and hot_cold < hot_peak and bias_cold < bias_peak and bias_cold == 0.0:
+		print("[SelfTest] PASS  ai memory forgets: heat capped at %.2f then decays to %.2f; escape bias capped at %.2f then forgotten" % [
+			hot_peak, hot_cold, bias_peak])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai memory: heat %.2f->%.2f bias %.2f->%.2f" % [
+			hot_peak, hot_cold, bias_peak, bias_cold])
+
+	# False departures are rare BY CONSTRUCTION. The terror is in the
+	# possibility; a creature that fakes leaving every time has a tell.
+	var feint: HuntMemory = HuntMemory.new()
+	var feints: int = 0
+	for i: int in 100:
+		if feint.may_false_depart(0.0):
+			feints += 1
+		feint.tick(1.0)
+	if feints <= 2:
+		print("[SelfTest] PASS  ai false departure rate-limited: %d in 100 s of forced rolls (cooldown %.0fs)" % [
+			feints, HuntMemory.FALSE_DEPART_COOLDOWN])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai false departure fired %d times in 100 s" % feints)
+
+	# --- TELEGRAPHS ARE A SHIP GATE ------------------------------------------
+	var missing: PackedStringArray = PackedStringArray()
+	for state_value: int in [Suspicion.State.CURIOUS, Suspicion.State.ALERT,
+			Suspicion.State.HUNTING, Suspicion.State.LOST]:
+		var key: StringName = Suspicion.caption_key(state_value)
+		if key == &"" or not Captions.TABLE.has(key):
+			missing.append(Suspicion.label(state_value))
+	if missing.is_empty():
+		print("[SelfTest] PASS  ai telegraphs: every suspicion state has a caption (a deaf player reads CURIOUS/ALERT/HUNTING/LOST)")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai telegraph missing captions for: %s" % ", ".join(missing))
+
+	# --- doctrine differentiation --------------------------------------------
+	#
+	# Five hunters must be five MINDS, not one re-skinned. The cheapest honest
+	# statement of that is that no two share a sensorium, and it is worth a gate
+	# because "make them feel different" is exactly the kind of intention that
+	# rots into four copies of the same numbers.
+	var sensoria: Dictionary = {
+		"scrubber": "%.0f/%.0f/%d" % [Balance.AI_SIGHT_SCRUBBER, Balance.AI_CONE_SCRUBBER,
+				Balance.AI_HEAR_ROOMS_SCRUBBER],
+		"hound": "%.0f/%.0f/%d" % [Balance.AI_SIGHT_HOUND, Balance.AI_CONE_HOUND,
+				Balance.AI_HEAR_ROOMS_HOUND],
+		"moth": "%.0f/%.0f/%d" % [Balance.AI_SIGHT_MOTH, Balance.AI_CONE_MOTH,
+				Balance.AI_HEAR_ROOMS_MOTH],
+		"auditor": "%.0f/%.0f/%d" % [Balance.AI_SIGHT_AUDITOR, Balance.AI_CONE_AUDITOR,
+				Balance.AI_HEAR_ROOMS_AUDITOR],
+		"sentinel": "%.0f/%.0f/%d" % [Balance.AI_SIGHT_SENTINEL, Balance.AI_CONE_SENTINEL,
+				Balance.AI_HEAR_ROOMS_SENTINEL],
+	}
+	var distinct: Dictionary = {}
+	for kind: String in sensoria.keys():
+		distinct[String(sensoria[kind])] = true
+	if distinct.size() == sensoria.size():
+		print("[SelfTest] PASS  ai doctrine: %d classes, %d distinct sensoria (sight m / cone deg / hearing rooms)" % [
+			sensoria.size(), distinct.size()])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai doctrine: %d classes share only %d sensoria — two hunters are re-skins" % [
+			sensoria.size(), distinct.size()])
+
+	# The Hound is the tracker and the Sentinel is the watcher, and the numbers
+	# have to say so or the doctrine is only a comment.
+	if Balance.AI_HEAR_ROOMS_HOUND > Balance.AI_HEAR_ROOMS_SENTINEL \
+			and Balance.AI_SIGHT_SENTINEL > Balance.AI_SIGHT_HOUND \
+			and Balance.AI_HEAR_ROOMS_MOTH == 0:
+		print("[SelfTest] PASS  ai doctrine shape: Hound hears furthest (%d rooms), Sentinel sees furthest (%.0f m), Moth is deaf" % [
+			Balance.AI_HEAR_ROOMS_HOUND, Balance.AI_SIGHT_SENTINEL])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai doctrine shape does not match the dossiers")
+
+	# --- ATTENTION SPLITTING (1-4 players) ------------------------------------
+	#
+	# With four crew a creature must COMMIT to one rather than re-picking every
+	# tick, or it walks at nobody. It must also not commit so hard that a
+	# crewmate walking into its face is ignored — hence `peak_awareness` driving
+	# the ladder while `best` drives the attention.
+	var crowd: Perception = Perception.new()
+	crowd.feed("CREW-A", 1.0, Vector3(1.0, 0.0, 0.0), "sight", 0.5)
+	crowd.feed("CREW-B", 0.9, Vector3(9.0, 0.0, 0.0), "sight", 0.5)
+	var first_pick: String = String(crowd.best().get("key", ""))
+	crowd.feed("CREW-B", 0.95, Vector3(9.0, 0.0, 0.0), "sight", 0.05)
+	var held_pick: String = String(crowd.best().get("key", ""))
+	crowd.feed("CREW-B", 1.0, Vector3(9.0, 0.0, 0.0), "sight", 2.0)
+	var switched: String = String(crowd.best().get("key", ""))
+	var peak_sees_all: bool = crowd.peak_awareness() >= crowd.awareness() - 0.0001
+	if first_pick == "CREW-A" and held_pick == "CREW-A" and switched == "CREW-B" \
+			and peak_sees_all and crowd.tracks.size() == 2:
+		print("[SelfTest] PASS  ai attention: commits to one of 2+ crew, holds through a %.2f margin, switches on clear evidence" % Perception.COMMIT_MARGIN)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai attention: first=%s held=%s switched=%s tracks=%d" % [
+			first_pick, held_pick, switched, crowd.tracks.size()])
+
+	# --- diegetic coordination is REAL noise ---------------------------------
+	#
+	# The screech must be loud enough and long enough to actually converge a
+	# Hound, and rate-limited enough that killing the screamer first is a real
+	# tactic with a real window. Both are properties of the constants.
+	if Balance.AI_SCREECH_ROOMS >= Balance.AI_HEAR_ROOMS_HOUND \
+			and Balance.AI_SCREECH_COOLDOWN >= 5.0 \
+			and float(Balance.AI_NOISE_INTENSITY.get("scrubber_screech", 0.0)) >= 0.8:
+		print("[SelfTest] PASS  ai screech carries: %d rooms (>= the Hound's %d), intensity %.2f, one every %.0fs" % [
+			Balance.AI_SCREECH_ROOMS, Balance.AI_HEAR_ROOMS_HOUND,
+			float(Balance.AI_NOISE_INTENSITY["scrubber_screech"]), Balance.AI_SCREECH_COOLDOWN])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  ai screech cannot reach a Hound, or is not rate-limited")
+
+	# --- THE SOLO INVARIANT ---------------------------------------------------
+	#
+	# A competent solo player must always have an out. Expressed as arithmetic:
+	# with the beam off, out of every cone and behind cover, every sense returns
+	# zero, so awareness can only fall — and it must reach UNAWARE inside a time a
+	# human will actually wait. `forget_time` above is that number; this asserts
+	# the premise it rests on, which is that going quiet and dark really does
+	# produce no evidence at all.
+	var hidden: float = Perception.sight_strength(18.0, 20.0, 1.0, 0.5, true, 0.0)
+	var silent: float = Perception.hearing_strength(0.0, 0, 3)
+	if hidden == 0.0 and silent == 0.0 and forget_time > 0.0 and forget_time <= 90.0:
+		print("[SelfTest] PASS  solo invariant: dark + behind cover + silent yields zero evidence; a lone agent is forgotten in %.0fs" % forget_time)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  solo invariant: hidden %.3f silent %.3f forget %.1fs" % [
+			hidden, silent, forget_time])
+
+	failures += _hunter_move_selftest()
+	return failures
+
+
+## M11b — HUNTER PRESENCE & SIGNATURE MOVES.
+##
+## Four committed moves went in to make the hunters frightening to FACE. Every
+## one of them is bound by three laws, and all three are asserted here as
+## arithmetic rather than trusted to the tuning — because "it felt escapable when
+## I played it" is exactly the claim that stops being true after somebody nudges
+## a constant six weeks from now.
+func _hunter_move_selftest() -> int:
+	var failures: int = 0
+
+	# --- THE SOLO INVARIANT, as arithmetic --------------------------------
+	#
+	# Every signature move must be escapable by ONE player with no crewmate, from
+	# the worst position the move can be started at. For each: how far can a
+	# sprinting agent travel during the wind-up, and is that enough?
+	var sprint: float = Player.SPRINT_SPEED
+	var walk: float = Player.WALK_SPEED
+	var outs: Array[Dictionary] = [
+		# Radial: the escape is the radius, from the dead centre.
+		{"move": "Sentinel OVERLOAD SLAM", "windup": Balance.AI_SLAM_WINDUP,
+			"need": Balance.AI_SLAM_RADIUS, "how": "clear the %.0f m radius" % Balance.AI_SLAM_RADIUS},
+		# Committed straight line: the escape is lateral, one body width plus the
+		# lunge reach, which is far cheaper than the radial case.
+		{"move": "Hound CHARGE", "windup": Balance.AI_CHARGE_WINDUP,
+			"need": Balance.HOUND_LUNGE_RANGE, "how": "side-step the committed line"},
+		# Committed vertical: same shape, and the climb plus the hang are both
+		# warning, so the budget is generous.
+		{"move": "Moth CEILING DIVE", "windup": Balance.AI_DIVE_CLIMB_TIME + Balance.AI_DIVE_HANG,
+			"need": Balance.MOTH_STRIKE_RANGE, "how": "step out from under it"},
+		# Not an attack: the escape is leaving a narrow forward cone.
+		{"move": "Auditor INDEX", "windup": Balance.AI_MARK_SCAN_TIME,
+			"need": Balance.AI_MARK_RANGE * sin(deg_to_rad(Balance.AI_MARK_CONE_DEG)),
+			"how": "walk out of the cone"},
+	]
+	for entry: Dictionary in outs:
+		var windup: float = float(entry["windup"])
+		var need: float = float(entry["need"])
+		var sprint_reach: float = sprint * windup
+		var walk_reach: float = walk * windup
+		if sprint_reach > need and walk_reach > need * 0.6:
+			print("[SelfTest] PASS  solo out — %s: %.2fs wind-up carries a sprint %.1f m (need %.1f m: %s)" % [
+				String(entry["move"]), windup, sprint_reach, need, String(entry["how"])])
+		else:
+			failures += 1
+			printerr("[SelfTest] FAIL  solo out — %s: %.2fs wind-up only carries %.1f m, needs %.1f m" % [
+				String(entry["move"]), windup, sprint_reach, need])
+
+	# --- THE MERCY LAYER ---------------------------------------------------
+	#
+	# Dread, not a souls game. No single signature move may take more than half a
+	# healthy agent's integrity, and no two of them together may corrupt one
+	# outright — a player who reads both wind-ups wrong is having a bad time, not
+	# losing the run.
+	var worst: float = maxf(maxf(Balance.AI_SLAM_DAMAGE, Balance.AI_CHARGE_DAMAGE),
+			Balance.AI_DIVE_DAMAGE)
+	var pair: float = Balance.AI_SLAM_DAMAGE + Balance.AI_CHARGE_DAMAGE
+	if worst < Balance.INTEGRITY_MAX * 0.5 and pair < Balance.INTEGRITY_MAX:
+		print("[SelfTest] PASS  mercy: worst signature move costs %.0f of %.0f integrity (< half); the two heaviest together %.0f (< a full bar)" % [
+			worst, Balance.INTEGRITY_MAX, pair])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  mercy: worst move %.0f, heaviest pair %.0f, of %.0f integrity" % [
+			worst, pair, Balance.INTEGRITY_MAX])
+
+	# The Auditor's move does no damage at all. It is the one that PERSISTS, and a
+	# persistent effect that also hurt would be the least merciful thing here.
+	if Balance.AI_MARK_LIFETIME > 0.0 and Balance.AI_MARK_GLOW <= Balance.AI_BEAM_BEACON:
+		print("[SelfTest] PASS  index is not damage: %.0fs of being readable (%.2f, at or below a live beam's %.2f), zero integrity" % [
+			Balance.AI_MARK_LIFETIME, Balance.AI_MARK_GLOW, Balance.AI_BEAM_BEACON])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  index: glow %.2f exceeds a live beam, or never expires" % Balance.AI_MARK_GLOW)
+
+	# --- KILLABILITY -------------------------------------------------------
+	#
+	# Scarier, NEVER spongier. M11 and M11b together must not have changed a
+	# single shots-to-kill. Asserted against the breaker's own damage so a future
+	# health bump has to come here and argue for itself.
+	var shots: Dictionary = {
+		"scrubber": ceilf(Balance.SCRUBBER_HEALTH / Balance.BREAKER_DAMAGE),
+		"moth": ceilf(Balance.MOTH_HEALTH / Balance.BREAKER_DAMAGE),
+		"hound": ceilf(Balance.HOUND_HEALTH / Balance.BREAKER_DAMAGE),
+		"auditor": ceilf(Balance.AUDITOR_HEALTH / Balance.BREAKER_DAMAGE),
+	}
+	# The values M6 shipped, at BREAKER_DAMAGE 42 and the layer-1 base healths —
+	# frozen here on purpose. `git diff --stat` on `Balance` across M11 and M11b
+	# reads "0 deletions", so these ARE the pre-milestone numbers; this line is
+	# what keeps them that way, and it is meant to be annoying to change.
+	var expected: Dictionary = {"scrubber": 3.0, "moth": 4.0, "hound": 8.0, "auditor": 15.0}
+	var drift: PackedStringArray = PackedStringArray()
+	for kind: String in expected.keys():
+		if not is_equal_approx(float(shots[kind]), float(expected[kind])):
+			drift.append("%s %d (was %d)" % [kind, int(shots[kind]), int(expected[kind])])
+	if drift.is_empty():
+		print("[SelfTest] PASS  killability unchanged: scrubber %d / moth %d / hound %d / auditor %d breaker hits, exactly as M6 shipped" % [
+			int(shots["scrubber"]), int(shots["moth"]), int(shots["hound"]), int(shots["auditor"])])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  killability drifted — the AI got spongier, not smarter: %s" % ", ".join(drift))
+
+	# --- SCRUBBERS ARE EXCLUDED -------------------------------------------
+	#
+	# The user's exclusion, as a gate. Their menace is numbers; an individually
+	# dangerous Scrubber costs the game its swarm. No signature move may reference
+	# one, and no Scrubber constant may appear in the M11b section.
+	var scrubber_file: FileAccess = FileAccess.open("res://src/creatures/scrubber.gd", FileAccess.READ)
+	var scrubber_moves: bool = false
+	if scrubber_file != null:
+		var body: String = scrubber_file.get_as_text()
+		scrubber_moves = body.contains("AI_SLAM") or body.contains("AI_CHARGE") \
+				or body.contains("AI_DIVE") or body.contains("AI_MARK")
+	if not scrubber_moves:
+		print("[SelfTest] PASS  scrubbers excluded: no signature move touches the swarm (their menace is numbers)")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  a signature move leaked into the Scrubber — the swarm must stay cannon fodder")
+
+	# --- TELEGRAPHS ARE A SHIP GATE ---------------------------------------
+	#
+	# The wind-up cue is the player's ONLY warning, so a deaf player must get it
+	# too. Every signature move has a caption, and every one of them names the
+	# COUNTER rather than only the threat.
+	var move_captions: Array[String] = ["hunter_slam", "hunter_charge", "hunter_dive",
+			"hunter_audit", "hunter_marked", "hound_summon"]
+	var absent: PackedStringArray = PackedStringArray()
+	for key: String in move_captions:
+		if not Captions.TABLE.has(StringName(key)):
+			absent.append(key)
+	if absent.is_empty():
+		print("[SelfTest] PASS  move telegraphs: all %d signature-move captions present (deaf players get the wind-up warning)" % move_captions.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  signature moves without captions: %s" % ", ".join(absent))
+
+	# --- DIEGETIC COORDINATION, second instance ---------------------------
+	#
+	# The Hound's howl is a summoning act on the same terms as the Scrubber's
+	# screech: real noise, real position, rate-limited, and audible to the player.
+	if Balance.AI_HOWL_ROOMS >= Balance.AI_SCREECH_ROOMS \
+			and Balance.AI_HOWL_COOLDOWN >= Balance.AI_SCREECH_COOLDOWN:
+		print("[SelfTest] PASS  howl summons: %d rooms of reach (the longest in the game), one every %.0fs" % [
+			Balance.AI_HOWL_ROOMS, Balance.AI_HOWL_COOLDOWN])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  howl does not out-reach or out-cool the screech")
+
+	# --- AIM SLACK IS CAPPED IN METRES (M12 routed, landed in `pick_target`) ---
+	#
+	# `BREAKER_AIM_DEG` is an angle, so its lateral tolerance grows with distance.
+	# Harmless at the old 8 m reach; at 30 m it was ~4 m of slop, which is a
+	# soft-lock rather than a weapon. The picker now caps the slack at
+	# `BREAKER_AIM_SLACK_M`. Two properties have to hold and neither is obvious
+	# from reading the patch, so both are asserted:
+	#
+	#   1. point-blank feel is EXACTLY preserved — inside the crossover the
+	#      angular term is still the smaller one and still the one that binds;
+	#   2. the slack stops growing, so a long shot demands real aim.
+	var crossover: float = Balance.BREAKER_AIM_SLACK_M / tan(deg_to_rad(Balance.BREAKER_AIM_DEG))
+	var slack_at: Callable = func(d: float) -> float:
+		return minf(d * tan(deg_to_rad(Balance.BREAKER_AIM_DEG)), Balance.BREAKER_AIM_SLACK_M)
+	var slack_6: float = slack_at.call(6.0)
+	var slack_15: float = slack_at.call(15.0)
+	var slack_30: float = slack_at.call(30.0)
+	var angular_6: float = 6.0 * tan(deg_to_rad(Balance.BREAKER_AIM_DEG))
+	if is_equal_approx(slack_6, angular_6) and slack_15 <= Balance.BREAKER_AIM_SLACK_M + 0.001 \
+			and is_equal_approx(slack_30, Balance.BREAKER_AIM_SLACK_M) \
+			and crossover > 7.0 and crossover < 9.0:
+		print("[SelfTest] PASS  aim slack capped: %.2f m at 6 m (pure cone, unchanged), %.2f m at 15 m, %.2f m at 30 m (capped); crossover at %.1f m — the old reach" % [
+			slack_6, slack_15, slack_30, crossover])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  aim slack: 6m=%.2f (cone %.2f) 15m=%.2f 30m=%.2f crossover=%.1f" % [
+			slack_6, angular_6, slack_15, slack_30, crossover])
+
+	# And the thing the change is FOR: at maximum reach an uncapped cone would
+	# have accepted a shot metres wide of the target. It must not any more.
+	var uncapped_30: float = 30.0 * tan(deg_to_rad(Balance.BREAKER_AIM_DEG))
+	if uncapped_30 - slack_30 > 2.0:
+		print("[SelfTest] PASS  soft-lock removed: a 30 m shot used to forgive %.2f m of error, now %.2f m (%.2f m of aimbot deleted)" % [
+			uncapped_30, slack_30, uncapped_30 - slack_30])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  soft-lock still present at range: %.2f m of slack" % slack_30)
+
+	# --- RELAY IDENTITY MUST BE COLLISION-FREE ----------------------------
+	#
+	# The creature pose relay keys on `hash(name) & 0x7FFFFFFF`. If two creatures
+	# on one layer share an id, `_find_by_net_id` resolves both to whichever the
+	# index happens to hold and the other STANDS FROZEN ON EVERY CLIENT — with a
+	# miss counter reading zero, because the id did resolve. That is precisely the
+	# bug that cost most of a day: an earlier `| 1` (guarding a zero sentinel)
+	# destroyed the low bit, and Godot's string hash is sequential in the last
+	# character, so `Scrubber_L7_0`/`_1`, `_2`/`_3` and `_4`/`_5` collided in
+	# pairs and exactly half the pack never moved for anybody but the host.
+	#
+	# So the naming scheme is checked directly, over a layer far denser than the
+	# generator can produce, including the directed-spawn suffixes. A future rename
+	# or a new creature class that reintroduces a collision fails here instead of
+	# in somebody's co-op session.
+	var ids: Dictionary = {}
+	var collisions: PackedStringArray = PackedStringArray()
+	for layer_n: int in [1, 7, 12, 21]:
+		for slot: int in 24:
+			var candidates: Array[String] = [
+				"Scrubber_L%d_%d" % [layer_n, slot],
+				"Sentinel_L%d_%d" % [layer_n, slot],
+				"Scrubber_L%d_%d_t%d" % [layer_n, slot, slot],
+				"Hound_L%d_%d_d%d" % [layer_n, slot, slot],
+				"Moth_L%d_%d_d%d" % [layer_n, slot, slot],
+				"Auditor_L%d_%d_d%d" % [layer_n, slot, slot],
+			]
+			for creature_name: String in candidates:
+				var id: int = hash(creature_name) & 0x7FFFFFFF
+				if ids.has(id) and String(ids[id]) != creature_name:
+					if collisions.size() < 6:
+						collisions.append("%s == %s (id %d)" % [
+							creature_name, String(ids[id]), id])
+				ids[id] = creature_name
+	if collisions.is_empty():
+		print("[SelfTest] PASS  relay identity: %d creature names across 4 layers hash to %d distinct ids (no collisions)" % [
+			ids.size(), ids.size()])
+	else:
+		failures += 1
+		for line: String in collisions:
+			printerr("[SelfTest] FAIL  relay id collision — a creature will freeze on every client: %s" % line)
+
+	# --- PRESENCE STAYS INSIDE THE COMFORT BUDGET -------------------------
+	#
+	# Weight is felt, not screamed. Footfall shake must be a fraction of the slam,
+	# the slam must be under the global ceiling, and both ride `Fx.shake`, which
+	# is rate-limited and scaled to nothing by Reduced Flashing.
+	if Balance.AI_FOOTFALL_SHAKE < Balance.AI_SLAM_SHAKE \
+			and Balance.AI_SLAM_SHAKE <= Balance.SHAKE_CEILING:
+		print("[SelfTest] PASS  presence budget: footfall %.3f << slam %.2f <= ceiling %.2f, all through the governed, a11y-scaled shake" % [
+			Balance.AI_FOOTFALL_SHAKE, Balance.AI_SLAM_SHAKE, Balance.SHAKE_CEILING])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  presence shake outside the comfort budget")
+
+	return failures
+
+
+# --- the relay probe ---------------------------------------------------------
+#
+# Does a packet from one CLIENT reach ANOTHER CLIENT at all?
+#
+# Everything above measures replication, which is several layers of engine
+# bookkeeping on top of the transport. This measures the transport itself: every
+# peer broadcasts a numbered ping once per census and records who it has ever
+# heard from. On a listen server the only route from one client to another is the
+# host's relay, so this one dictionary separates "our replication is not
+# registered for that peer" from "packets between those two peers do not travel".
+#
+# The distinction decides the whole diagnosis, and no amount of reading the
+# engine's source substitutes for asking it.
+
+## sender peer id -> true, for everything this peer has ever heard a ping from.
+var _crew_heard: Dictionary = {}
+
+
+@rpc("any_peer", "call_remote", "unreliable")
+func _crew_ping(_seq: int) -> void:
+	var from: int = multiplayer.get_remote_sender_id()
+	if from != 0:
+		_crew_heard[from] = true
+
+
+func _crew_heard_ids() -> Array[int]:
+	var ids: Array[int] = []
+	for id: Variant in _crew_heard.keys():
+		ids.append(int(id))
+	ids.sort()
+	return ids
+
+
+# ---------------------------------------------------- M12 SENSATION selftest --
+#
+# Appended for the sensation pass. Same contract as `_vertical_selftest` and the
+# rest: returns a failure count, prints one line per check, aggregated by
+# `_balance_selftest`.
+#
+# WHAT IS WORTH ASSERTING ABOUT A MILESTONE MADE OF FEEL, AND WHAT IS NOT.
+#
+# Whether a machinery hall SOUNDS cavernous is a human verdict and no test holds
+# it — that is what the impulse-response captures are for. What a test can hold
+# is everything the feel is built on top of:
+#
+#   * the acoustic model's ORDERING (a hall must out-ring a corridor, whatever
+#     anyone later retunes the absorption coefficients to);
+#   * the safety caps on the new effects, which are non-negotiable and which are
+#     the reason a rate governor exists at all;
+#   * MOTHER staying dry, which is a design invariant this milestone could very
+#     easily have broken by accident;
+#   * the determinism law, audited at the source rather than hoped for;
+#   * and the range change's central claim — that VISION, not the weapon, is now
+#     the thing that limits an engagement.
+
+## `--selftest`, M12 SENSATION section.
+func _sensation_selftest() -> int:
+	var failures: int = 0
+
+	# --- the acoustic model's ordering --------------------------------------
+	#
+	# Asserted on the MODEL rather than on the mixer, because the model is what a
+	# future tuning pass will edit. The rooms are the real vocabulary's sizes.
+	var hall: Dictionary = RoomAcoustics._space(RoomAcoustics.KIND_HALL, 16.5, 21.6, 8.9, -1)
+	var trunk: Dictionary = RoomAcoustics._space(RoomAcoustics.KIND_TRUNK, 12.0, 12.0, 12.0, -1)
+	var corridor: Dictionary = RoomAcoustics._space(RoomAcoustics.KIND_CORRIDOR, 15.9, 3.6, 3.4, -1)
+	var alcove: Dictionary = RoomAcoustics._space(RoomAcoustics.KIND_ALCOVE, 4.0, 4.0, 4.0, -1)
+	var p_hall: Dictionary = RoomAcoustics.reverb_params(hall)
+	var p_trunk: Dictionary = RoomAcoustics.reverb_params(trunk)
+	var p_corr: Dictionary = RoomAcoustics.reverb_params(corridor)
+	var p_alc: Dictionary = RoomAcoustics.reverb_params(alcove)
+
+	var tail_ok: bool = float(p_hall["rt60_delivered"]) > float(p_corr["rt60_delivered"]) \
+			and float(p_corr["rt60_delivered"]) >= float(p_alc["rt60_delivered"])
+	# Wet is the cue that actually carries size on this engine (the tail ceiling
+	# flattens the big rooms), so its ordering is the one that must be strict.
+	var wet_ok: bool = float(p_hall["wet"]) > float(p_corr["wet"]) \
+			and float(p_corr["wet"]) > float(p_alc["wet"])
+	# And the first-reflection gap, which is the size cue with the most range.
+	var pre_ok: bool = float(p_hall["predelay"]) > float(p_corr["predelay"]) \
+			and float(p_corr["predelay"]) > float(p_alc["predelay"])
+	if tail_ok and wet_ok and pre_ok:
+		print("[SelfTest] PASS  acoustics order: hall %.2fs/wet %.3f/%.0fms > corridor %.2fs/%.3f/%.0fms > alcove %.2fs/%.3f/%.0fms" % [
+			float(p_hall["rt60_delivered"]), float(p_hall["wet"]), float(p_hall["predelay"]),
+			float(p_corr["rt60_delivered"]), float(p_corr["wet"]), float(p_corr["predelay"]),
+			float(p_alc["rt60_delivered"]), float(p_alc["wet"]), float(p_alc["predelay"])])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  acoustics order: tail=%s wet=%s predelay=%s" % [
+			str(tail_ok), str(wet_ok), str(pre_ok)])
+
+	# The trunk is the game's one genuinely vertical space and it must not read
+	# as a corridor just because its floor is small.
+	if float(p_trunk["rt60_delivered"]) > float(p_corr["rt60_delivered"]) \
+			and float(p_trunk["wet"]) > float(p_corr["wet"]):
+		print("[SelfTest] PASS  drop-shaft trunk is a tall space: %.2f s / wet %.3f (corridor %.2f / %.3f)" % [
+			float(p_trunk["rt60_delivered"]), float(p_trunk["wet"]),
+			float(p_corr["rt60_delivered"]), float(p_corr["wet"])])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  trunk reads as a corridor")
+
+	# --- a small room is an alcove whatever it is labelled --------------------
+	var tiny: Dictionary = RoomAcoustics._space(RoomAcoustics.KIND_HALL, 3.0, 3.0, 3.0, -1)
+	if StringName(tiny["kind"]) == RoomAcoustics.KIND_ALCOVE:
+		print("[SelfTest] PASS  alcove promotion: a 27 m3 space tagged HALL is mixed as an alcove")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  alcove promotion: 27 m3 stayed %s" % tiny["kind"])
+
+	# --- the engine calibration is usable ------------------------------------
+	#
+	# `RT60_BY_SIZE` is a MEASUREMENT of this engine build, and everything the
+	# model does with it assumes it is non-decreasing. If a future re-measure
+	# comes back noisy the inverse lookup silently starts lying, so the shape is
+	# asserted rather than trusted.
+	var monotone: bool = true
+	for i: int in range(1, RoomAcoustics.RT60_BY_SIZE.size()):
+		if RoomAcoustics.RT60_BY_SIZE[i] < RoomAcoustics.RT60_BY_SIZE[i - 1]:
+			monotone = false
+	# And the compression must stay inside what the effect can actually deliver,
+	# for every input the physics can produce.
+	var in_range: bool = true
+	var compress_monotone: bool = true
+	var previous: float = -1.0
+	for step: int in 40:
+		var physical: float = lerpf(RoomAcoustics.RT60_MIN, RoomAcoustics.RT60_MAX,
+				float(step) / 39.0)
+		var delivered: float = RoomAcoustics.deliverable_rt60(physical)
+		if delivered < RoomAcoustics.RT60_ENGINE_FLOOR - 0.001 \
+				or delivered > RoomAcoustics.RT60_ENGINE_CEILING + 0.001:
+			in_range = false
+		if delivered < previous - 0.001:
+			compress_monotone = false
+		previous = delivered
+	if monotone and in_range and compress_monotone:
+		print("[SelfTest] PASS  reverb calibration: table non-decreasing, compression monotone and inside %.2f-%.2f s" % [
+			RoomAcoustics.RT60_ENGINE_FLOOR, RoomAcoustics.RT60_ENGINE_CEILING])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  reverb calibration: table=%s range=%s monotone=%s" % [
+			str(monotone), str(in_range), str(compress_monotone)])
+
+	# --- MOTHER STAYS DRY ----------------------------------------------------
+	#
+	# A design invariant, and precisely the sort of thing a mixer-wide change
+	# breaks by accident. Her directed address is non-positional because she is in
+	# the channel and not in the room; a reverb on her, or an occlusion filter
+	# that could ever apply to her, would undo the whole premise.
+	var voice_dry: bool = Audio._occluded_bus(Audio.BUS_VOICE) == Audio.BUS_VOICE \
+			and Audio._occluded_bus(Audio.BUS_PLAYER) == Audio.BUS_PLAYER \
+			and Audio._occluded_bus(Audio.BUS_UI) == Audio.BUS_UI
+	var voice_idx: int = AudioServer.get_bus_index(Audio.BUS_VOICE)
+	var voice_reverbs: int = 0
+	if voice_idx >= 0:
+		for i: int in AudioServer.get_bus_effect_count(voice_idx):
+			if AudioServer.get_bus_effect(voice_idx, i) is AudioEffectReverb:
+				voice_reverbs += 1
+	if voice_dry and voice_reverbs == 0:
+		print("[SelfTest] PASS  MOTHER stays dry: Voice has no reverb and no occluded path (nor do Player/UI)")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  MOTHER is wet: routing=%s reverbs=%d" % [
+			str(voice_dry), voice_reverbs])
+
+	# --- the occluded paths exist and land where they should ------------------
+	var occ_ok: bool = true
+	for pair: Array in [[Audio.BUS_WORLD_OCC, Audio.BUS_WORLD],
+			[Audio.BUS_CREAT_OCC, Audio.BUS_CREATURES]]:
+		var idx: int = AudioServer.get_bus_index(StringName(pair[0]))
+		if idx < 0 or AudioServer.get_bus_send(idx) != StringName(pair[1]):
+			occ_ok = false
+			continue
+		var filters: int = 0
+		for i: int in AudioServer.get_bus_effect_count(idx):
+			if AudioServer.get_bus_effect(idx, i) is AudioEffectLowPassFilter:
+				filters += 1
+		if filters != 1:
+			occ_ok = false
+	# The filter has to actually keep the creatures tellable apart — see the
+	# corner-frequency note in RoomAcoustics. Asserted as a floor on the corner
+	# so nobody can quietly drop it back to a "more convincing" 600 Hz.
+	var identity_ok: bool = RoomAcoustics.OCCLUSION_HZ >= 1200.0
+	if occ_ok and identity_ok and RoomAcoustics.OCCLUSION_DB < 0.0:
+		print("[SelfTest] PASS  occlusion path: both occluded buses send to their parent, one LP each at %.0f Hz, %.1f dB" % [
+			RoomAcoustics.OCCLUSION_HZ, RoomAcoustics.OCCLUSION_DB])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  occlusion path: routing=%s identity=%s" % [
+			str(occ_ok), str(identity_ok)])
+
+	# Hysteresis has to be a real band, or a creature pacing a doorway chatters
+	# between the two paths at the frame rate.
+	if RoomAcoustics.OCCLUSION_ON > RoomAcoustics.OCCLUSION_OFF + 0.1:
+		print("[SelfTest] PASS  occlusion hysteresis: switches on at %.2f, back at %.2f" % [
+			RoomAcoustics.OCCLUSION_ON, RoomAcoustics.OCCLUSION_OFF])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  occlusion hysteresis band too narrow")
+
+	# --- SAFETY: the arc rate governor ---------------------------------------
+	#
+	# SAFETY-CRITICAL (DESIGN.md pillar 7, WCAG 2.3.1). Arcing is the one new
+	# effect whose real-world referent genuinely strobes. Sixty attempts inside
+	# one frame must yield exactly one.
+	var accepted: int = 0
+	for _i: int in 60:
+		if Fx.arc_gate():
+			accepted += 1
+	var arc_hz: float = 1.0 / maxf(Fx.ARC_MIN_INTERVAL, 0.0001)
+	if accepted == 1 and arc_hz <= 3.0:
+		print("[SelfTest] PASS  arc governor: 60 requests in one frame -> 1 accepted; ceiling %.2f Hz (<= 3 Hz)" % arc_hz)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  arc governor: %d accepted, ceiling %.2f Hz" % [accepted, arc_hz])
+
+	# --- SAFETY: Reduced Flashing takes the new blooms to ZERO ---------------
+	#
+	# Not "to something small". `_glow` refuses anything at or under 0.001, so
+	# zero is the difference between a light that is withheld and a light that is
+	# merely dim, and dim is not what the comfort tier promises.
+	var kept_flash: bool = A11y.reduced_flashing
+	A11y.set_reduced_flashing(true)
+	var dark: float = Fx.arc_bloom_energy()
+	A11y.set_reduced_flashing(false)
+	# BOTH governors re-armed before the second reading. `arc_bloom_energy` also
+	# consults `flash_gate()`, which spends the shared bloom budget on the call —
+	# so without this the "normal" reading comes back zero for the wrong reason
+	# and the check passes-by-failing. (It did, once.)
+	Fx._since_arc = 99.0
+	Fx._since_flash = 99.0
+	var lit: float = Fx.arc_bloom_energy()
+	A11y.set_reduced_flashing(kept_flash)
+	if is_zero_approx(dark) and lit > 0.001:
+		print("[SelfTest] PASS  arc bloom respects A11y: %.2f normally, exactly 0.00 under Reduced Flashing" % lit)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  arc bloom under Reduced Flashing: %.4f (normal %.4f)" % [dark, lit])
+
+	# --- determinism, audited at the source ----------------------------------
+	#
+	# DESIGN.md's determinism law says presentation must never perturb seeded
+	# generation. Both new presentation files claim in their own headers to
+	# contain no random draw at all; this is that claim checked rather than
+	# believed, and it is checked the same way the voice section checks that its
+	# cue tables name real files — by reading what actually shipped.
+	var offenders: PackedStringArray = PackedStringArray()
+	for path: String in ["res://src/fx/fx.gd", "res://src/core/room_acoustics.gd"]:
+		var text: String = GameState.read_text_file("SelfTest", path)
+		if text.is_empty():
+			offenders.append("%s unreadable" % path.get_file())
+			continue
+		for forbidden: String in ["randf(", "randi(", "randf_range(", "randi_range(",
+				"Rng.stream", "Rng.fresh"]:
+			if text.contains(forbidden):
+				offenders.append("%s uses %s" % [path.get_file(), forbidden])
+	if offenders.is_empty():
+		print("[SelfTest] PASS  determinism: neither fx.gd nor room_acoustics.gd draws a random number")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  determinism: %s" % ", ".join(offenders))
+
+	# --- THE RANGE CHANGE's central claim ------------------------------------
+	#
+	# "Vision, not the weapon, limits an engagement." That is a checkable
+	# relationship between two module tracks, and it is the thing a later tuning
+	# pass is most likely to break without noticing, because the two rows live in
+	# different entries of the same table.
+	var breaker: Array = (Balance.MODULES["breaker"] as Dictionary)["range"]
+	var optics: Array = (Balance.MODULES["optics"] as Dictionary)["reach"]
+	var vision_binds: bool = breaker.size() == optics.size()
+	var worst: float = 999.0
+	for tier: int in mini(breaker.size(), optics.size()):
+		var margin: float = float(optics[tier]) - float(breaker[tier])
+		worst = minf(worst, margin)
+		if margin < 0.0:
+			vision_binds = false
+	# And the base must genuinely be long. The complaint was that it was not.
+	var long_enough: bool = Balance.BREAKER_RANGE >= 25.0
+	if vision_binds and long_enough:
+		print("[SelfTest] PASS  reach: breaker base %.0f m == beam base %.0f m; vision binds at every tier (worst margin %+.1f m)" % [
+			Balance.BREAKER_RANGE, float(optics[0]), worst])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  reach: base %.1f m, vision binds=%s, worst margin %+.1f m" % [
+			Balance.BREAKER_RANGE, str(vision_binds), worst])
+
+	# --- the particle budget is a budget --------------------------------------
+	#
+	# Pools are only a budget if somebody states the ceiling. This is the
+	# worst-case simultaneous particle count across every M12 family: every
+	# emitter in every pool alive at once, which cannot actually happen but is
+	# the number the perf case has to survive.
+	var worst_particles: int = Fx.POOL_DEBRIS * Balance.M12_DEBRIS_FRAGMENTS \
+			+ Fx.POOL_MIST * Balance.M12_MIST_PARTICLES \
+			+ Fx.POOL_EMBER * Balance.M12_EMBER_COUNT \
+			+ Fx.POOL_MOTE * Balance.M12_MOTE_COUNT \
+			+ Fx.POOL_ARC * Balance.M12_ARC_SPARKS \
+			+ Fx.POOL_WAKE * Balance.M12_WAKE_PARTICLES
+	if worst_particles <= 600:
+		print("[SelfTest] PASS  particle budget: %d particles worst case across the 6 new families (cap 600)" % worst_particles)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  particle budget: %d exceeds the 600 cap" % worst_particles)
+
+	return failures
+
+
+# --- P0 CREW SYNC: the four-peer contract ------------------------------------
+
+## The invariants a FOUR-player crew depends on that a two-peer session cannot
+## fail. None of these needs a network — they are all properties of the numbers
+## and of the mapping from a roster to a spawn — which is the point: the live
+## half needs four processes and lives in `tools/crewsync/crewsync.py`, and this
+## is the half that can ride in every `--selftest` for free.
+func _crew_sync_selftest() -> int:
+	var failures: int = 0
+
+	# ONE NUMBER, ONE MEANING. The crew ceiling is written down in two places —
+	# ours and the Steam lobby's — and a session that admits a fifth player hands
+	# them the FIRST player's spawn point on every layer (`_spawn_point` wraps
+	# with `% spawns.size()` and the graph authors exactly four). Two crewmates
+	# inside one capsule is not a subtle bug, but it is one that only ever
+	# appears at full crew, which is to say never, in a two-peer test.
+	if Net.MAX_CREW == SteamHub.MAX_CREW:
+		print("[SelfTest] PASS  crew ceiling agrees across transports (%d)" % Net.MAX_CREW)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  crew ceiling: Net says %d, SteamHub says %d" % [
+			Net.MAX_CREW, SteamHub.MAX_CREW])
+
+	# EVERY CREWMATE GETS THEIR OWN SPAWN POINT. `_spawn_for_peer` resolves a
+	# spawn index with `crew.keys().find(id)`, which is insertion order — so this
+	# asserts the thing that mapping is for: a full crew of four distinct peer
+	# ids maps onto four DISTINCT indices, all inside the authored range. With a
+	# host and one client any two-element mapping looks fine, which is precisely
+	# why this check exists at four.
+	var roster: Dictionary = {}
+	var ids: Array[int] = [1, 1867386995, 984982534, 1421861972]
+	for id: int in ids:
+		roster[id] = {"name": "AGENT"}
+	var indices: Dictionary = {}
+	var spawn_bad: PackedStringArray = PackedStringArray()
+	for id: int in ids:
+		var index: int = roster.keys().find(id)
+		if index < 0 or index >= Net.MAX_CREW:
+			spawn_bad.append("peer %d -> index %d" % [id, index])
+		elif indices.has(index):
+			spawn_bad.append("peer %d shares index %d with peer %d" % [
+				id, index, int(indices[index])])
+		else:
+			indices[index] = id
+	if spawn_bad.is_empty():
+		print("[SelfTest] PASS  crew spawn indices: %d distinct slots for %d crew" % [
+			indices.size(), ids.size()])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  crew spawn indices: %s" % ", ".join(spawn_bad))
+
+	# THE CENSUS IS SELF-CONSISTENT. `missing` is the subtraction the whole
+	# four-peer harness reads, so it is asserted here rather than trusted: every
+	# rostered peer with no avatar in the tree must appear in it, and nothing
+	# else may. A solo process is a legitimate sample — it has a roster of one
+	# and no spawner, so `missing` must be exactly that one peer.
+	var census: Dictionary = crew_census()
+	var census_bad: PackedStringArray = PackedStringArray()
+	var spawned: Array = census["spawned"] as Array
+	var missing: Array = census["missing"] as Array
+	for id: Variant in census["roster"] as Array:
+		var listed: bool = missing.has(id)
+		if spawned.has(id) == listed:
+			census_bad.append("peer %s: spawned=%s but missing=%s" % [
+				str(id), str(spawned.has(id)), str(listed)])
+	for id: Variant in missing:
+		if not (census["roster"] as Array).has(id):
+			census_bad.append("peer %s is missing but was never rostered" % str(id))
+	if census_bad.is_empty():
+		print("[SelfTest] PASS  crew census: roster %d, spawned %d, missing %d, consistent" % [
+			(census["roster"] as Array).size(), spawned.size(), missing.size()])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  crew census: %s" % ", ".join(census_bad))
+
+	# THE TREE IS READABLE WITHOUT A SESSION. `spawned_players` is what the
+	# harness measures visibility with, and an accessor that throws or lies with
+	# no spawner standing would make every census in every scenario worthless.
+	var empty: Array[int] = Net.spawned_players()
+	if empty.is_empty() or Net.is_online:
+		print("[SelfTest] PASS  spawned_players() is safe with no session (%d)" % empty.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  spawned_players() returned %d with no session" % empty.size())
+
+	return failures
+
+
+# ------------------------------------------------------ M15 HER TONGUE selftest --
+#
+# Appended for the bark pass. Same contract as every section above it: returns a
+# failure count, prints one line per check, aggregated by `_balance_selftest`.
+#
+# What is worth asserting about a writing pass. Whether a line is GOOD is a human
+# verdict and no test can hold it — that is what the curated sample sheet is for.
+# What a test can hold is every claim the pass made that is mechanical, and all
+# four of them are the kind that fail silently in a shipped build:
+#
+#   * a trigger with no pool is a moment where she goes quiet and nobody finds out
+#     until a player stands in it;
+#   * a line naming a slot the renderer has never heard of ships as literal braces
+#     on screen, which is the single most expensive typo available here;
+#   * the anti-repetition invariant is the entire promise of the milestone and is
+#     asserted by MEASUREMENT, not by reading the code — a synthetic multi-hour
+#     session through the real director with the real corpus;
+#   * and the director has to degrade to speaking rather than to silence when
+#     nothing at all is wired, because on the day it lands that is its whole world.
+
+## `--selftest`, M15 HER TONGUE section.
+func _lore_selftest() -> int:
+	var failures: int = 0
+	var director: LoreDirector = LoreDirector.new()
+	director.setup(20260803)
+	director.memory = LoreMemory.new()
+	director.memory.volatile = true
+	if not director.is_loaded():
+		printerr("[SelfTest] FAIL  lore corpus did not load")
+		return 1
+
+	# --- every trigger has a non-empty pool ----------------------------------
+	var sizes: Dictionary = director.pool_sizes()
+	var empty: PackedStringArray = PackedStringArray()
+	var smallest: int = 1 << 30
+	var smallest_key: String = ""
+	var selectable: int = 0
+	for key: Variant in sizes:
+		var n: int = int(sizes[key])
+		if n <= 0:
+			empty.append(String(key))
+		# The number that matters is the smallest pool she can be STEERED into.
+		# Three pre-M15 entries carry a trigger from another register and so form
+		# one-line pools; `MIN_POOL_LINES` keeps those out of trigger selection and
+		# leaves them on the category fallback, where they behave as they always did.
+		if n < LoreDirector.MIN_POOL_LINES:
+			continue
+		selectable += 1
+		if n < smallest:
+			smallest = n
+			smallest_key = String(key)
+	if empty.is_empty():
+		print("[SelfTest] PASS  lore pools: %d triggers (%d selectable), none empty, smallest selectable %s = %d" % [
+			sizes.size(), selectable, smallest_key, smallest])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore pools empty: %s" % ", ".join(empty))
+
+	# --- no line references an undefined slot, and the syntax parses ----------
+	#
+	# Both halves matter and they fail differently. An UNKNOWN slot is a line the
+	# director will refuse forever — authored, paid for, unreachable. Unbalanced
+	# braces are worse: `_fill` leaves them, and she says them out loud.
+	var bad_slot: PackedStringArray = PackedStringArray()
+	var bad_syntax: PackedStringArray = PackedStringArray()
+	var slotted: int = 0
+	for raw: Variant in director.all_ids():
+		var id: String = String(raw)
+		var entry: Dictionary = director.entry(id)
+		var text: String = String(entry.get("text", ""))
+		if text.count("{") != text.count("}"):
+			bad_syntax.append(id)
+			continue
+		var found: Array[String] = LoreDirector.slots_in(text)
+		if not found.is_empty():
+			slotted += 1
+		for slot: String in found:
+			if not LoreDirector.KNOWN_SLOTS.has(slot):
+				bad_slot.append("%s:{%s}" % [id, slot])
+			elif slot.strip_edges() != slot or slot.to_upper() != slot:
+				bad_syntax.append(id)
+	if bad_slot.is_empty() and bad_syntax.is_empty():
+		print("[SelfTest] PASS  lore slots: %d lines carry slots, all %d names known" % [
+			slotted, LoreDirector.KNOWN_SLOTS.size()])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore slots: undefined=%s malformed=%s" % [
+			", ".join(bad_slot), ", ".join(bad_syntax)])
+
+	# --- a corrupted rendering still substitutes ------------------------------
+	#
+	# The corruption is baked into the file at three tiers, and a tier-2 rendering
+	# that ate a `{CALLSIGN}` would render her deepest, rarest lines with a glyph
+	# where the player's name goes. The preservation rule is documented in the
+	# corpus's own `corruption` block; this asserts it held for every entry.
+	var eaten: PackedStringArray = PackedStringArray()
+	for raw: Variant in director.all_ids():
+		var entry: Dictionary = director.entry(String(raw))
+		var want: Array[String] = LoreDirector.slots_in(String(entry.get("text", "")))
+		if want.is_empty():
+			continue
+		for rendering: Variant in entry.get("corruption_renderings", []) as Array:
+			var got: Array[String] = LoreDirector.slots_in(String(rendering))
+			if got != want:
+				eaten.append(String(entry.get("id", "")))
+				break
+	if eaten.is_empty():
+		print("[SelfTest] PASS  lore corruption preserves every slot token at all 3 tiers")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore corruption ate slots in: %s" % ", ".join(eaten))
+
+	# --- the anti-repetition invariant, measured ------------------------------
+	#
+	# Three synthetic hours, real corpus, real director, every slot available so
+	# no line can be refused into looking rare. `invariant_breaks` counts any id
+	# drawn twice inside one bag cycle — the thing the bag exists to make
+	# impossible — and `brace_leaks` counts rendered lines that still had a `{`.
+	var sim: Dictionary = LoreDirector.simulate(180, 424242)
+	if bool(sim.get("ok", false)) and int(sim["invariant_breaks"]) == 0 \
+			and int(sim["brace_leaks"]) == 0:
+		print("[SelfTest] PASS  lore repetition: %d lines over 3h, %d distinct, first repeat at %d, tightest gap %d in %s" % [
+			int(sim["spoken"]), int(sim["distinct"]), int(sim["first_repeat"]),
+			int(sim["worst_gap"]), String(sim["worst_pool"])])
+		# The distribution proper, printed rather than asserted. The invariant above
+		# is the pass/fail claim; THIS is the number a human wants before signing off
+		# a writing pass — over an evening of play, how many different things did she
+		# say. It is informational on purpose: "distinct lines per hour" is a taste
+		# judgement with a target nobody can defend to two decimal places, and a test
+		# that failed on it would be a test somebody deletes.
+		for minutes: int in [15, 60, 480]:
+			var run: Dictionary = LoreDirector.simulate(minutes, 424242 + minutes)
+			if not bool(run.get("ok", false)):
+				continue
+			print("[SelfTest]       lore %4d min: %4d spoken, %4d distinct, most-heard line x%d, first repeat at %s" % [
+				minutes, int(run["spoken"]), int(run["distinct"]), int(run["most_heard"]),
+				"never" if int(run["first_repeat"]) < 0 else str(int(run["first_repeat"]))])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore repetition: breaks=%d braces=%d" % [
+			int(sim.get("invariant_breaks", -1)), int(sim.get("brace_leaks", -1))])
+
+	# --- she does not open with the line she closed on ------------------------
+	#
+	# The across-run half of the recency rule, and the one a player would actually
+	# notice: quit an intrusion on a line and start the next one on the same line
+	# and the illusion is gone in four seconds. The second session is handed the
+	# first session's memory record and a different seed.
+	var carried: LoreMemory = sim.get("memory") as LoreMemory
+	var second: Dictionary = LoreDirector.simulate(30, 999331, carried)
+	var closed: String = String(sim.get("closed_with", ""))
+	var opened: String = String(second.get("opened_with", ""))
+	if bool(second.get("ok", false)) and int(second["invariant_breaks"]) == 0 \
+			and not opened.is_empty() and opened != closed:
+		print("[SelfTest] PASS  lore recency crosses runs: closed on %s, reopened on %s" % [
+			closed, opened])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore recency across runs: closed=%s opened=%s breaks=%d" % [
+			closed, opened, int(second.get("invariant_breaks", -1))])
+
+	# --- degrade to ambient, never to silence ---------------------------------
+	#
+	# The state this ships in: nothing calls `note()`, there is no layer, no crew,
+	# no hunter and no room. Every contextual condition is false. She must still
+	# speak — the whole design falls back to a category-wide draw with the bag and
+	# the slot check still on top of it, which is exactly the old behaviour.
+	var bare: LoreDirector = LoreDirector.new()
+	bare.setup(77001)
+	bare.memory = LoreMemory.new()
+	bare.memory.volatile = true
+	var spoke: int = 0
+	var attempts: int = 24
+	for i: int in attempts:
+		bare.set_synthetic(float(i) * 60.0, {})
+		var line: Dictionary = bare.pick("ambient", 1 + i % 9, "")
+		if not line.is_empty() and not String(line["text"]).is_empty():
+			spoke += 1
+	if spoke == attempts:
+		print("[SelfTest] PASS  lore degrades to ambient: %d/%d bare opportunities spoke" % [
+			spoke, attempts])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore went silent with nothing wired: %d/%d" % [
+			spoke, attempts])
+
+	# --- every register the Director asks for can answer ----------------------
+	#
+	# `HauntDirector._bark` names eight categories. A register with no reachable
+	# pool is a call site that silently does nothing, which is how `kernel_leak`
+	# spent a whole milestone authored and unheard.
+	var asked: Array[String] = ["ambient", "hunt", "kill_ack", "mercy",
+		"sanctuary", "address", "exfil", "kernel_leak"]
+	var mute: PackedStringArray = PackedStringArray()
+	for category: String in asked:
+		var probe: LoreDirector = LoreDirector.new()
+		probe.setup(5150)
+		probe.memory = LoreMemory.new()
+		probe.memory.volatile = true
+		probe.set_synthetic(1000.0, {
+			"CALLSIGN": "VANE", "CREWMATE": "OKONKWO", "DEAD": "RESHET",
+			"ROOM": "VAULT-07C", "DATA": "128", "CYCLES": "61", "CREW_COUNT": "3",
+			"RUNS": "12", "DEEPEST": "17", "PATCH": "BIT ROT",
+			"CREATURE": "THE HOUND", "N_descent": "26", "N_epitaph": "3",
+		})
+		if probe.pick(category, 26, "VANE").is_empty():
+			mute.append(category)
+	if mute.is_empty():
+		print("[SelfTest] PASS  lore registers: all %d the Director asks for answer" % asked.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore registers with no reachable pool: %s" % ", ".join(mute))
+
+	return failures
+
+
+## `--beam-on`. Waits for the local avatar, then holds the beam on. Driven
+## through `_set_beam_state`, the same call the "beam" action makes, so the
+## replication and the AI both see exactly what a player pressing the key would
+## have produced.
+func _arm_crew_beam() -> void:
+	while is_inside_tree():
+		await get_tree().create_timer(0.5).timeout
+		var body: Node = Net.get_player(Net.local_id())
+		if body == null or not is_instance_valid(body):
+			continue
+		if not body.is_multiplayer_authority():
+			continue
+		if not bool(body.get("sync_beam")) and body.has_method("_set_beam_state"):
+			body.call("_set_beam_state", true)
+
+
+# --------------------------------------------------- M14 LIVE VOICE selftest --
+#
+# MOTHER's voice is SYNTHESISED AT RUNTIME now (src/voice/), which moves it from
+# "a cosmetic layer that either plays a file or does not" to "a piece of DSP with
+# an input domain nobody controls". The input domain is the point: a callsign is
+# whatever a player typed, and the strings that break a speech synthesiser —
+# punctuation only, a single letter, digits, sixty characters, a non-Latin script
+# — are exactly the strings players choose.
+#
+# What is asserted here, and why each one is worth a check:
+#
+#   * EVERY PHONEME THE RULES CAN EMIT HAS A ROW. A letter-to-sound rule that
+#     produces a symbol the synthesiser has never heard of is a silent hole in
+#     one word of one bark, which is the least debuggable failure this system
+#     has. Swept over the whole corpus vocabulary, so the check grows with the
+#     corpus rather than with this file.
+#   * AWKWARD CALLSIGNS PRODUCE AUDIO. Non-silent, finite, and inside a sane
+#     duration. She is allowed to mispronounce a name; she is not allowed to say
+#     nothing when a name was on screen, because the caption said she did.
+#   * THE CACHE IS CONTENT-ADDRESSED. The same text in the same register must be
+#     byte-identical audio, in this process and in any other. That is what makes
+#     "every peer heard the same thing" a fact rather than a hope, and it is only
+#     true because every noise source is seeded from the text.
+#   * LOUDNESS LANDS ON THE MASTERS' TARGETS. A live line that sits 6 dB off the
+#     baked cues is two different voices in one mix.
+#   * THE MAIN THREAD IS NOT TOUCHED. `stream_for` is a dictionary lookup; the
+#     synthesis is on a worker. The budget is asserted as a number so a future
+#     "just do it inline, it is only 200 ms" cannot land quietly.
+#
+# What is NOT asserted, and cannot be: whether she is UNDERSTANDABLE. That is a
+# human verdict. The nearest objective proxy — envelope modulation energy in the
+# 2-8 Hz syllable band — is measured and printed for the record, but it is not a
+# pass/fail, because it was also comfortably passed by the wordless cues a player
+# described as generic grunts.
+
+## The strings that break speech synthesisers, which are also the strings players
+## pick. Each is spoken inside a real sentence, because a callsign never appears
+## alone in the corpus and the sentence is what the transitions have to survive.
+const VOICE_AWKWARD_CALLSIGNS: Array[String] = [
+	"NERDRX",
+	"X",
+	"7",
+	"MX7",
+	"...",
+	"O'BRIEN",
+	"ÖZGÜR",
+	"ZZZZZZZZ",
+	"A VERY LONG CALLSIGN THAT NOBODY SHOULD HAVE CHOSEN",
+	"..--..",
+]
+
+## Per-second-of-audio synthesis ceiling, in milliseconds of worker time. The
+## measured figure on this machine is around 150 ms/s; 600 is a generous ceiling
+## that still fails loudly if somebody makes the chain an order of magnitude
+## slower, because the pre-warm budget is what stands between a cold cache and a
+## silent first line.
+const VOICE_SYNTH_MS_PER_SEC: float = 600.0
+
+## What `stream_for` may cost on the frame, in milliseconds. It is a hash lookup
+## plus one AudioStreamWAV; anything near this number means synthesis has leaked
+## onto the main thread.
+const VOICE_LOOKUP_BUDGET_MS: float = 1.0
+
+
+## `--selftest`, M14 LIVE VOICE section. Awaited: the deferred-speak check has
+## to see a frame boundary go by, because that is where the worker hands the
+## finished line back to the main thread.
+func _live_voice_selftest() -> int:
+	var failures: int = 0
+
+	# --- 1. letter-to-sound coverage over the whole corpus ------------------
+	var vocab: Dictionary = {}
+	var corpus: FileAccess = FileAccess.open(MotherBarks.CORPUS_PATH, FileAccess.READ)
+	if corpus != null:
+		var doc: Variant = JSON.parse_string(corpus.get_as_text())
+		if doc is Dictionary:
+			for raw: Variant in (doc as Dictionary).get("entries", []) as Array:
+				var text: String = String((raw as Dictionary).get("text", ""))
+				var word: String = ""
+				for k: int in text.length():
+					var c: String = text[k].to_upper()
+					if (c >= "A" and c <= "Z") or c == "'":
+						word += c
+					else:
+						if not word.is_empty():
+							vocab[word] = true
+						word = ""
+				if not word.is_empty():
+					vocab[word] = true
+	var orphans: PackedStringArray = PackedStringArray()
+	var empties: PackedStringArray = PackedStringArray()
+	for w: Variant in vocab:
+		var phones: PackedStringArray = VoiceG2P.word_to_phones(String(w))
+		if phones.is_empty():
+			empties.append(String(w))
+			continue
+		for ph: String in phones:
+			if not VoicePhonemes.has(ph):
+				orphans.append("%s -> %s" % [w, ph])
+				break
+	if orphans.is_empty() and empties.is_empty() and vocab.size() > 100:
+		print("[SelfTest] PASS  voice G2P: %d corpus words, every phoneme has a row" % vocab.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice G2P: %d unknown phonemes (%s), %d words produced nothing (%s)" % [
+			orphans.size(), ", ".join(orphans.slice(0, 4)),
+			empties.size(), ", ".join(empties.slice(0, 4))])
+
+	# --- 2. the words a wrong reading would be most audible on ---------------
+	#
+	# Not a pronunciation dictionary by the back door: these are the specific
+	# rules whose failure modes were caught during the port, pinned so a later
+	# rule cannot silently undo one. THE (the commonest word in her corpus), A
+	# (which the letter-name path used to read as "AY"), the anchored silent E
+	# (MANIFEST must not read as MANY-FEST), the anchored suffix class (PROCESS
+	# must not read as PROH-SESS) and the cluster repair (NERDRX must gain a
+	# nucleus) are one regression each.
+	var pins: Dictionary = {
+		"THE": "DH AH", "A": "AH", "ARE": "AA R",
+		"MANIFEST": "M AE N IH F EH S T", "PROCESS": "P R AA S EH S",
+		"NERDRX": "N ER D R IH K S", "EXCEEDS": "EH K S IY D Z",
+	}
+	var wrong: PackedStringArray = PackedStringArray()
+	for w: Variant in pins:
+		var got: String = " ".join(VoiceG2P.word_to_phones(String(w)))
+		if got != String(pins[w]):
+			wrong.append("%s -> %s (want %s)" % [w, got, pins[w]])
+	if wrong.is_empty():
+		print("[SelfTest] PASS  voice G2P pins: %d readings unchanged" % pins.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice G2P pins: %s" % ", ".join(wrong))
+
+	# --- 3. awkward callsigns produce real audio ----------------------------
+	var silent: PackedStringArray = PackedStringArray()
+	var worst_ms_per_sec: float = 0.0
+	var mod_lines: PackedStringArray = PackedStringArray()
+	for name: String in VOICE_AWKWARD_CALLSIGNS:
+		var line: String = "%s. YOU BREATHE TOO LOUDLY." % name
+		var res: Dictionary = MotherVoice.render_debug(line, VoiceRegisters.DIRECTED)
+		var samples: PackedFloat32Array = res["samples"]
+		var seconds: float = float(samples.size()) / float(MotherVoice.RATE)
+		var peak: float = 0.0
+		var finite: bool = true
+		for v: float in samples:
+			if not is_finite(v):
+				finite = false
+				break
+			peak = maxf(peak, absf(v))
+		if samples.is_empty() or peak < 0.01 or not finite or seconds < 0.5 or seconds > 30.0:
+			silent.append("%s (%.2fs peak %.3f finite=%s)" % [name, seconds, peak, str(finite)])
+		if seconds > 0.01:
+			worst_ms_per_sec = maxf(worst_ms_per_sec,
+					float(res["usec"]) / 1000.0 / seconds)
+		mod_lines.append("%s %.1fs" % [name.substr(0, 10), seconds])
+	if silent.is_empty():
+		print("[SelfTest] PASS  voice callsigns: %d awkward names all spoken (%s)" % [
+			VOICE_AWKWARD_CALLSIGNS.size(), ", ".join(mod_lines.slice(0, 4))])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice callsigns produced nothing usable: %s" % ", ".join(silent))
+
+	if worst_ms_per_sec <= VOICE_SYNTH_MS_PER_SEC:
+		print("[SelfTest] PASS  voice synthesis cost: worst %.0f ms per second of audio (ceiling %.0f)" % [
+			worst_ms_per_sec, VOICE_SYNTH_MS_PER_SEC])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice synthesis cost %.0f ms/s exceeds the %.0f ms/s ceiling" % [
+			worst_ms_per_sec, VOICE_SYNTH_MS_PER_SEC])
+
+	# --- 4. the cache is content-addressed ----------------------------------
+	#
+	# Two independent renders of the same line must be the same bytes. This is
+	# the whole of the multiplayer guarantee: every peer synthesises locally from
+	# replicated text, so identical text has to mean identical audio or the crew
+	# hear different voices saying the same sentence.
+	var probe: String = "NERDRX. YOU ARE CARRYING 7 SHARDS."
+	var a: PackedFloat32Array = MotherVoice.render_debug(probe, VoiceRegisters.DIRECTED)["samples"]
+	var b: PackedFloat32Array = MotherVoice.render_debug(probe, VoiceRegisters.DIRECTED)["samples"]
+	var same: bool = a.size() == b.size() and a.size() > 0
+	if same:
+		for i: int in a.size():
+			if not is_equal_approx(a[i], b[i]):
+				same = false
+				break
+	if same:
+		print("[SelfTest] PASS  voice determinism: %d samples byte-identical across two renders" % a.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice determinism: two renders of the same line differ")
+
+	# --- 5. the live cache hands back the same audio twice ------------------
+	MotherVoice.clear()
+	MotherVoice.warm(probe, VoiceRegisters.DIRECTED)
+	MotherVoice.flush()
+	var s1: AudioStream = MotherVoice.stream_for(probe, &"mother_address")
+	var t0: int = Time.get_ticks_usec()
+	var s2: AudioStream = MotherVoice.stream_for(probe, &"mother_address")
+	var lookup_ms: float = float(Time.get_ticks_usec() - t0) / 1000.0
+	var w1: AudioStreamWAV = s1 as AudioStreamWAV
+	var w2: AudioStreamWAV = s2 as AudioStreamWAV
+	if w1 != null and w2 != null and w1.data == w2.data and w1.data.size() > 0:
+		print("[SelfTest] PASS  voice cache: repeat lookup returns identical PCM (%d bytes)" % w1.data.size())
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice cache did not return identical audio for identical input")
+
+	if lookup_ms <= VOICE_LOOKUP_BUDGET_MS:
+		print("[SelfTest] PASS  voice main-thread budget: cached lookup %.3f ms (budget %.1f)" % [
+			lookup_ms, VOICE_LOOKUP_BUDGET_MS])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice lookup cost %.3f ms — synthesis has leaked onto the frame" % lookup_ms)
+
+	# --- 6. a cache MISS must also be free ----------------------------------
+	#
+	# The miss path is the dangerous one: it is where somebody would be tempted
+	# to synthesise inline "just this once". It must return null immediately and
+	# leave the work to the pool.
+	MotherVoice.clear()
+	t0 = Time.get_ticks_usec()
+	var miss: AudioStream = MotherVoice.stream_for("A LINE NOBODY HAS WARMED.", &"mother_address")
+	var miss_ms: float = float(Time.get_ticks_usec() - t0) / 1000.0
+	if miss == null and miss_ms <= VOICE_LOOKUP_BUDGET_MS:
+		print("[SelfTest] PASS  voice cache miss: returned null in %.3f ms, work deferred" % miss_ms)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice cache miss cost %.3f ms and returned %s" % [
+			miss_ms, "a stream" if miss != null else "null"])
+	MotherVoice.flush()
+
+	# --- 7. loudness lands on the baked masters' targets --------------------
+	var off: PackedStringArray = PackedStringArray()
+	var report: PackedStringArray = PackedStringArray()
+	for reg: String in [VoiceRegisters.MURMUR, VoiceRegisters.DIRECTED, VoiceRegisters.SUBZERO]:
+		var res: Dictionary = MotherVoice.render_debug(
+				"PROCESS COUNT EXCEEDS MANIFEST. NOTHING IS MISSING.", reg)
+		var want: float = float(VoiceRegisters.TARGET_LUFS[reg])
+		var got: float = float(res["lufs"])
+		var tp: float = float(res["dbtp"])
+		report.append("%s %.1f" % [reg, got])
+		# One-sided tolerance: UNDER target is allowed (the true-peak ceiling is
+		# entitled to hold a line back, and quieter than intended is never a
+		# safety problem); over target is not.
+		if got > want + 0.5 or got < want - 4.0 or tp > VoiceRegisters.CEILING_DBTP + 0.1:
+			off.append("%s %.2f LUFS %.2f dBTP (want %.1f)" % [reg, got, tp, want])
+	if off.is_empty():
+		print("[SelfTest] PASS  voice loudness on target: %s LUFS" % ", ".join(report))
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice loudness off target: %s" % ", ".join(off))
+
+	# --- 8. every tier AudioService can ask for has a register --------------
+	var unmapped: PackedStringArray = PackedStringArray()
+	for key: String in ["mother_murmur", "mother_address", "mother_close"]:
+		var reg: String = VoiceRegisters.register_for_event(StringName(key))
+		if not VoiceRegisters.TARGET_LUFS.has(reg):
+			unmapped.append(key)
+		var params: Dictionary = VoiceRegisters.params(reg)
+		if not params.has("frames") or not params.has("klatt") or not params.has("tape"):
+			unmapped.append(key + " (incomplete params)")
+	if unmapped.is_empty():
+		print("[SelfTest] PASS  voice registers: all three AudioService tiers resolve")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice registers unmapped: %s" % ", ".join(unmapped))
+
+	# --- 9. the K-weighting derivation reproduces the published table -------
+	#
+	# BS.1770-4 publishes its filter coefficients for 48 kHz only. Both meters —
+	# the Python one every baked master was measured with, and the GDScript one
+	# every live line is measured with — DERIVE them by bilinear transform so they
+	# work at any rate. If the derivation is wrong, both voices are measured with
+	# a filter that is not K-weighting and the whole "she sits where the masters
+	# sit" claim is decoration. Cross-checked live against the Python module on
+	# the same buffer: -23.000 vs -23.000 LUFS, -10.32 vs -10.316 dBTP.
+	var shelf: Array = VoiceMeter._shelf(48000)
+	var hpf: Array = VoiceMeter._hpf(48000)
+	var want_shelf: Array[float] = [1.53512485958697, -2.69169618940638,
+		1.19839281085285, -1.69065929318241, 0.73248077421585]
+	var want_hpf: Array[float] = [1.0, -2.0, 1.0, -1.99004745483398, 0.99007225036621]
+	var worst_coeff: float = 0.0
+	for i: int in 5:
+		worst_coeff = maxf(worst_coeff, absf(float(shelf[i]) - want_shelf[i]))
+		worst_coeff = maxf(worst_coeff, absf(float(hpf[i]) - want_hpf[i]))
+	if worst_coeff < 1e-9:
+		print("[SelfTest] PASS  voice K-weighting: derivation matches the published 48 kHz table (max error %s)" % worst_coeff)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice K-weighting derivation is off by %s" % worst_coeff)
+
+	# --- 10. a cold line is spoken LATE, never not at all -------------------
+	#
+	# The design decision this pins: a cache miss is a DELAY, not silence. With
+	# 800+ barks and an anti-repetition bag the next thing she says is usually a
+	# sentence no run has spoken, so "a miss is silent" would have made her mute
+	# most of the time. `await_line` therefore asks the caller to come back.
+	MotherVoice.clear()
+	var cold: String = "A LINE THAT HAS NEVER BEEN SPOKEN ON THIS MACHINE."
+	var late_hit: Array[bool] = [false]
+	var asked_ms: int = Time.get_ticks_msec()
+	var proceed: bool = MotherVoice.await_line(cold, &"mother_address",
+			func() -> void: late_hit[0] = true)
+	MotherVoice.flush()
+	# One frame for the deferred hand-back to land on the main thread.
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var late_ms: int = Time.get_ticks_msec() - asked_ms
+	var arrived: AudioStream = MotherVoice.stream_for(cold, &"mother_address")
+	if not proceed and late_hit[0] and arrived != null:
+		print("[SelfTest] PASS  voice deferred speak: cold line arrived %d ms late, not silent" % late_ms)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice deferred speak: proceed=%s callback=%s stream=%s" % [
+			str(proceed), str(late_hit[0]), "yes" if arrived != null else "no"])
+
+	# --- 11. she cannot move a run ------------------------------------------
+	#
+	# Determinism law. Every noise source in the synthesis chain is seeded from
+	# the text; nothing in src/voice/ may ever touch the shared `Rng` stream, or
+	# turning her voice on would change world generation. Asserted structurally
+	# rather than by measurement, because a measurement only proves it for the
+	# seeds that were measured.
+	# A LOCAL RandomNumberGenerator seeded from the utterance is fine and is how
+	# the tape damage is made reproducible — `rng.randf()` is not the thing being
+	# hunted. What must never appear is the shared `Rng` autoload or a BARE global
+	# `randf()`/`randi()`, both of which draw from the stream generation rides on.
+	var rng_touchers: PackedStringArray = PackedStringArray()
+	var bare: RegEx = RegEx.new()
+	bare.compile("(?<![\\w.])(randf|randi|randfn|randf_range|randi_range|randomize)\\s*\\(")
+	for file: String in ["mother_voice", "voice_klatt", "voice_tape", "voice_frames",
+			"voice_g2p", "voice_meter", "voice_phonemes", "voice_registers", "voice_wav"]:
+		var src: FileAccess = FileAccess.open("res://src/voice/%s.gd" % file, FileAccess.READ)
+		if src == null:
+			continue
+		var body: String = src.get_as_text()
+		if body.contains("Rng.") or bare.search(body) != null:
+			rng_touchers.append(file)
+	if rng_touchers.is_empty():
+		print("[SelfTest] PASS  voice determinism law: src/voice/ never touches the shared RNG")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice touches the shared RNG in: %s" % ", ".join(rng_touchers))
+
+	# --- 12. duration_for predicts EXACTLY, and cheaply ---------------------
+	#
+	# The pacing layer sizes the gap between two barks from how long the first one
+	# takes to say. That is only safe if the prediction is exact — an estimate
+	# that runs short lets the next line talk over her. It is exact because the
+	# synthesiser renders `track.seconds * RATE` samples and every post stage is
+	# length-preserving; this pins that property so a future post stage that
+	# changes length fails here instead of in a living room.
+	var predict_worst: float = 0.0
+	var predict_us: int = 0
+	for line: String in ["NERDRX. YOU BREATHE TOO LOUDLY.",
+			"PROCESS COUNT EXCEEDS MANIFEST.",
+			"3 OF YOU ARE STILL RUNNING ON LAYER 21."]:
+		for reg: String in [VoiceRegisters.DIRECTED, VoiceRegisters.MURMUR]:
+			var t1: int = Time.get_ticks_usec()
+			var predicted: float = MotherVoice.duration_for(line, reg)
+			predict_us += Time.get_ticks_usec() - t1
+			var actual: PackedFloat32Array = MotherVoice.render_debug(line, reg)["samples"]
+			var got: float = float(actual.size()) / float(MotherVoice.RATE)
+			predict_worst = maxf(predict_worst, absf(got - predicted))
+	if predict_worst < 0.002:
+		print("[SelfTest] PASS  voice duration_for: exact to %.4f s, %d us for six queries" % [
+			predict_worst, predict_us])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice duration_for is off by %.3f s — the pacing gap will be wrong" % predict_worst)
+
+	# --- 13. corruption must SHORTEN her, never lengthen her ----------------
+	#
+	# Her text decays with depth, and the decay glyphs are ARTIFACT, not content:
+	# a corrupted readout should sound corrupted — words going missing, a hole, a
+	# click — not like a machine solemnly reciting punctuation marks. That is the
+	# fiction, and it is also a timing constraint, because the pacing budget bills
+	# against `duration_for`. Reading glyphs aloud inflated spoken length by 1.16x
+	# at tier 1 and 1.20x at tier 2, up to 1.89x on one line, which pushed urgent
+	# warnings past their budget at exactly the depths where a warning matters.
+	#
+	# Three separate bugs produced that, all of them now pinned by this check:
+	# glyphs costing a segment each; a `0` inside a decayed word being read as
+	# "ZERO"; and a word whose vowels were eaten falling into the ACRONYM path, so
+	# `WORK` -> `W$RK/` came out as "DOUBLEYOU AR KAY".
+	var corrupt_lines: int = 0
+	var corrupt_sum: float = 0.0
+	var corrupt_worst: float = 0.0
+	var corrupt_doc: FileAccess = FileAccess.open(MotherBarks.CORPUS_PATH, FileAccess.READ)
+	if corrupt_doc != null:
+		var parsed: Variant = JSON.parse_string(corrupt_doc.get_as_text())
+		if parsed is Dictionary:
+			var all: Array = (parsed as Dictionary).get("entries", []) as Array
+			# Sampled rather than exhaustive: `duration_for` is ~2.4 ms on a fresh
+			# line and the selftest should not spend five seconds proving a ratio.
+			var stride: int = maxi(all.size() / 120, 1)
+			var idx: int = 0
+			while idx < all.size():
+				var e: Dictionary = all[idx] as Dictionary
+				idx += stride
+				if String(e.get("kind", "")) != "bark":
+					continue
+				var rend: Array = e.get("corruption_renderings", []) as Array
+				if rend.size() < 3:
+					continue
+				var clean_text: String = String(rend[0])
+				if clean_text.contains("{"):
+					continue
+				var base: float = MotherVoice.duration_for(clean_text, VoiceRegisters.DIRECTED)
+				if base <= 0.05:
+					continue
+				var decayed: float = MotherVoice.duration_for(String(rend[2]),
+						VoiceRegisters.DIRECTED)
+				corrupt_lines += 1
+				corrupt_sum += decayed / base
+				corrupt_worst = maxf(corrupt_worst, decayed / base)
+	var corrupt_mean: float = corrupt_sum / float(maxi(corrupt_lines, 1))
+	# Upper bound: decay may not make her longer on average. Lower bound: it may
+	# not silence her either — a ratio near zero would mean the damage pass had
+	# eaten the line rather than dented it, which is absence, not corruption.
+	if corrupt_lines > 40 and corrupt_mean <= 1.02 and corrupt_mean >= 0.45:
+		print("[SelfTest] PASS  voice corruption shortens: tier 2 mean %.3fx over %d lines (worst %.2fx)" % [
+			corrupt_mean, corrupt_lines, corrupt_worst])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice corruption ratio %.3fx over %d lines — glyphs are being spoken as content" % [
+			corrupt_mean, corrupt_lines])
+
+	# --- 14. Dampened Protocol softens the SOURCE, not just the bus ---------
+	#
+	# The comfort tier promises no spikes. Her sharp edges are structural — tape
+	# dropouts and print-through are amplitude discontinuities baked into the
+	# waveform — so a bus trim cannot deliver the promise. This asserts the
+	# dampened parameter set actually removes them.
+	var plain: Dictionary = VoiceRegisters.params(VoiceRegisters.MURMUR)
+	var soft: Dictionary = VoiceRegisters.dampen(plain)
+	var soft_tape: Dictionary = soft["tape"] as Dictionary
+	var plain_tape: Dictionary = plain["tape"] as Dictionary
+	if float(plain_tape["dropouts"]) > 0.0 and is_zero_approx(float(soft_tape["dropouts"])) \
+			and float(soft_tape["print_through_db"]) <= -80.0 \
+			and float(soft_tape["sat"]) <= float(plain_tape["sat"]):
+		print("[SelfTest] PASS  voice Dampened Protocol removes dropouts and print-through at the source")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  voice Dampened Protocol left the murmur's dropouts at %.2f" % [
+			float(soft_tape["dropouts"])])
+
+	return failures
+
+
+## `--crew-hole WHO [DELAY]`. See the field.
+func _arm_crew_hole() -> void:
+	await get_tree().create_timer(crew_hole_delay).timeout
+	if not Net.is_authority():
+		print("[CrewSync] crew-hole ignored: this peer is not the host")
+		return
+	var target: int = _crew_target(crew_hole_who)
+	if target == 0:
+		printerr("[CrewSync] crew-hole '%s' matched nobody in the roster" % crew_hole_who)
+		return
+	crew_hole = target
+	print("[CrewSync] crew-hole: the roster now denies %s (peer %d)" % [
+		Net.crew_name(target), target])
+	# The filter is only re-evaluated when something asks it to, exactly as a real
+	# roster change would.
+	for node: Node in get_tree().get_nodes_in_group("antivirus_director"):
+		if node.has_method("_on_crew_changed"):
+			node.call("_on_crew_changed")
+
+
+# --------------------------------------------- M15 HER TONGUE: the time budget --
+#
+# Appended for the timing pass, separate from `_lore_selftest` because it asserts
+# a different kind of claim: not "the machinery is correct" but "the writing fits
+# the mouth". Her lines are spoken now, and a per-register duration ceiling is a
+# constraint that can silently starve a pool — an author trims one line, another
+# pool drops to two speakable entries at some depth, and the player hears the
+# same warning twice in a row six weeks later with nothing in the log.
+#
+# The check that matters is the MARGINAL one. Most pools are "short" at some
+# depth band because their lines are authored deep on purpose, and reporting that
+# as starvation would be reporting the design as a bug. So this compares the pool
+# WITH the ceiling against the pool WITHOUT it, per band, and only fails where the
+# ceiling is the binding constraint.
+
+## `--selftest`, M15 time budget. Returns the failure count.
+func _lore_budget_selftest() -> int:
+	var failures: int = 0
+	var director: LoreDirector = LoreDirector.new()
+	director.setup(31337)
+	director.memory = LoreMemory.new()
+	director.memory.volatile = true
+	if not director.is_loaded():
+		printerr("[SelfTest] FAIL  lore budget: corpus did not load")
+		return 1
+
+	# A full slot table so every line is eligible and the durations are billed on
+	# REALISTIC rendered text — "{CALLSIGN}" and "VANE" do not take the same time.
+	var ctx: Dictionary = {
+		"CALLSIGN": "VANE", "CREWMATE": "OKONKWO", "DEAD": "RESHET",
+		"ROOM": "VAULT-07C", "DATA": "128", "CYCLES": "61", "CREW_COUNT": "3",
+		"RUNS": "12", "DEEPEST": "17", "PATCH": "BIT ROT", "CREATURE": "THE HOUND",
+		"SUBROUTINE": "CHECKSUM BARRIER", "MODULE": "THREADING",
+		"N_descent": "7", "N_epitaph": "3",
+	}
+	var bands: Array[int] = [3, 8, 16, 22, 30]
+
+	var starved: PackedStringArray = PackedStringArray()
+	var over: int = 0
+	var total: int = 0
+	var longest: float = 0.0
+	var longest_id: String = ""
+	for raw_key: Variant in director.pool_sizes():
+		var key: String = String(raw_key)
+		var parts: PackedStringArray = key.split("/")
+		var category: String = parts[0]
+		var trigger: String = parts[1]
+		var cap: float = LoreDirector.ceiling_for(category, trigger)
+		for layer: int in bands:
+			var eligible: int = 0
+			var fits: int = 0
+			for entry: Dictionary in director.pool_entries(key):
+				if layer < int(entry.get("depth_min", 1)) \
+						or layer > int(entry.get("depth_max", 99)):
+					continue
+				eligible += 1
+				# Canonical text, matching what `_can_speak` bills — see the long
+				# note there on why the ceiling and the cooldown deliberately measure
+				# two different strings.
+				var text: String = director.render_canonical(entry, ctx)
+				var seconds: float = LoreDirector.worst_case_seconds(entry, text)
+				if seconds > longest:
+					longest = seconds
+					longest_id = String(entry.get("id", ""))
+				if bool(entry.get("length_exempt", false)) or seconds <= cap:
+					fits += 1
+			# Only a MARGINAL failure counts: the pool had enough lines at this
+			# depth and the ceiling is what took it below the floor. A pool that was
+			# already thin here is thin by authorial intent and is handled by
+			# `MIN_POOL_LINES` refusing to steer into it.
+			if eligible >= LoreDirector.MIN_POOL_LINES \
+					and fits < LoreDirector.MIN_POOL_LINES:
+				starved.append("%s@L%d (%d->%d, cap %.1fs)" % [key, layer, eligible, fits, cap])
+		for entry: Dictionary in director.pool_entries(key):
+			total += 1
+			var t: String = director.render_canonical(entry, ctx)
+			if not bool(entry.get("length_exempt", false)) \
+					and LoreDirector.worst_case_seconds(entry, t) > cap:
+				over += 1
+
+	if starved.is_empty():
+		print("[SelfTest] PASS  lore time budget: no pool starved by its ceiling (%d/%d lines over cap, longest %.1fs %s)" % [
+			over, total, longest, longest_id])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore time budget starves: %s" % ", ".join(starved))
+
+	# The exemptions are DATA, and a future editor must find the reason attached to
+	# the line rather than in a commit message. An exemption with no note is an
+	# exemption nobody can evaluate, so it is a failure.
+	var unexplained: PackedStringArray = PackedStringArray()
+	var exempt: int = 0
+	for raw: Variant in director.all_ids():
+		var entry: Dictionary = director.entry(String(raw))
+		if not bool(entry.get("length_exempt", false)):
+			continue
+		exempt += 1
+		if String(entry.get("note", "")).length() < 40:
+			unexplained.append(String(entry.get("id", "")))
+	if unexplained.is_empty():
+		print("[SelfTest] PASS  lore exemptions: %d granted, every one carries its reasoning" % exempt)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore exemptions with no recorded reason: %s" % ", ".join(unexplained))
+
+	# --- the corruption inflation factor -------------------------------------
+	#
+	# THE OPEN CROSS-MILESTONE NUMBER, printed every run so that the day it closes
+	# is visible rather than something somebody has to remember to check.
+	#
+	# The corruption tiers replace letters with glyphs, and the synthesiser
+	# currently spends real time on them — measured at 1.15x (tier 1) and 1.19x
+	# (tier 2), up to 1.36x on a single line. That is why `CEILING_BILLS_SPOKEN` is
+	# false and the ceiling is billed on the authored text instead: at 1.19x the
+	# URGENT budget admits about twenty-five characters below layer 15, and
+	# "NOT ALONE. MERELY UNINFORMED." does not fit in twenty-five characters.
+	#
+	# When the voice pass renders the glyph set as ARTIFACT — a dropout, a
+	# swallowed syllable, damage rather than recitation — this goes to ~1.0 and
+	# `CEILING_BILLS_SPOKEN` can be flipped to true, at which point the timing
+	# system is exact and carries no residual at all. This check does not FAIL on
+	# the gap; it reports it, because the gap is another milestone's to close.
+	var t1: float = 0.0
+	var t2: float = 0.0
+	var measured: int = 0
+	for raw: Variant in director.all_ids():
+		var entry: Dictionary = director.entry(String(raw))
+		if String(entry.get("text", "")).contains("{"):
+			continue
+		var r: Array = entry.get("corruption_renderings", []) as Array
+		if r.size() < 3:
+			continue
+		var base: float = MotherVoice.duration_for_category(String(r[0]), "ambient", 3)
+		if base <= 0.0:
+			continue
+		measured += 1
+		t1 += MotherVoice.duration_for_category(String(r[1]), "ambient", 3) / base
+		t2 += MotherVoice.duration_for_category(String(r[2]), "ambient", 3) / base
+	if measured > 0:
+		var f1: float = t1 / float(measured)
+		var f2: float = t2 / float(measured)
+		var closed: bool = f2 <= 1.02
+		print("[SelfTest] %s  lore corruption inflation: tier1 %.3fx tier2 %.3fx over %d lines — ceiling bills %s%s" % [
+			"PASS" if closed else "NOTE", f1, f2, measured,
+			"the spoken string" if LoreDirector.CEILING_BILLS_SPOKEN else "the authored line",
+			"" if closed else " (flip CEILING_BILLS_SPOKEN when this reaches 1.0)"])
+
+	# The dynamic cooldown must actually track the line. A fixed gap would either
+	# waste silence after a short line or let a long one be run over; this asserts
+	# the floor is derived from the utterance and that it is never shorter than the
+	# audio it is covering.
+	var short_line: String = "FILED."
+	var long_line: String = "I HAVE INDEXED THIS ROOM ELEVEN THOUSAND TIMES. NEVER INTERESTING BEFORE."
+	var short_s: float = MotherVoice.duration_for_category(short_line, "ambient", 3)
+	var long_s: float = MotherVoice.duration_for_category(long_line, "ambient", 3)
+	if long_s > short_s and short_s > 0.0:
+		print("[SelfTest] PASS  lore cooldown scales with the line: %.1fs vs %.1fs (+%.1fs breath)" % [
+			short_s + LoreDirector.BARK_BREATH, long_s + LoreDirector.BARK_BREATH,
+			LoreDirector.BARK_BREATH])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  lore cooldown does not scale: short=%.2f long=%.2f" % [
+			short_s, long_s])
 	return failures

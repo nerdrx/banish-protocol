@@ -58,13 +58,25 @@ const BUS_UI: StringName = &"UI"
 ## only source in the game that has to be duckable AGAINST everything else at
 ## once — see the VOICE section at the bottom of this file.
 const BUS_VOICE: StringName = &"Voice"
+## M12 SENSATION. The occluded paths: a copy of World and of Creatures with a
+## low-pass and a trim on them, for sources with no line of sight to the ear.
+## Each sends into its own parent, so an occluded sound still takes that bus's
+## reverb, its slider trim and its decompile duck — it is the SAME sound in the
+## SAME room, heard through something solid. See the ROOM ACOUSTICS section.
+const BUS_WORLD_OCC: StringName = &"WorldOccluded"
+const BUS_CREAT_OCC: StringName = &"CreaturesOccluded"
 
 ## Base trim per bus (AUDIO_GUIDE layout). The user volume sliders are an offset
 ## ON TOP of these; a bus's live volume is base + slider trim.
+## The two occluded paths carry NO base trim of their own: their whole level
+## story is the `OCCLUSION_DB` the caller applies to the source, and they inherit
+## everything else from the parent they send into. A trim here would be the same
+## decision made twice, in the place least likely to be found later.
 const BUS_BASE: Dictionary = {
 	BUS_MASTER: 0.0, BUS_MUSIC: -4.0, BUS_MUS_FLOOR: -3.0, BUS_MUS_STRESS: 0.0,
 	BUS_MUS_STINGER: -1.0, BUS_WORLD: -1.0, BUS_BEDS: -3.0, BUS_CREATURES: 0.0,
 	BUS_PLAYER: 0.0, BUS_UI: -2.0, BUS_VOICE: -3.0,
+	BUS_WORLD_OCC: 0.0, BUS_CREAT_OCC: 0.0,
 }
 
 const AUDIO_DIR: String = "res://assets/audio/"
@@ -95,6 +107,15 @@ class AudioEvent extends RefCounted:
 	var vol: float = 0.0            ## volume_db exception (else 0, mix at bus).
 	var jitter: float = 0.0        ## ± pitch_scale, for sets that must not tire.
 	var doppler: bool = false
+	## M12 SENSATION — distance air absorption. Godot applies a per-source
+	## low-pass whose DEPTH scales with the distance attenuation already applied,
+	## which is the correct shape for air absorption and was sitting at the engine
+	## default on every source in the game. Derived from `max_dist` at
+	## registration (see `_def`): the families that are meant to carry three rooms
+	## get the darker corner, because a far sound sells its distance by losing its
+	## top, not merely its level.
+	var air_hz: float = RoomAcoustics.AIR_HZ_NEAR
+	var air_db: float = RoomAcoustics.AIR_DB
 	var caption: StringName = &""  ## CaptionBus key, or empty for silent-to-text.
 	## Derived once at registration: does this event carry a THREAT caption? If it
 	## does, playing it ducks MOTHER — the one rule the voice tier must never break
@@ -193,6 +214,9 @@ func _build_buses() -> void:
 		[BUS_WORLD, BUS_MASTER], [BUS_BEDS, BUS_WORLD],
 		[BUS_CREATURES, BUS_MASTER], [BUS_PLAYER, BUS_MASTER],
 		[BUS_UI, BUS_MASTER], [BUS_VOICE, BUS_MASTER],
+		# M12: parented to the buses they are the occluded copy of, so they pick
+		# up that bus's room reverb, slider trim and decompile duck for free.
+		[BUS_WORLD_OCC, BUS_WORLD], [BUS_CREAT_OCC, BUS_CREATURES],
 	]
 	for pair: Array in layout:
 		_ensure_bus(pair[0], pair[1])
@@ -206,6 +230,15 @@ func _build_buses() -> void:
 		hp.cutoff_hz = 35.0
 		AudioServer.add_bus_effect(world, hp)
 
+	# M12 SENSATION. Order on these two buses is load-bearing and it is why this
+	# call sits BETWEEN the high-pass above and the comfort effects below:
+	#   World:     highpass 35 Hz -> ROOM REVERB
+	#   Creatures: ROOM REVERB -> dampened-protocol low-pass
+	# The room comes after the sub-band reservation (so the tail cannot put back
+	# the mud the high-pass exists to remove) and BEFORE the comfort tier (so
+	# Dampened Protocol softens the reverberant signal the player actually hears,
+	# rather than softening the input and letting the tail re-brighten it).
+	_build_room_acoustics()
 	_build_comfort_effects()
 
 
@@ -302,19 +335,42 @@ func play_3d(key: StringName, world_pos: Vector3) -> void:
 		return
 	var player: AudioStreamPlayer3D = _grab_3d()
 	player.stream = _stream(ev)
-	player.bus = ev.bus
 	player.unit_size = ev.unit
 	player.max_distance = ev.max_dist
-	player.volume_db = ev.vol
 	player.doppler_tracking = AudioStreamPlayer3D.DOPPLER_TRACKING_PHYSICS_STEP \
 			if ev.doppler else AudioStreamPlayer3D.DOPPLER_TRACKING_DISABLED
 	player.pitch_scale = _pitch(ev)
 	player.global_position = world_pos
+	# M12 SENSATION — distance air absorption, per source, per family.
+	player.attenuation_filter_cutoff_hz = ev.air_hz
+	player.attenuation_filter_db = ev.air_db
+	# M12 SENSATION — occlusion, evaluated ONCE, here.
+	#
+	# A one-shot is between 0.1 s and 1.5 s long, and whether there was a wall in
+	# the way when it FIRED is the whole of what it has to say. Sampling it once
+	# at the trigger is not a shortcut around a continuous solution: it is the
+	# correct model for a transient, it costs exactly one raycast per one-shot,
+	# and — the part that matters most — it can never click, because the routing
+	# is decided before the voice starts rather than changed underneath it.
+	# Sustained loops DO get the continuous treatment; see `_drive_occlusion`.
+	var occ: float = occlusion_at(world_pos)
+	player.bus = _occluded_bus(ev.bus) if occ >= RoomAcoustics.OCCLUSION_ON else ev.bus
+	player.volume_db = ev.vol + RoomAcoustics.OCCLUSION_DB * occ
 	player.play()
 	_log(key, world_pos)
 	if ev.threat:
 		_arm_voice_duck()
+	# The particulate half of the same event. Several of the things that should
+	# throw sparks, steam or motes live in files other milestones own, and every
+	# one of them already announces itself HERE — so the one place that reliably
+	# knows "a cabinet lock was just cut, at this point, on this peer" is the line
+	# that plays the sound of it. See `Fx.cue`.
+	Fx.cue(key, world_pos)
 	if ev.caption != &"":
+		# DELIBERATELY NOT ATTENUATED BY OCCLUSION. A caption is the threat
+		# telegraph for a deaf or hard-of-hearing player (DESIGN.md pillar 7), and
+		# a Scrubber behind a wall is exactly as dangerous as one in front of it.
+		# The mix may muffle the sound; the text says the same thing either way.
 		Captions.emit(ev.caption, world_pos, ev.max_dist)
 
 
@@ -357,7 +413,12 @@ func attach_loop(key: StringName, owner: Node3D, fade_in: float = 0.0) -> AudioS
 	player.attenuation_model = AudioStreamPlayer3D.ATTENUATION_INVERSE_DISTANCE
 	player.pitch_scale = _pitch(ev)
 	player.volume_db = ev.vol if fade_in <= 0.0 else -60.0
+	player.attenuation_filter_cutoff_hz = ev.air_hz
+	player.attenuation_filter_db = ev.air_db
 	owner.add_child(player)
+	# M12: a loop is long-lived and the thing making it MOVES, so unlike a
+	# one-shot its occlusion has to be tracked and eased rather than sampled once.
+	_track_loop(player, ev)
 	# A creature commonly attaches its drone in `_assemble`, which the director
 	# runs BEFORE parenting it — so the player may not be in the tree yet, and
 	# `play()` (and a tween) only work once it is. Start on tree entry if so, now
@@ -382,6 +443,7 @@ func detach_loop(player: AudioStreamPlayer3D) -> void:
 	if player == null or not is_instance_valid(player):
 		return
 	Captions.unregister(player)
+	_untrack_loop(player)
 	player.stop()
 	player.queue_free()
 
@@ -504,6 +566,13 @@ func _process(delta: float) -> void:
 	_drive_voice(delta)
 	_advance_decompile(delta)
 	_advance_exfil()
+	# M12 SENSATION. Both of these are budgeted rather than per-frame: the room is
+	# re-measured a few times a second and its parameters eased every frame, and
+	# the tracked loops are re-cast round-robin so the raycast cost is a constant
+	# few per frame however many creatures are alive. See the ROOM ACOUSTICS
+	# section at the foot of this file.
+	_drive_acoustics(delta)
+	_drive_occlusion(delta)
 
 
 # --- ambient beds (room tone) -----------------------------------------------
@@ -678,6 +747,14 @@ func _bus_trim(bus: StringName) -> float:
 			return base + master + _slider_db(vol_sfx)
 		BUS_BEDS:
 			return base + master  # inherits the SFX trim via World.
+		BUS_WORLD_OCC, BUS_CREAT_OCC:
+			# PURE PASS-THROUGH, and deliberately not `base + master` like the
+			# other child buses above. These two are not a mix decision at all —
+			# they are a filter the signal is routed through on its way to the
+			# parent that owns every trim it has. Adding the master offset here
+			# would apply it twice to exactly the sounds that are already the
+			# quietest thing on the layer.
+			return 0.0
 		BUS_PLAYER, BUS_VOICE:
 			# One slider for both, which is the honest grouping: the breath is your
 			# own process making a mouth noise and MOTHER is hers. A player who turns
@@ -774,6 +851,7 @@ func _load_settings() -> void:
 	crt_whine = bool(cfg.get_value("audio", "crt_whine", true))
 	reduced_spikes = bool(cfg.get_value("audio", "reduced_spikes", false))
 	dampened = bool(cfg.get_value("audio", "dampened", false))
+	room_reverb = bool(cfg.get_value("audio", "room_reverb", true))
 
 
 ## Atomic temp-then-rename, like GameState.save_progress — a settings write that
@@ -787,6 +865,7 @@ func _save_settings() -> void:
 	cfg.set_value("audio", "crt_whine", crt_whine)
 	cfg.set_value("audio", "reduced_spikes", reduced_spikes)
 	cfg.set_value("audio", "dampened", dampened)
+	cfg.set_value("audio", "room_reverb", room_reverb)
 	var temp: String = SETTINGS_PATH + ".tmp"
 	if cfg.save(temp) == OK:
 		DirAccess.rename_absolute(ProjectSettings.globalize_path(temp),
@@ -1120,6 +1199,11 @@ func _wire_voice() -> void:
 
 	_voice_ready = true
 	haunt.mother_spoke.connect(_on_mother_spoke)
+	# Her lines address the crew by callsign, so the roster changing is the one
+	# event that reliably predicts which sentences she will need next. Warming
+	# them off the roster change means the first time she says a new crewmate's
+	# name it is already built and there is no beat at all.
+	Net.crew_changed.connect(MotherVoice.prewarm_crew)
 
 
 ## Which tier a bark lands in, given the category and the depth. Pure, so
@@ -1133,9 +1217,42 @@ func voice_tier_for(category: String, layer: int) -> StringName:
 	return tier
 
 
+## Which event key a tier plays through. Three tiers, three entries in the event
+## table, and `VoiceRegisters.register_for_event` keys its prosody off the same
+## three names — so this is the one place the tier and the register are joined,
+## and neither side has to know the other's spelling.
+func _voice_event_key(tier: StringName) -> StringName:
+	match tier:
+		VOICE_SUBZERO: return &"mother_close"
+		VOICE_DIRECTED: return &"mother_address"
+		_: return &"mother_murmur"
+
+
 ## The Director spoke, on this peer. Give it a mouth, or do not.
-func _on_mother_spoke(text: String, category: String, _tier: int, _callsign: bool) -> void:
+##
+## M15 VOICE SYNTHESIS: A CACHE MISS IS A DELAY, NOT SILENCE.
+##
+## Her lines are synthesised rather than sampled now, and the corpus went from
+## 183 authored barks to 848 with an anti-repetition bag — so the next sentence
+## she says is usually one no run has ever spoken, and "miss = stay quiet" would
+## have left her mute most of the time. `await_line` instead returns false and
+## re-enters this function (`call_deferred`, main thread) when the worker has the
+## audio, roughly 380 ms later.
+##
+## The re-entry is the whole design and it is why the early return is here rather
+## than further down: the caption, the music duck, the murmur density roll and
+## the emitter placement all live BELOW this line, so each of them still happens
+## exactly once — a beat later — instead of once now and once again on the retry.
+## Moving this check past any of them would double them.
+##
+## The two parameters lost their leading underscores because the rebind below
+## has to carry them back in unchanged.
+func _on_mother_spoke(text: String, category: String, tier: int, callsign: bool) -> void:
 	if not _voice_ready:
+		return
+	if not MotherVoice.await_line(text,
+			_voice_event_key(voice_tier_for(category, Run.layer_number)),
+			_on_mother_spoke.bind(text, category, tier, callsign)):
 		return
 	match voice_tier_for(category, Run.layer_number):
 		VOICE_SUBZERO:
@@ -1174,6 +1291,11 @@ func _speak_murmur(text: String) -> void:
 	_voice_murmur.play()
 	_log(&"mother_murmur", where)
 	_log_voice(&"mother_murmur", stream)
+	# M12: in the deep layers the architecture visibly stops holding together
+	# while she talks. Particulate only — nothing in this path touches a light, a
+	# shader or the HUD, so the guarantee the voice tier makes about pillar 7 is
+	# still true by construction. Depth-gated inside `Fx.mother_glitch`.
+	Fx.mother_glitch(where, Run.layer_number)
 	# Same line, same event: the caption cannot drift from the sound because there
 	# is only one place either of them happens.
 	Captions.emit(ev.caption, where, ev.max_dist)
@@ -1221,6 +1343,16 @@ func _voice_stream(ev: AudioEvent, text: String) -> AudioStream:
 		if ResourceLoader.exists(pinned):
 			return _stream_path(pinned, false)
 		push_warning("[Audio] BP_VOICE_CUE '%s' is not a cue" % _voice_pin)
+	# M15 VOICE SYNTHESIS. Her real voice, if it has been built. Deliberately
+	# BELOW the audition pin (so `BP_VOICE_CUE` still overrides everything, which
+	# is what a pin is for) and ABOVE the baked-cue table (so the synthesised line
+	# wins whenever it exists). A null here is not a failure: it is a line that is
+	# not ready, and `_on_mother_spoke` has already arranged to be called again
+	# when it is — so falling through to the baked cue below is the correct
+	# behaviour for the one case that survives, which is the synth being disabled.
+	var spoken: AudioStream = MotherVoice.stream_for(text, ev.key)
+	if spoken != null:
+		return spoken
 	if ev.files.is_empty():
 		return null
 	var index: int = absi(text.hash()) % ev.files.size()
@@ -1337,6 +1469,15 @@ func _def(key: StringName, files: Array, bus: StringName, opts: Dictionary = {})
 	ev.vol = float(opts.get("vol", 0.0))
 	ev.jitter = float(opts.get("jitter", 0.0))
 	ev.doppler = bool(opts.get("doppler", false))
+	# M12: air absorption, DERIVED from the attenuation curve the event already
+	# declares rather than added as a column somebody has to fill in per event.
+	# The LOUD and DREAD families (siphons, debris, the Sentinel, the shaft, the
+	# klaxon — everything with a 45 m+ reach) are exactly the sounds whose whole
+	# job is to arrive from far away, so they get the darker corner; everything
+	# near-field keeps its edge. One rule, no table to drift.
+	ev.air_hz = float(opts.get("air", RoomAcoustics.AIR_HZ_FAR if ev.max_dist >= 45.0 \
+			else RoomAcoustics.AIR_HZ_NEAR))
+	ev.air_db = float(opts.get("air_db", RoomAcoustics.AIR_DB))
 	ev.caption = StringName(opts.get("caption", &""))
 	# One table, two owners: the label half is CaptionBus's, and its CATEGORY is
 	# also the mix's own definition of "audio the player survives by". Read once,
@@ -1576,3 +1717,390 @@ func _register_events() -> void:
 			{"twod": true, "caption": &"mother_address"})
 	_def(&"mother_close", VOICE_SUBZERO_CUES, BUS_VOICE,
 			{"twod": true, "caption": &"mother_close"})
+
+
+# ------------------------------------------------------- M12 ROOM ACOUSTICS --
+#
+# THE COMPLAINT: "the sound needs some more reverb, it doesn't feel like there's
+# any room."
+#
+# It was right about more than reverb. The mix had no notion of space at all, so
+# a sixteen-metre machinery hall and a three-metre alcove sounded identical, and
+# the player's ears were being told the architecture is not there. Half of Alien:
+# Isolation's dread is acoustic. This section is that half.
+#
+# ## Three things, and they are three different problems
+#
+#   1. **The room.** A reverb whose character is MEASURED off the space the
+#      listener is actually standing in — `LayerGraph` publishes every room's
+#      rectangle and the height M6.6's verticality pass really built, so the
+#      model reads them rather than guessing (`RoomAcoustics.measure`). Big halls
+#      go cavernous, corridors ring tight and fast, alcoves go nearly dead, and
+#      the drop-shaft trunk gets the long vertical tail it has always deserved.
+#      Eased between spaces, never snapped.
+#   2. **Occlusion.** A source with no line of sight to the ear is low-passed and
+#      trimmed, so a Scrubber screeching through a wall is muffled and PLACED
+#      rather than merely quieter. This is the one that makes 3D audio read as
+#      3D, and it is the one M11's hunters will lean on hardest.
+#   3. **Distance air absorption.** Far sounds lose their top. Godot has the
+#      right shape for this per-source and the whole game was leaving it at the
+#      engine default; `_def` now derives it from the attenuation family.
+#
+# ## What it deliberately does NOT touch
+#
+#   * **MOTHER stays bone dry.** The Voice bus takes no reverb, no occlusion and
+#     no air absorption. Her directed address is non-positional on purpose — she
+#     is in the channel, not in the room — and putting a room around her would be
+#     the single worst thing that could be done to it. (Honest limitation: her
+#     MURMUR is positional and would genuinely benefit from the room, but the two
+#     tiers share one bus, and splitting it to wet only the murmur is a bigger
+#     change than this milestone should make. Noted, deferred, not forgotten.)
+#   * **Captions.** Unaffected, by construction: `play_3d` emits the caption
+#     before it has finished deciding anything about the mix, and the occlusion
+#     trim is never applied to it. A muffled threat is still a captioned threat.
+#   * **The self bus.** Breath, pulse, hurt and the corruption drone are inside
+#     your own shell. They are not in the room and they do not get the room.
+#   * **The RNG stream.** Nothing here draws a random number at all.
+#
+# ## Cost
+#
+# One `AudioEffectReverb` on each of two buses, re-parameterised a few times a
+# second; one raycast per one-shot; and `OCC_RAYS_PER_FRAME` raycasts a frame for
+# the tracked loops however many of them there are. Measured in the perf census.
+
+## How often the listener's room is re-measured. The player cannot cross a room
+## boundary faster than this matters, and it keeps `room_at` (a linear scan over
+## 6-10 rectangles) off the per-frame path.
+const ACOUSTIC_MEASURE_HZ: float = 6.0
+## Seconds for the live reverb to travel most of the way to a new room's
+## parameters. Long enough that a doorway is a transition rather than a cut,
+## short enough that it has finished by the time you are properly inside.
+const ACOUSTIC_EASE: float = 0.55
+## How many tracked loops are re-cast per frame. Four is enough to give every
+## loop in a dense fight a fresh reading three times a second, and it is a
+## CONSTANT cost — the raycast budget does not grow with the creature count.
+const OCC_RAYS_PER_FRAME: int = 4
+
+## THE PARTITION's acoustic, which is the one space in the game with no
+## LayerGraph behind it. Approximated rather than measured, and said so: the hub
+## is hand-built furniture in a fixed shell, so there is no rectangle to read.
+## These are the shell's rough interior in metres and it is dressed like the
+## sanctuary it is.
+const HUB_W: float = 15.0
+const HUB_D: float = 11.0
+const HUB_H: float = 6.0
+
+# --- live state ---------------------------------------------------------------
+var _verb_world: AudioEffectReverb = null
+var _verb_creatures: AudioEffectReverb = null
+var _occ_lp_world: AudioEffectLowPassFilter = null
+var _occ_lp_creatures: AudioEffectLowPassFilter = null
+
+## The measured space the ear is in, and the eased parameters actually on the
+## effects. Kept apart so the target can jump while the mix travels.
+var _space: Dictionary = {}
+var _live_size: float = RoomAcoustics.SIZE_MIN
+var _live_wet: float = 0.0
+var _live_damp: float = RoomAcoustics.DAMP_MAX
+var _live_predelay: float = RoomAcoustics.PREDELAY_MIN
+var _live_spread: float = 0.0
+var _measure_clock: float = 0.0
+
+## `--sensation-room` / the bench: a space forced regardless of where the ear is.
+## Empty means "measure the world", which is every real session.
+var _forced_space: Dictionary = {}
+
+## The player's toggle. ON by default — this is the fix for a reported complaint,
+## not an option — but a mixer change this large earns a switch for anyone whose
+## room or headphones fight it.
+var room_reverb: bool = true
+
+# --- tracked loops -------------------------------------------------------------
+## Parallel arrays rather than an array of dictionaries: this is walked every
+## frame and a per-entry Dictionary allocation is exactly the kind of cost rule 2
+## at the top of this file exists to refuse.
+var _loop_players: Array[AudioStreamPlayer3D] = []
+var _loop_base_db: Array[float] = []
+var _loop_bus: Array[StringName] = []
+var _loop_occ: Array[float] = []
+var _loop_target: Array[float] = []
+var _loop_cursor: int = 0
+
+
+func _build_room_acoustics() -> void:
+	if _verb_world != null:
+		return
+	_verb_world = _make_reverb(RoomAcoustics.HIPASS_WORLD)
+	AudioServer.add_bus_effect(_idx(BUS_WORLD), _verb_world)
+	_verb_creatures = _make_reverb(RoomAcoustics.HIPASS_CREATURES)
+	AudioServer.add_bus_effect(_idx(BUS_CREATURES), _verb_creatures)
+
+	# The occluded paths. One low-pass each, and nothing else: the level half of
+	# occlusion rides the SOURCE (so it can be continuous and per-source), and the
+	# spectral half rides the bus (because Godot has no per-source filter that is
+	# independent of distance). Splitting it this way is what lets a one-shot be
+	# routed once with no click and a loop be eased continuously.
+	_occ_lp_world = _make_occlusion_filter()
+	AudioServer.add_bus_effect(_idx(BUS_WORLD_OCC), _occ_lp_world)
+	_occ_lp_creatures = _make_occlusion_filter()
+	AudioServer.add_bus_effect(_idx(BUS_CREAT_OCC), _occ_lp_creatures)
+
+
+func _make_reverb(hipass: float) -> AudioEffectReverb:
+	var verb: AudioEffectReverb = AudioEffectReverb.new()
+	# `dry` is 1.0 and never moves. This is an INSERT being used as a send: the
+	# direct sound must pass through untouched at all times, and `wet` alone is
+	# what the room is allowed to add. A reverb that could turn the direct signal
+	# down would be a reverb that can make a threat cue quieter, and no acoustic
+	# model gets that authority.
+	verb.dry = 1.0
+	verb.wet = 0.0
+	verb.room_size = RoomAcoustics.SIZE_MIN
+	verb.damping = RoomAcoustics.DAMP_MAX
+	verb.spread = 0.0
+	verb.hipass = hipass
+	verb.predelay_msec = RoomAcoustics.PREDELAY_MIN
+	verb.predelay_feedback = 0.0
+	return verb
+
+
+func _make_occlusion_filter() -> AudioEffectLowPassFilter:
+	var lp: AudioEffectLowPassFilter = AudioEffectLowPassFilter.new()
+	lp.cutoff_hz = RoomAcoustics.OCCLUSION_HZ
+	lp.resonance = RoomAcoustics.OCCLUSION_RESONANCE
+	return lp
+
+
+# ------------------------------------------------------------ the live room --
+
+## Re-measure on a budget, then ease the mix toward it every frame.
+func _drive_acoustics(delta: float) -> void:
+	if _verb_world == null:
+		return
+	_measure_clock -= delta
+	if _measure_clock <= 0.0:
+		_measure_clock = 1.0 / ACOUSTIC_MEASURE_HZ
+		_space = _measure_space()
+
+	var want: Dictionary = RoomAcoustics.reverb_params(_space)
+	var wet_target: float = float(want["wet"]) if room_reverb else 0.0
+	# Exponential ease — frame-rate independent, and it cannot overshoot, which a
+	# spring could. A room change is a fade, never a cut.
+	var blend: float = 1.0 - exp(-delta / maxf(ACOUSTIC_EASE, 0.01))
+	_live_size = lerpf(_live_size, float(want["room_size"]), blend)
+	_live_wet = lerpf(_live_wet, wet_target, blend)
+	_live_damp = lerpf(_live_damp, float(want["damping"]), blend)
+	_live_predelay = lerpf(_live_predelay, float(want["predelay"]), blend)
+	_live_spread = lerpf(_live_spread, float(want["spread"]), blend)
+
+	_verb_world.room_size = _live_size
+	_verb_world.damping = _live_damp
+	_verb_world.wet = _live_wet
+	_verb_world.predelay_msec = _live_predelay
+	_verb_world.spread = _live_spread
+	# Same room, slightly drier — the hunters' sub band keeps its headroom. See
+	# RoomAcoustics.CREATURE_WET_SCALE for why this is a level decision and not a
+	# tail decision.
+	_verb_creatures.room_size = _live_size
+	_verb_creatures.damping = _live_damp
+	_verb_creatures.wet = _live_wet * RoomAcoustics.CREATURE_WET_SCALE
+	_verb_creatures.predelay_msec = _live_predelay
+	_verb_creatures.spread = _live_spread
+
+
+## Which space the ear is in. The forced override first (the bench), then the
+## hub's approximation, then the real measurement off the real graph.
+func _measure_space() -> Dictionary:
+	if not _forced_space.is_empty():
+		return _forced_space
+	if Run.in_hub:
+		return RoomAcoustics._space(RoomAcoustics.KIND_SANCTUARY, HUB_W, HUB_D, HUB_H, -1)
+	return RoomAcoustics.measure(_layer_graph(), _listener_pos())
+
+
+## The graph the local peer actually built this layer from, or null in the menu,
+## the hub and the hand-authored greybox — all three of which correctly resolve
+## to a dry mix.
+func _layer_graph() -> LayerGraph:
+	var layer: Node = get_tree().get_first_node_in_group("layer")
+	if layer == null or not is_instance_valid(layer):
+		return null
+	return layer.get("graph") as LayerGraph
+
+
+# ------------------------------------------------------------------ occlusion --
+
+## 0 = clear line of sight, 1 = fully blocked. Three rays rather than one: a
+## single centre ray makes a creature flicker in and out of occlusion on every
+## door frame and pillar edge it passes, and the middle values are exactly the
+## ones a doorway should produce. Cheap enough — this is one call per one-shot,
+## and `OCC_RAYS_PER_FRAME` loops a frame.
+func occlusion_at(world_pos: Vector3) -> float:
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	if cam == null:
+		return 0.0
+	var world: World3D = cam.get_world_3d()
+	if world == null:
+		return 0.0
+	var space: PhysicsDirectSpaceState3D = world.direct_space_state
+	if space == null:
+		return 0.0
+	var ear: Vector3 = cam.global_position
+	var to: Vector3 = world_pos - ear
+	var distance: float = to.length()
+	# Nothing at arm's length is meaningfully occluded, and the ray would be
+	# inside the listener's own collider anyway.
+	if distance < 1.0:
+		return 0.0
+	# The two flanking rays are offset PERPENDICULAR to the line and horizontally:
+	# doorways, pillars and bulkheads are vertical edges, so a horizontal spread
+	# is the one that actually samples the thing doing the occluding.
+	var side: Vector3 = to.cross(Vector3.UP)
+	if side.length_squared() < 0.0001:
+		side = Vector3.RIGHT
+	side = side.normalized() * 0.45
+	var blocked: int = 0
+	for offset: Vector3 in [Vector3.ZERO, side, -side]:
+		var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+				ear, world_pos + offset)
+		query.collision_mask = Antivirus.WORLD_MASK
+		if not space.intersect_ray(query).is_empty():
+			blocked += 1
+	return float(blocked) / 3.0
+
+
+## The occluded twin of a bus, or the bus itself for anything that does not have
+## one. Player, UI and — emphatically — Voice are never occluded: two of them are
+## inside your own head and the third is inside the machine you are standing in.
+func _occluded_bus(bus: StringName) -> StringName:
+	match bus:
+		BUS_WORLD, BUS_BEDS: return BUS_WORLD_OCC
+		BUS_CREATURES: return BUS_CREAT_OCC
+		_: return bus
+
+
+func _track_loop(player: AudioStreamPlayer3D, ev: AudioEvent) -> void:
+	if _occluded_bus(ev.bus) == ev.bus:
+		return  # nothing to switch it to; do not pay to track it.
+	_loop_players.append(player)
+	_loop_base_db.append(ev.vol)
+	_loop_bus.append(ev.bus)
+	_loop_occ.append(0.0)
+	_loop_target.append(0.0)
+
+
+func _untrack_loop(player: AudioStreamPlayer3D) -> void:
+	var at: int = _loop_players.find(player)
+	if at < 0:
+		return
+	_loop_players.remove_at(at)
+	_loop_base_db.remove_at(at)
+	_loop_bus.remove_at(at)
+	_loop_occ.remove_at(at)
+	_loop_target.remove_at(at)
+
+
+## Sustained sources, eased. Two separate rates on purpose:
+##
+##   * the LEVEL rides the source's own `volume_db` and is continuous, so the
+##     dominant half of the effect never steps;
+##   * the FILTER is a bus switch, which is discrete, so it happens on a
+##     hysteresis band (`OCCLUSION_ON` / `OCCLUSION_OFF`) at the point where the
+##     level trim is already most of the way down and the switch is masked.
+##
+## A creature pacing an open doorway therefore does not chatter between the two
+## paths, and one walking behind a bulkhead crosses smoothly.
+func _drive_occlusion(delta: float) -> void:
+	if _loop_players.is_empty():
+		return
+	# Re-cast a few per frame, round-robin. Constant cost, whatever is alive.
+	for _i: int in mini(OCC_RAYS_PER_FRAME, _loop_players.size()):
+		_loop_cursor = (_loop_cursor + 1) % _loop_players.size()
+		var probe: AudioStreamPlayer3D = _loop_players[_loop_cursor]
+		if probe != null and is_instance_valid(probe) and probe.is_inside_tree():
+			_loop_target[_loop_cursor] = occlusion_at(probe.global_position)
+
+	var step: float = RoomAcoustics.OCCLUSION_SLEW * delta
+	var dead: Array[AudioStreamPlayer3D] = []
+	for i: int in _loop_players.size():
+		var player: AudioStreamPlayer3D = _loop_players[i]
+		if player == null or not is_instance_valid(player):
+			dead.append(player)
+			continue
+		_loop_occ[i] = move_toward(_loop_occ[i], _loop_target[i], step)
+		var occ: float = _loop_occ[i]
+		player.volume_db = _loop_base_db[i] + RoomAcoustics.OCCLUSION_DB * occ
+		var open: StringName = _loop_bus[i]
+		var shut: StringName = _occluded_bus(open)
+		if occ >= RoomAcoustics.OCCLUSION_ON and player.bus != shut:
+			player.bus = shut
+		elif occ <= RoomAcoustics.OCCLUSION_OFF and player.bus != open:
+			player.bus = open
+	for gone: AudioStreamPlayer3D in dead:
+		_untrack_loop(gone)
+
+
+# -------------------------------------------------------- instruments / API --
+
+## The measured space the ear is in right now. Read by the bench and the
+## selftest; never by the game.
+func current_space() -> Dictionary:
+	return _space.duplicate()
+
+
+## What is actually on the effects this frame, as opposed to what was asked for.
+## The difference between the two IS the transition, so both are readable.
+func live_reverb() -> Dictionary:
+	return {
+		"room_size": _live_size, "wet": _live_wet, "damping": _live_damp,
+		"predelay": _live_predelay, "spread": _live_spread,
+		"rt60": RoomAcoustics.rt60_for_size(_live_size),
+	}
+
+
+## Bench/selftest only: pin the acoustic to a named space regardless of where the
+## listener is, so an archetype can be measured without generating a layer that
+## happens to contain one. `RoomAcoustics.KIND_NONE` clears the pin.
+func force_space(kind: StringName, w: float, d: float, h: float) -> void:
+	if kind == RoomAcoustics.KIND_NONE:
+		_forced_space = {}
+	else:
+		_forced_space = RoomAcoustics._space(kind, w, d, h, -1)
+	_measure_clock = 0.0
+
+
+## Snap the eased mix straight onto the current target. The bench uses it so a
+## measurement is of the room and not of the 0.55 s ride into it.
+func settle_acoustics() -> void:
+	_space = _measure_space()
+	var want: Dictionary = RoomAcoustics.reverb_params(_space)
+	_live_size = float(want["room_size"])
+	_live_wet = float(want["wet"]) if room_reverb else 0.0
+	_live_damp = float(want["damping"])
+	_live_predelay = float(want["predelay"])
+	_live_spread = float(want["spread"])
+	if _verb_world == null:
+		return
+	_verb_world.room_size = _live_size
+	_verb_world.damping = _live_damp
+	_verb_world.wet = _live_wet
+	_verb_world.predelay_msec = _live_predelay
+	_verb_world.spread = _live_spread
+	_verb_creatures.room_size = _live_size
+	_verb_creatures.damping = _live_damp
+	_verb_creatures.wet = _live_wet * RoomAcoustics.CREATURE_WET_SCALE
+	_verb_creatures.predelay_msec = _live_predelay
+	_verb_creatures.spread = _live_spread
+
+
+## The player's toggle, same contract as the other setters in this file: write,
+## apply, persist.
+func set_room_reverb(on: bool) -> void:
+	room_reverb = on
+	_save_settings()
+
+
+## How many sustained sources are currently being tracked for occlusion. The perf
+## census prints it, so a measurement can say what it was measuring.
+func tracked_loop_count() -> int:
+	return _loop_players.size()

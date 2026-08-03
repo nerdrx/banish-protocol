@@ -163,6 +163,60 @@ func _eye_height() -> float:
 	return BODY_HEIGHT + 0.2
 
 
+# ================================================== M11 doctrine: THE PACK ===
+#
+# A Scrubber alone is a coward and always was — put a beam on it and it breaks.
+# What M11 gives it is the other half of that character: it is the crew's EARLY
+# WARNING SYSTEM, by virtue of screaming.
+#
+# The screech is the whole of this game's inter-creature communication (see
+# `Antivirus.screech`). A Scrubber that acquires the crew screams; the scream is
+# a real NoiseBus event at a real position with a real reach, so a Hound three
+# rooms away converges because it HEARD it. Nothing is shared, nothing is told —
+# which means the player hears the same event the Hound does, can learn what it
+# means, and can decide to delete the screamer inside the cooldown window before
+# it gets the chance. That is a genuine tactic that did not exist before.
+#
+# Senses: a wide, shallow cone at ankle height (it is knee-high and skittish, it
+# notices movement across a room and cannot make out what is at the far end of
+# one) and one room of hearing.
+
+func ai_kind() -> String:
+	return "scrubber"
+
+
+func sight_range() -> float:
+	return Balance.AI_SIGHT_SCRUBBER
+
+
+func sight_cone_deg() -> float:
+	return Balance.AI_CONE_SCRUBBER
+
+
+func hearing_rooms() -> int:
+	return Balance.AI_HEAR_ROOMS_SCRUBBER
+
+
+func _telegraph_sound(state: int) -> StringName:
+	match state:
+		Suspicion.State.CURIOUS:
+			return &"scrubber_chitter"
+		Suspicion.State.ALERT, Suspicion.State.LOST:
+			return &"scrubber_skitter"
+		Suspicion.State.HUNTING:
+			# The screech carries the HUNTING tell itself, so the ordinary alert
+			# would be a second sound saying the same thing 40 ms later.
+			return &""
+		_:
+			return &""
+
+
+## Doctrine. Acquiring the crew is the moment the pack becomes a pack.
+func _on_suspicion(_from: int, to: int) -> void:
+	if to == Suspicion.State.HUNTING:
+		screech()
+
+
 # ---------------------------------------------------------------- decisions --
 
 func _think() -> void:
@@ -192,26 +246,41 @@ func _think() -> void:
 			_think_flee(tick)
 
 
+## M11: the trigger is the LADDER, not a radius. Before this milestone the check
+## was `_nearest_player(26 m, false)` — a boolean that saw through walls, in the
+## dark, behind it. Now it stalks because it has become suspicious enough to, and
+## it becomes suspicious enough by SEEING (graded, occluded, modulated by how lit
+## you are) or by HEARING. Standing still in the dark with your beam off is now
+## something the game rewards.
 func _think_lurk(tick: float) -> void:
-	var prey: Node3D = _nearest_player(Balance.SCRUBBER_HEAR_RANGE, false)
-	if prey != null:
-		_target = prey
-		_last_seen = prey.global_position
+	if suspicion >= Suspicion.State.ALERT:
 		_enter(State.STALK)
 		return
 	if _alert_time > 0.0:
 		_enter(State.STALK)
 		return
+	if suspicion == Suspicion.State.CURIOUS:
+		# CURIOUS is a real, visible rung and not a fast path to STALK: it drifts
+		# toward whatever registered and looks, at a lurk's pace.
+		var look: Vector3 = hunt_goal()
+		if look != Vector3.INF:
+			_patrol = look
+			return
 
-	# Drift: a new loitering point every few seconds, inside the nest.
+	# Drift: a new loitering point every few seconds, inside the nest — or toward
+	# whatever region the Director is pressing on, if it has been given one.
 	_patrol_time -= tick
 	if _patrol_time <= 0.0 or global_position.distance_to(_patrol) < 1.5:
 		_patrol_time = _rng.randf_range(2.5, 5.0)
-		_patrol = _wander_point()
+		var pressed: Vector3 = drift_target()
+		_patrol = pressed if pressed != Vector3.INF and _rng.randf() < 0.5 \
+				else _wander_point()
 
 
 func _think_stalk() -> void:
-	var prey: Node3D = _nearest_player(Balance.SCRUBBER_LOSE_RANGE, false)
+	# The body it is entitled to swing at — non-null only while evidence is LIVE,
+	# so a Scrubber can never lunge at a memory.
+	var prey: Node3D = hunted_body()
 	if prey != null:
 		_target = prey
 		_last_seen = prey.global_position
@@ -221,19 +290,25 @@ func _think_stalk() -> void:
 		return
 
 	_target = null
-	# Nothing to chase: finish the trip to the last known position (or to the
-	# junction that pinged), then go back to lurking.
-	var goal: Vector3 = _alert_point if _alert_time > 0.0 else _last_seen
-	if global_position.distance_to(goal) < 3.0:
+	if suspicion == Suspicion.State.UNAWARE and _alert_time <= 0.0:
 		_enter(State.LURK)
+		return
+	# It has lost you but still believes: `hunt_goal` is now the search, so it
+	# checks the last-known position and then works outward. It only gives up when
+	# the ladder gives up, which is deliberately slow.
+	var goal: Vector3 = hunt_goal()
+	if goal == Vector3.INF:
+		goal = _alert_point if _alert_time > 0.0 else _last_seen
+		if global_position.distance_to(goal) < 3.0:
+			_enter(State.LURK)
 
 
 func _think_lunge() -> void:
 	if _recover_time > 0.0 or _lunge_time > 0.0:
 		return
-	var prey: Node3D = _nearest_player(Balance.SCRUBBER_LOSE_RANGE, false)
+	var prey: Node3D = hunted_body()
 	if prey == null:
-		_enter(State.LURK)
+		_enter(State.STALK if suspicion != Suspicion.State.UNAWARE else State.LURK)
 		return
 	_target = prey
 	_last_seen = prey.global_position
@@ -283,12 +358,15 @@ func _act(delta: float) -> void:
 		State.LURK:
 			_steer(_route_to(_patrol), Balance.SCRUBBER_LURK_SPEED * speed_scale, delta)
 		State.STALK:
-			var goal: Vector3 = _last_seen
-			if _target != null and is_instance_valid(_target):
-				goal = _target.global_position
-			elif _alert_time > 0.0:
-				goal = _alert_point
-			_steer(_route_to(goal), Balance.SCRUBBER_STALK_SPEED * speed_scale, delta)
+			# M11: the goal comes from the mind — the body while contact is live,
+			# the search target while it is not. The speed comes from the rung, so
+			# a searching Scrubber visibly moves differently from a hunting one and
+			# a player can read which is which across a dark room.
+			var goal: Vector3 = hunt_goal()
+			if goal == Vector3.INF:
+				goal = _alert_point if _alert_time > 0.0 else _last_seen
+			_steer(_route_to(goal),
+					Balance.SCRUBBER_STALK_SPEED * speed_scale * suspicion_speed(), delta)
 		State.LUNGE:
 			_act_lunge(delta)
 		State.FLEE:
@@ -392,13 +470,12 @@ func _on_hurt() -> void:
 	_hit()
 	_tell_crew(&"_hit")
 	# Being cut does not scare it off — only light does. It does make it commit:
-	# a hurt Scrubber that was lurking now knows exactly where you are.
+	# a hurt Scrubber that was lurking comes toward the shot. M11 routes that
+	# through the mind (`take_damage` fed a "pain" track at the origin of the
+	# wound), so what it commits to is a DIRECTION, not a person — it still has to
+	# come and look, and shooting from cover and moving genuinely works.
 	if state == State.LURK:
-		var prey: Node3D = _nearest_player(Balance.SCRUBBER_LOSE_RANGE, false)
-		if prey != null:
-			_target = prey
-			_last_seen = prey.global_position
-			_enter(State.STALK)
+		_enter(State.STALK)
 
 
 ## Sent by `_tell_crew`, so the host runs its own copy directly rather than

@@ -269,6 +269,7 @@ func join_steam(lobby_id: int) -> Error:
 
 func _on_steam_lobby_created(lobby_id: int) -> void:
 	var peer: SteamMultiplayerPeer = SteamMultiplayerPeer.new()
+	_demand_server_relay(peer)
 	var err: int = peer.host_with_lobby(lobby_id)
 	if err != OK:
 		var reason: String = "STEAM PEER REFUSED TO HOST (%s)" % error_string(err as Error)
@@ -286,6 +287,7 @@ func _on_steam_lobby_entered(lobby_id: int) -> void:
 		return  # our own lobby coming back at us as the owner.
 	_steam_joining = false
 	var peer: SteamMultiplayerPeer = SteamMultiplayerPeer.new()
+	_demand_server_relay(peer)
 	var err: int = peer.connect_to_lobby(lobby_id)
 	if err != OK:
 		var reason: String = "COULD NOT REACH THE HOST (%s)" % error_string(err as Error)
@@ -315,6 +317,42 @@ func _on_steam_lobby_failed(reason: String) -> void:
 func _connect_steam_once(sig: Signal, target: Callable) -> void:
 	if not sig.is_connected(target):
 		sig.connect(target, CONNECT_ONE_SHOT)
+
+
+## THE ONE THING THE TWO TRANSPORTS DO NOT AGREE ABOUT.
+##
+## `ENetMultiplayerPeer` relays through the server by default: a client hands the
+## host a packet addressed to another client and the host forwards it. Every
+## client therefore learns about every other client, and any client-to-client
+## traffic — the path caches and pose streams Godot's replication runs on, as
+## well as our own RPCs — travels whether or not those two machines could ever
+## reach each other directly.
+##
+## `SteamMultiplayerPeer` is a LOBBY MESH. Every member opens a Steam networking
+## connection to every other member, and the addon exposes `server_relay` as a
+## switch we have never touched. If it is off, two clients can only exchange
+## anything if their own direct link came up — and two players behind
+## unco-operative NATs are exactly the pair whose link does not. The symptom that
+## produces is not a disconnect and not a missing name on the roster: it is one
+## crewmate who cannot see one specific other crewmate move, while everybody
+## else looks fine. **That is the shape of the report we got, and it is a shape
+## our ENet testing cannot produce**, because ENet relays unconditionally.
+##
+## So we ask for it explicitly rather than inheriting a default we do not
+## control, and we say so in the log — a Steam session that could not turn it on
+## is a session where a four-player crew is one bad NAT away from the bug, and
+## whoever reads that log next should know which topology they were on.
+##
+## Guarded by `has_method` on purpose: the addon is a committed binary that gets
+## updated, and a hardening that turns into a crash on the next GodotSteam bump
+## is worse than the thing it hardens.
+func _demand_server_relay(peer: MultiplayerPeer) -> void:
+	if not peer.has_method("set_server_relay"):
+		push_warning("[Net] steam peer has no server_relay switch; "
+				+ "client-to-client traffic depends on direct P2P links")
+		return
+	peer.call("set_server_relay", true)
+	print("[Net] steam peer: server relay requested")
 
 
 ## Everything a host does once it has a working peer, whichever transport made it.
@@ -547,6 +585,78 @@ func get_player(id: int) -> Node:
 	if root == null:
 		return null
 	return root.get_node_or_null(str(id))
+
+
+## **DOES THIS PEER HAVE A WORLD TO REPLICATE INTO?** The single authoritative
+## answer, for every system that has to decide whether it is safe to stream
+## something at somebody.
+##
+## Creature synchronizers are the only caller today (`Antivirus._peer_has_world`)
+## and they used to ask `Net.crew.has(peer_id)` directly. The roster was standing
+## in for the real question — "is that peer's layer scene up?" — because when the
+## filter was written a peer could be connected before its scene existed.
+##
+## **That has not been true since the join-race fix at the top of this file.** A
+## joining client builds its peer, loads `layer.tscn`, and only hands the peer to
+## the engine from `world_ready()` — so by construction the socket does not exist
+## until the layer and the spawner do. **Any peer the transport can see already
+## has a world.** The roster is now the stricter of two correct answers, and
+## strictness here is not free.
+##
+## ## Why it fails OPEN
+##
+## The blast radius of a wrong "no" is not a cosmetic one. A peer this returns
+## false for is streamed NO CREATURE STATE AT ALL: every antivirus in the
+## building freezes in that player's world, in exactly the pose it had when they
+## joined. They are not told, nothing is logged, and the rest of the crew sees a
+## perfectly normal layer. From that seat the game reads as
+## **"the enemies only respond to the host"** — which is a sentence from a real
+## playtest report, and a game that cannot be played.
+##
+## The blast radius of a wrong "yes" is one wasted packet at
+## `Balance.ANTIVIRUS_SYNC_INTERVAL` to a peer that will drop it.
+##
+## Those are not comparable, so this asks the roster first and the transport
+## second, and a peer the transport admits to is given the benefit of the doubt.
+## A player who briefly receives an extra synchronizer is not in a broken game; a
+## player who cannot see the monster is.
+##
+## Host-side: this is evaluated by the synchronizer's authority, which for a
+## creature is always the host, so "the roster" here means the host's roster —
+## the authoritative one.
+func peer_has_world(peer_id: int) -> bool:
+	if peer_id == Debug.crew_hole and Debug.crew_hole != 0:
+		# Instrument only (`--crew-hole`): punches this peer out of the ROSTER's
+		# answer without touching the transport, which is the one way to stage a
+		# stale/partial roster on ENet — where the server's unconditional relay
+		# otherwise makes it unreachable. See the crew-sync section of debug.gd.
+		pass
+	elif crew.has(peer_id):
+		return true
+	if not multiplayer.has_multiplayer_peer():
+		return true  # solo / editor: there is nobody to be wrong about.
+	return multiplayer.get_peers().has(peer_id)
+
+
+## Every crewmate avatar THIS peer actually has standing in its tree, by peer id.
+##
+## Deliberately not `crew.keys()`: the roster is what the host says the session
+## is, and this is what the local scene tree can prove. The gap between the two
+## is exactly the "I cannot see one of my crewmates" failure, so the harness
+## needs both numbers separately or it cannot tell a roster bug from a spawn bug.
+func spawned_players() -> Array[int]:
+	var ids: Array[int] = []
+	if _spawner == null or not is_instance_valid(_spawner):
+		return ids
+	var root: Node = _spawner.get_node_or_null(_spawner.spawn_path)
+	if root == null:
+		return ids
+	for child: Node in root.get_children():
+		var value: int = String(child.name).to_int()
+		if value != 0:
+			ids.append(value)
+	ids.sort()
+	return ids
 
 
 func _spawn_point(index: int) -> Transform3D:

@@ -87,6 +87,83 @@ func _eye_height() -> float:
 	return BODY_HEIGHT - 0.4
 
 
+# ====================================== M11 doctrine: THE METHODICAL SWEEPER ==
+#
+# The Auditor's identity is that it CANNOT BE SURPRISED, and the M6 way of saying
+# so was to give it no senses at all: `alert()` was a no-op and it never looked at
+# anybody. That reads as scheduled rather than methodical — a thing on rails, not
+# a thing doing a job — and the tell was that a crew could stand in the room it
+# was walking into, in the light, and it would arrive, inspect and leave without
+# ever appearing to have noticed them.
+#
+# M11 gives it senses and denies it REACTIONS, which is a different and much
+# better creature. It perceives; it just never chases, never hurries and never
+# leaves its route. What evidence buys is one thing only: the room the evidence
+# came from is moved to the FRONT of the route, so an audit that hears you re-
+# orders itself toward you and then proceeds at exactly the same pace.
+#
+# So it is still the hunter you can route around — you always know where it will
+# be next, because it tells you by walking there — and it is no longer a thing
+# that ignores you to your face. `reacts_to_suspicion` is false, which is what
+# keeps the ladder from ever making it run.
+
+func ai_kind() -> String:
+	return "auditor"
+
+
+func sight_range() -> float:
+	return Balance.AI_SIGHT_AUDITOR
+
+
+func sight_cone_deg() -> float:
+	return Balance.AI_CONE_AUDITOR
+
+
+func hearing_rooms() -> int:
+	return Balance.AI_HEAR_ROOMS_AUDITOR
+
+
+## It has the schedule. Nothing on the ladder makes it deviate from the route —
+## the only thing evidence changes is the ORDER of the route, in `_on_suspicion`.
+func reacts_to_suspicion() -> bool:
+	return false
+
+
+## Its tells are deliberately the quietest in the game and never urgent: an audit
+## that got excited would be a different creature. The scan tone when it decides
+## something is worth a look, and nothing at all for the rest of the ladder.
+func _telegraph_sound(state: int) -> StringName:
+	if state == Suspicion.State.ALERT or state == Suspicion.State.HUNTING:
+		return &"sentinel_scan"
+	return &""
+
+
+## THE RE-ORDER. Evidence promotes its room to the next stop on the route and
+## does nothing else — no speed change, no pursuit, no state outside WALK and
+## INSPECT. The audit is coming to you now instead of in four rooms' time, which
+## is dread you can watch approaching rather than a creature that lunged.
+func _on_suspicion(_from: int, to: int) -> void:
+	if to != Suspicion.State.ALERT and to != Suspicion.State.HUNTING:
+		return
+	if _route.is_empty() or memory.lkp_room < 0:
+		return
+	var wanted: int = memory.lkp_room
+	# Never the sanctuary: a backdoor room is sacred and an audit does not enter
+	# one, whatever it thinks it heard in there (DESIGN.md mercy layer).
+	if graph != null and graph.is_backdoor and wanted == graph.shaft_index:
+		return
+	var at: int = _route.find(wanted)
+	if at < 0 or at == _route_index % _route.size():
+		return
+	_route.remove_at(at)
+	_route.insert(_route_index % maxi(_route.size() + 1, 1), wanted)
+	_struck_this_inspect = false
+	_enter(State.WALK)
+	if Debug.log_ai:
+		print("[AI] auditor %d re-ordered its route toward %s" % [
+			slot_index, graph.room_name(wanted) if graph != null else str(wanted)])
+
+
 func aim_point() -> Vector3:
 	return global_position + Vector3.UP * (BODY_HEIGHT * 0.55)
 
@@ -192,6 +269,10 @@ func _think() -> void:
 				_enter(State.INSPECT)
 		State.INSPECT:
 			_inspect_time -= tick
+			# M11b: THE INDEX. The scan runs while it inspects — being in the room
+			# when the audit arrives is the danger, and now being in the CONE when
+			# it arrives is a different and worse one.
+			_tick_index(tick)
 			# Cache who to turn toward at the AI tick, so `_act` never re-scans the
 			# crew every physics frame just to face them.
 			_face_target = _nearest_player(Balance.AUDITOR_STRIKE_RANGE + 3.0, false)
@@ -208,6 +289,100 @@ func _think() -> void:
 			_strike_time -= tick
 			if _strike_time <= 0.0:
 				_enter(State.INSPECT)
+
+
+# ------------------------------------------------ M11b: THE INDEX ----------
+#
+# The Auditor's signature move is not an attack. It FILES you.
+#
+# Stand in its inspection cone — narrow, forward, twelve metres — for the whole
+# of `AI_MARK_SCAN_TIME` and the scan completes and marks your process. It does no
+# damage. It cannot kill you. What it does is make you READABLE: a marked agent
+# is perceived as brightly lit by every process on the ring for forty-five
+# seconds, whether or not their beam is on.
+#
+# That is the most frightening thing this creature could possibly do, because it
+# is the exact inverse of the game's one reliable defence. Going dark stops
+# working. You have been indexed, and the layer can see you until it wears off.
+# It also does what the brief asked for and what an attack cannot: it CHANGES THE
+# LAYER, and it feels like being processed rather than hit.
+#
+# Counter, and it is completely fair: walk out of the cone. The cone is narrow,
+# it does not track you, the Auditor never chases, the scan is announced when it
+# starts and progress is on the creature's own core, and the mark expires on its
+# own and on descent.
+
+var _scan_hold: float = 0.0
+var _scan_peer: int = -1
+## Streamed 0..1 so the crew can watch the bar fill on any screen.
+var sync_scan: float = 0.0
+
+
+func _extra_sync_properties() -> Array[String]:
+	var out: Array[String] = super()
+	out.append(".:sync_scan")
+	return out
+
+
+## Host-side, from `_think` while inspecting. Whoever is standing in the cone.
+func _tick_index(tick: float) -> void:
+	var limit: float = cos(deg_to_rad(Balance.AI_MARK_CONE_DEG))
+	var facing: Vector3 = Vector3(-sin(rotation.y), 0.0, -cos(rotation.y))
+	var caught: Player = null
+	for body: Node3D in _running_players():
+		var player: Player = body as Player
+		if player == null:
+			continue
+		var to_body: Vector3 = player.global_position - global_position
+		to_body.y = 0.0
+		var distance: float = to_body.length()
+		if distance > Balance.AI_MARK_RANGE or distance < 0.01:
+			continue
+		if (to_body / distance).dot(facing) < limit:
+			continue
+		if not _has_los(player):
+			continue
+		caught = player
+		break
+
+	if caught == null:
+		# Stepped out. The scan does not resume where it left off — leaving the
+		# cone genuinely beats it, rather than merely pausing it.
+		_scan_hold = 0.0
+		_scan_peer = -1
+		sync_scan = 0.0
+		return
+
+	if caught.peer_id != _scan_peer:
+		_scan_peer = caught.peer_id
+		_scan_hold = 0.0
+		Audio.play_3d(&"sentinel_scan", global_position)
+		Captions.emit(&"hunter_audit", global_position, 26.0)
+		_tell_crew(&"_audit_windup_fx")
+	if Haunt.is_marked(caught.peer_id):
+		return
+	_scan_hold += tick
+	sync_scan = clampf(_scan_hold / Balance.AI_MARK_SCAN_TIME, 0.0, 1.0)
+	if _scan_hold < Balance.AI_MARK_SCAN_TIME:
+		return
+	_scan_hold = 0.0
+	sync_scan = 0.0
+	Haunt.mark_agent(caught.peer_id)
+	_index_fx()
+	_tell_crew(&"_index_fx")
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _audit_windup_fx() -> void:
+	Audio.play_3d(&"sentinel_scan", global_position)
+	Captions.emit(&"hunter_audit", global_position, 26.0)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _index_fx() -> void:
+	Audio.play_3d(&"sentinel_alarm", global_position)
+	Captions.emit(&"hunter_marked", global_position, 40.0)
+	Fx.pulse_ring(global_position, Balance.AI_MARK_RANGE * 0.5, AUDIT_COLOUR, 0.6)
 
 
 func _advance_route() -> void:

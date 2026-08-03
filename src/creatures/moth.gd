@@ -75,6 +75,288 @@ func _eye_height() -> float:
 	return HOVER_HEIGHT
 
 
+# ============================================== M11 doctrine: THE AMBUSHER ===
+#
+# The Moth was already the one creature whose sense was interesting — it hunts
+# LIGHT — and M11 does not touch that sense. What it was missing was what to do
+# when the light goes out, and the answer it had was "wander, then leave", which
+# taught the player exactly one thing and then stopped being a creature.
+#
+# The doctrine: it does not chase, it INTERCEPTS. When it loses the light it goes
+# to the nearest light SOURCE it knows about and waits there. The crew's own
+# fixtures become the ambush points; the flare somebody threw for safety is now a
+# thing with a Moth circling it; and the corridor with the working work-light in
+# it is a corridor you have to think about crossing.
+#
+# The dilemma DESIGN.md wanted — "kill it quickly or go dark and hide" — gets its
+# missing third horn: going dark works, and it costs you the lit routes, because
+# that is where the Moth is waiting.
+
+var _ambush: Vector3 = Vector3.INF
+var _ambush_time: float = 0.0
+
+# ------------------------------------------- M11b: THE CEILING DIVE ---------
+#
+# The one creature in the game that owns the vertical, finally using it as a
+# weapon rather than as a place to patrol.
+#
+# It breaks off, CLIMBS out of your beam into the dark of the ceiling, hangs
+# there, and comes straight down on you.
+#
+# THE TELL IS THE CLIMB. A Moth leaving your light is not a Moth losing interest
+# — it is a Moth getting above you, and the hang at the top is three quarters of
+# a second of it sitting still in the one place a beam can still find it. So the
+# counter is the thing the game has been teaching since M6.6: LOOK UP. Shoot it
+# out of the air and the dive never happens; step aside and it hits the deck.
+#
+# Committed straight down, so it is dodgeable by one player with no crewmate; it
+# staggers and costs under a quarter of a bar; and it cannot chain, because the
+# cooldown is twelve seconds and the climb has to happen again.
+enum Dive { NONE, CLIMB, HANG, FALL }
+
+var _dive: Dive = Dive.NONE
+var _dive_clock: float = 0.0
+var _dive_cooldown: float = 0.0
+var _dive_at: Vector3 = Vector3.ZERO
+var _dive_apex: float = 0.0
+var _dive_struck: bool = false
+## Streamed so the climb reads as a wind-up on every screen rather than as the
+## host's Moth wandering off.
+var sync_dive: int = 0
+
+
+func _extra_sync_properties() -> Array[String]:
+	var out: Array[String] = super()
+	out.append(".:sync_dive")
+	return out
+
+
+func diving() -> bool:
+	return _dive != Dive.NONE
+
+
+## Host-side. Considered before the ordinary state machine.
+func _consider_dive(tick: float) -> void:
+	_dive_cooldown = maxf(_dive_cooldown - tick, 0.0)
+	if _dive != Dive.NONE:
+		_advance_dive(tick)
+		return
+	if _dive_cooldown > 0.0:
+		return
+	var prey: Node3D = _light_body as Node3D
+	if prey == null or not is_instance_valid(prey) or prey is ForkDecoy:
+		return
+	var gap: float = prey.global_position.distance_to(global_position)
+	if gap > Balance.AI_DIVE_RANGE:
+		return
+	# It needs real air above it. In a low bus hall there is no dive, which is
+	# correct: the move belongs to the tall rooms, and a crew that fights a Moth
+	# under a low ceiling has chosen its ground well.
+	var apex: float = _ceiling_here()
+	if apex - prey.global_position.y < Balance.AI_DIVE_MIN_HEIGHT:
+		return
+	_dive = Dive.CLIMB
+	sync_dive = int(Dive.CLIMB)
+	_dive_clock = Balance.AI_DIVE_CLIMB_TIME
+	_dive_cooldown = Balance.AI_DIVE_COOLDOWN
+	_dive_apex = apex
+	_dive_struck = false
+	Audio.play_3d(&"scrubber_alert", global_position)
+	Captions.emit(&"hunter_dive", global_position, 30.0)
+	_tell_crew(&"_dive_windup_fx")
+
+
+func _advance_dive(tick: float) -> void:
+	_dive_clock -= tick
+	if _dive_clock > 0.0:
+		return
+	match _dive:
+		Dive.CLIMB:
+			_dive = Dive.HANG
+			_dive_clock = Balance.AI_DIVE_HANG
+			# It commits to the point on the deck under whoever it was lit by,
+			# AT THE MOMENT IT COMMITS. Everything after is a straight fall to a
+			# spot, which is the whole of why stepping aside works.
+			var prey: Node3D = _light_body as Node3D
+			_dive_at = prey.global_position if prey != null and is_instance_valid(prey) \
+					else global_position
+			_dive_at.y = maxf(_dive_at.y, 0.0)
+		Dive.HANG:
+			_dive = Dive.FALL
+			_dive_clock = 2.0
+		Dive.FALL:
+			_end_dive()
+	sync_dive = int(_dive)
+
+
+func _act_dive(delta: float) -> void:
+	match _dive:
+		Dive.CLIMB, Dive.HANG:
+			# Straight up, out of the beam, and then perfectly still. The stillness
+			# is the tell and it is also the shot.
+			var above: Vector3 = Vector3(global_position.x, _dive_apex, global_position.z)
+			_hover_to(above, Balance.MOTH_SURGE_SPEED, delta)
+		Dive.FALL:
+			var to_floor: Vector3 = _dive_at - global_position
+			velocity = to_floor.normalized() * Balance.AI_DIVE_SPEED
+			move_and_slide()
+			if not _dive_struck:
+				for body: Node3D in _running_players():
+					if body.global_position.distance_to(global_position) > Balance.MOTH_STRIKE_RANGE:
+						continue
+					_dive_struck = true
+					_land_hit(body, Balance.AI_DIVE_DAMAGE)
+					break
+			if global_position.distance_to(_dive_at) < 1.2 or _dive_struck:
+				_impact_dive()
+				_end_dive()
+
+
+func _impact_dive() -> void:
+	_dive_fx()
+	_tell_crew(&"_dive_fx")
+
+
+func _end_dive() -> void:
+	_dive = Dive.NONE
+	sync_dive = 0
+	_dive_clock = 0.0
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _dive_windup_fx() -> void:
+	Audio.play_3d(&"scrubber_alert", global_position)
+	Captions.emit(&"hunter_dive", global_position, 30.0)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _dive_fx() -> void:
+	Audio.play_3d(&"scrubber_lunge", global_position)
+	Fx.impact(global_position, Vector3.UP, EYE_COLOUR, 1.0)
+	Fx.land_dust(global_position, 1)
+
+
+## A stagger cancels a dive at any point in it, including mid-fall — the crew's
+## answer to the move, and it must not be special-cased away.
+func _on_staggered() -> void:
+	if diving():
+		_end_dive()
+
+
+func ai_kind() -> String:
+	return "moth"
+
+
+func sight_range() -> float:
+	return Balance.AI_SIGHT_MOTH
+
+
+func sight_cone_deg() -> float:
+	return Balance.AI_CONE_MOTH
+
+
+## Deaf, and that is the character. Every other process in the game can be lured
+## with a kicked can; the Moth cannot be lied to by sound at all, only by light —
+## so going quiet does nothing for you and going dark does everything.
+func hearing_rooms() -> int:
+	return Balance.AI_HEAR_ROOMS_MOTH
+
+
+func _telegraph_sound(state: int) -> StringName:
+	match state:
+		Suspicion.State.HUNTING:
+			return &"scrubber_alert"
+		Suspicion.State.ALERT, Suspicion.State.LOST, Suspicion.State.CURIOUS:
+			return &"scrubber_chitter"
+		_:
+			return &""
+
+
+## The ambush points: every light source it can currently sense, at hover height.
+## Deliberately REPLACES the base's geometric candidates rather than extending
+## them — a Moth does not check behind crates, it goes and sits on the lamps. That
+## substitution is the single clearest way the four doctrines read differently
+## when the same scenario is run against each of them.
+func _search_candidates(kinds: Array[String]) -> Array[Vector3]:
+	var spots: Array[Vector3] = []
+	for node: Node in get_tree().get_nodes_in_group("flares"):
+		var flare: Flare = node as Flare
+		if flare == null or not is_instance_valid(flare) or not flare.is_burning():
+			continue
+		spots.append(flare.global_position + Vector3.UP * HOVER_HEIGHT)
+		kinds.append("light")
+	for node: Node in get_tree().get_nodes_in_group("work_lights"):
+		var fixture: Node3D = node as Node3D
+		if fixture == null or not is_instance_valid(fixture):
+			continue
+		if fixture.global_position.distance_to(global_position) > Balance.MOTH_LIGHT_RANGE * 1.5:
+			continue
+		spots.append(Vector3(fixture.global_position.x, HOVER_HEIGHT,
+				fixture.global_position.z))
+		kinds.append("light")
+	if spots.is_empty():
+		# No lamps at all in reach: fall back to the ordinary geometry so a Moth on
+		# a wholly dark ring still searches rather than freezing. It is a worse
+		# searcher than the Hound, which is correct — it is not a tracker.
+		return super(kinds)
+	return spots
+
+
+func _on_suspicion(_from: int, to: int) -> void:
+	if to == Suspicion.State.LOST:
+		# The light went out. Go to the nearest lamp and WAIT.
+		_ambush = _nearest_light_source()
+		_ambush_time = Balance.AI_MOTH_AMBUSH_TIME
+	elif to == Suspicion.State.HUNTING or to == Suspicion.State.UNAWARE:
+		_ambush = Vector3.INF
+		_ambush_time = 0.0
+
+
+## THE MOTH'S SENSE, fed into the shared mind.
+##
+## Its sensorium is not a cone and reaches twice as far as one — it is "the
+## brightest thing within 34 metres" — so it comes in through `_sense_extra`
+## rather than pretending to be sight. What matters is that it goes through
+## `mind.feed` like everything else: the strength is the light weight it already
+## computed, so a Moth becomes certain about a lit crewmate quickly and about a
+## flare on the floor never (a flare has no body, so it produces belief about a
+## PLACE and the Moth still has to find whoever is standing near it).
+func _sense_extra(delta: float, fed: Dictionary) -> void:
+	var light: Dictionary = _brightest_light(Balance.MOTH_LIGHT_RANGE)
+	if not bool(light["valid"]):
+		mind.last_sight = 0.0
+		return
+	var weight: float = clampf(float(light["weight"]), 0.0, 1.0)
+	mind.last_sight = maxf(mind.last_sight, weight)
+	var body: Node3D = light["body"]
+	var key: String = String(body.name) if body != null and is_instance_valid(body) \
+			else "light"
+	if mind.feed(key, weight, light["pos"], "light", delta, body):
+		fed[key] = true
+		if graph != null:
+			memory.mark_seen(light["pos"], graph.region_of(light["pos"]))
+
+
+## The nearest thing in the world that emits light, at hover height, or INF.
+func _nearest_light_source() -> Vector3:
+	var best: Vector3 = Vector3.INF
+	var best_distance: float = INF
+	for group: String in ["flares", "work_lights"]:
+		for node: Node in get_tree().get_nodes_in_group(group):
+			var source: Node3D = node as Node3D
+			if source == null or not is_instance_valid(source):
+				continue
+			var flare: Flare = source as Flare
+			if flare != null and not flare.is_burning():
+				continue
+			var distance: float = source.global_position.distance_to(global_position)
+			if distance < best_distance:
+				best_distance = distance
+				best = Vector3(source.global_position.x, maxf(source.global_position.y,
+						HOVER_HEIGHT), source.global_position.z)
+	return best
+
+
 func aim_point() -> Vector3:
 	return global_position + Vector3.UP * 0.2
 
@@ -159,19 +441,37 @@ func _think() -> void:
 		_light_body = null
 		_dark_time += tick
 
+	# M11: the ambush clock. It is only ever running in LOST, and it is what turns
+	# "the light went out" from an exit into a threat.
+	if _ambush_time > 0.0:
+		_ambush_time -= tick
+
+	# M11b: the CEILING DIVE owns the creature for its whole arc.
+	_consider_dive(tick)
+	if diving():
+		return
+
 	match state:
 		State.DRIFT:
 			if _light_weight > 0.0:
 				_enter(State.SURGE)
-			elif _dark_time >= Balance.MOTH_DARK_GIVEUP_TIME:
-				# Nothing to come to for long enough: it gives up the layer. Going
-				# dark genuinely loses a Moth.
+			elif _ambush != Vector3.INF and _ambush_time > 0.0:
+				# HOLDING THE LAMP. It does not wander and it does not leave: it
+				# sits on the nearest light source and waits for somebody to walk
+				# into it. `_act` flies it there; there is nothing else to decide.
+				pass
+			elif _dark_time >= Balance.MOTH_DARK_GIVEUP_TIME and _ambush_time <= 0.0:
+				# Nothing to come to for long enough, and the ambush has expired: it
+				# gives up the layer. Going dark still genuinely loses a Moth —
+				# M11 makes it take an ambush's worth of patience longer.
 				slink_away()
 			else:
 				_patrol_time -= tick
 				if _patrol_time <= 0.0 or global_position.distance_to(_patrol) < 2.0:
 					_patrol_time = _rng.randf_range(2.0, 4.0)
-					_patrol = _wander_point()
+					var pressed: Vector3 = drift_target()
+					_patrol = pressed if pressed != Vector3.INF and _rng.randf() < 0.4 \
+							else _wander_point()
 		State.SURGE:
 			if _light_weight <= 0.0:
 				_enter(State.DRIFT)
@@ -200,9 +500,18 @@ func _enter(next: State) -> void:
 # ------------------------------------------------------------------ movement --
 
 func _act(delta: float) -> void:
+	if diving():
+		_act_dive(delta)
+		return
 	match state:
 		State.DRIFT:
-			_hover_to(_route_to_air(_patrol), Balance.MOTH_DRIFT_SPEED, delta)
+			# The ambush point wins over the patrol while the clock runs: a waiting
+			# Moth is a stationary shape hanging over a lamp, which is a much worse
+			# thing to walk under than one bumbling around the room.
+			var goal: Vector3 = _patrol
+			if _ambush != Vector3.INF and _ambush_time > 0.0:
+				goal = _ambush
+			_hover_to(_route_to_air(goal), Balance.MOTH_DRIFT_SPEED, delta)
 		State.SURGE:
 			_hover_to(_route_to_air(_light_pos), Balance.MOTH_SURGE_SPEED, delta)
 		State.STRIKE:
@@ -363,7 +672,11 @@ func _brightest_light(range_limit: float) -> Dictionary:
 		if d > range_limit:
 			continue
 		var lit: float = maxf(1.0 if player.sync_beam else 0.0,
-				Haunt.muzzle_light(int(String(player.name))))
+				# PT-MULTI: `player.peer_id`, not `int(String(player.name))`. The
+				# node name happens to be the peer id today; deriving identity from
+				# it is the fragile spelling the multiplayer audit flagged, and a
+				# rename anywhere would have quietly pointed this at peer 0.
+				Haunt.muzzle_light(player.peer_id))
 		if lit <= 0.0:
 			continue
 		var w: float = lit * clampf(1.0 - d / range_limit, 0.0, 1.0)

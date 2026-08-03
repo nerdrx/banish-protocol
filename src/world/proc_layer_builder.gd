@@ -190,6 +190,13 @@ func _build_content() -> void:
 	# generator has to know about it before it stamps either.
 	_plan_excavations()
 
+	# M10b SIGNAGE: hand the kit the names the GRAPH gives these rooms, before the
+	# shells go up, exactly like the apertures and the excavations above. The kit
+	# stencils the designation beside the door and only the graph knows the word —
+	# see GeometryKit._room_designation.
+	for room: Dictionary in graph.rooms:
+		room_designations[int(room["index"])] = graph.room_name(int(room["index"]))
+
 	_rects.resize(graph.rooms.size())
 	for room: Dictionary in graph.rooms:
 		_rects[int(room["index"])] = kit_room(room)
@@ -1016,8 +1023,25 @@ func _baseboard_run(axis: String, fixed: float, from: float, to: float,
 func _trim_at(module: String, pos: Vector3, yaw_deg: float) -> void:
 	if not _trim_batches.has(module):
 		_trim_batches[module] = [] as Array[Transform3D]
+	# M10 Z-FIGHT: stood ZFIGHT_STANDOFF proud of the boundary it was placed on.
+	#
+	# The baseboard profile runs from 155 to 252 mm out of the wall plane and the
+	# kit's wall modules present faces at 200, 220, 355 and 465 mm — so a
+	# 4 m skirting laid exactly on the boundary shares a plane with whichever
+	# module happens to be above it, along the whole length of the run, at the
+	# bottom of every wall in the game. `--auditz` found ~1,800 of these across
+	# the seed matrix and it is the single most-seen surface pair on a layer.
+	# Six millimetres out is what a real skirting board does anyway.
+	#
+	# It is also SUNK the same 6 mm rather than lifted. The profile has a step at
+	# its own y=0 which shared a plane with the bottom of every wall module above
+	# it; pushing the trim UP would clear that and open a shadow gap under the
+	# skirting, so it goes down instead and the step buries itself in the slab.
+	var normal: Vector3 = Vector3(sin(deg_to_rad(yaw_deg)), 0.0, cos(deg_to_rad(yaw_deg)))
 	(_trim_batches[module] as Array[Transform3D]).append(
-			Transform3D(Basis.from_euler(Vector3(0.0, deg_to_rad(yaw_deg), 0.0)), pos))
+			Transform3D(Basis.from_euler(Vector3(0.0, deg_to_rad(yaw_deg), 0.0)),
+					pos + normal * ZFIGHT_STANDOFF
+							- Vector3(0.0, ZFIGHT_STANDOFF, 0.0)))
 
 
 ## Flush the collected trim into one MultiMeshInstance3D per module. The trim mesh
@@ -1395,6 +1419,15 @@ func _scatter_blocks(room: Dictionary, count: int, min_size: float, max_size: fl
 	var rect: Rect2 = _rect_of(room)
 	var centre: Vector2 = rect.position + rect.size * 0.5
 
+	# Where blocks have already landed in THIS room, so two of them cannot be
+	# dropped in the same place. `--auditz` found pairs of 2.2 x 2.5 x 1.0 blocks
+	# occupying one footprint — six coincident faces, 1.56 m2 of them, the worst
+	# fight on the layer that a player can walk up to and touch. Rejection happens
+	# after every draw is taken, exactly like `_blocks_a_prop` below and for the
+	# same reason: shortening the RNG stream moves every crate, tap and Sentinel
+	# post further down the layer.
+	var laid: Array[Dictionary] = []
+
 	for i: int in count:
 		var s: float = _rng.randf_range(min_size, max_size)
 		var x: float = _rng.randf_range(rect.position.x + 2.4, rect.end.x - 2.4)
@@ -1411,6 +1444,19 @@ func _scatter_blocks(room: Dictionary, count: int, min_size: float, max_size: fl
 		var yaw: float = _rng.randf_range(-0.7, 0.7)
 		if _blocks_a_prop(Vector3(x, 0.0, z)):
 			continue
+		var clash: bool = false
+		for other: Dictionary in laid:
+			# Centre distance against the sum of the two half-diagonals: the blocks
+			# are yawed, so a plain axis-aligned test would let two of them
+			# interpenetrate at 45 degrees, which is the case that produced the
+			# coincident pairs in the first place.
+			var reach: float = (s + float(other["size"])) * 0.71
+			if Vector2(x, z).distance_to(other["at"] as Vector2) < reach:
+				clash = true
+				break
+		if clash:
+			continue
+		laid.append({"at": Vector2(x, z), "size": s})
 		_data_block(Vector3(x, 0.0, z), Vector3(s, s * height, s), yaw)
 
 

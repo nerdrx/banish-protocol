@@ -88,6 +88,197 @@ func _eye_height() -> float:
 	return BODY_HEIGHT * 0.6
 
 
+# =============================================== M11 doctrine: THE TRACKER ===
+#
+# The Hound's identity is that it follows a TRAIL. Before M11 "it hears" meant
+# `_nearest_player(30 m, require_los=false)` — an omniscient radius that made the
+# creature simultaneously unfair (it knew where you were through a slab) and
+# stupid (it walked straight at you, so once you learned that, it was solved).
+#
+# Now: nearly blind, excellent ears, and — the doctrine proper — when it loses
+# you it does not go to the last-known position and give up. It walks the crew's
+# NOISE HISTORY, newest first, through `NoiseBus.recent`. Every siphon you tapped,
+# every burst of breaker fire, every hard landing is a place it will go and check,
+# in order. That is what "relentless, will not be shaken by distance alone" is
+# supposed to feel like, and it is why going quiet — not going far — is the
+# counter. You cannot out-run a Hound. You can stop being the loudest room.
+
+func ai_kind() -> String:
+	return "hound"
+
+
+## Poor eyes. THE dossier fact ("HEARING. EXCELLENT. THE ONLY ONE IT HAS.") given
+## teeth: at nine metres and forty-five degrees it will walk past an unlit
+## crewmate standing still, and still arrive at the noise they made a minute ago.
+func sight_range() -> float:
+	return Balance.AI_SIGHT_HOUND
+
+
+func sight_cone_deg() -> float:
+	return Balance.AI_CONE_HOUND
+
+
+func hearing_rooms() -> int:
+	return Balance.AI_HEAR_ROOMS_HOUND
+
+
+# ------------------------------- M11b: THE CHARGE and THE SUMMONING HOWL ----
+#
+# Two moves, and they are the same doctrine at two ranges.
+#
+# THE CHARGE closes distance. A corridor stops being an escape route: from up to
+# seventeen metres it plants, growls, and runs you down in a straight committed
+# line at more than twice a sprint. Counter: it runs at where you WERE when it
+# launched, so it is side-steppable — the exact skill a Scrubber lunge already
+# taught, at a longer range and a higher price for missing it. Miss and it
+# overshoots into a real recovery window, which is the crew's opening and the
+# solo player's second chance.
+#
+# THE HOWL is the diegetic half. It was already the Hound's spawn announce; M11b
+# makes it a genuine SUMMONING ACT by putting it on the NoiseBus at four rooms of
+# reach — further than anything else in the game. So a Hound that finds you calls
+# the ring down on you, and every process that arrives arrived because it HEARD
+# something, exactly like the Scrubber screech. The player hears it too, and a
+# player who has learned what it means knows to move before the rest get there.
+
+var _charge_windup: float = 0.0
+var _charge_time: float = 0.0
+var _charge_cooldown: float = 0.0
+var _charge_at: Vector3 = Vector3.ZERO
+var _charge_struck: bool = false
+var _howl_cooldown: float = 0.0
+## Streamed: 0..1 through the wind-up, so the tell lands on every screen at once.
+var sync_charge: float = 0.0
+
+
+func _extra_sync_properties() -> Array[String]:
+	var out: Array[String] = super()
+	out.append(".:sync_charge")
+	return out
+
+
+func charging() -> bool:
+	return _charge_windup > 0.0 or _charge_time > 0.0
+
+
+## Host-side, considered before the ordinary state machine.
+func _consider_charge(tick: float) -> void:
+	_charge_cooldown = maxf(_charge_cooldown - tick, 0.0)
+	_howl_cooldown = maxf(_howl_cooldown - tick, 0.0)
+
+	if _charge_windup > 0.0:
+		_charge_windup -= tick
+		sync_charge = clampf(1.0 - _charge_windup / Balance.AI_CHARGE_WINDUP, 0.0, 1.0)
+		if _charge_windup <= 0.0:
+			_charge_time = Balance.AI_CHARGE_TIME
+			_charge_struck = false
+			sync_charge = 1.0
+		return
+	if _charge_time > 0.0:
+		return
+	if _charge_cooldown > 0.0 or state != State.CHASE:
+		return
+	var prey: Node3D = hunted_body()
+	if prey == null or not _has_los(prey):
+		return
+	var gap: float = prey.global_position.distance_to(global_position)
+	if gap < Balance.AI_CHARGE_MIN_RANGE or gap > Balance.AI_CHARGE_MAX_RANGE:
+		return
+	_charge_windup = Balance.AI_CHARGE_WINDUP
+	_charge_cooldown = Balance.AI_CHARGE_COOLDOWN
+	sync_charge = 0.0
+	# It commits to WHERE YOU ARE NOW. Everything after this is a straight line to
+	# a point on the floor, which is the whole of why side-stepping works.
+	_charge_at = prey.global_position
+	Audio.play_3d(&"hound_howl", global_position)
+	Captions.emit(&"hunter_charge", global_position, 32.0)
+	_tell_crew(&"_charge_windup_fx")
+
+
+## The run itself. Host-side, per physics frame, from `_act`.
+func _act_charge(delta: float) -> void:
+	if _charge_windup > 0.0:
+		# Planted and growling: the telegraph is that it STOPPED.
+		_steer(global_position, 0.0, delta)
+		_face((_charge_at - global_position).normalized(), delta)
+		return
+	_charge_time -= delta
+	_steer(_charge_at, Balance.AI_CHARGE_SPEED * speed_scale, delta)
+	if not _charge_struck:
+		for body: Node3D in _running_players():
+			if body.global_position.distance_to(global_position) > Balance.HOUND_LUNGE_RANGE:
+				continue
+			_charge_struck = true
+			# Through the one door, so forks, surge-step i-frames, barriers and hot
+			# patches all answer this exactly as they answer a lunge.
+			_land_hit(body, Balance.AI_CHARGE_DAMAGE)
+			break
+	if _charge_time <= 0.0:
+		sync_charge = 0.0
+		# The overshoot. Missing costs it a second and a half of standing still,
+		# which is the opening the move is priced against.
+		_recover_time = Balance.AI_CHARGE_RECOVER
+		_enter(State.CHASE)
+
+
+@rpc("authority", "call_remote", "unreliable_ordered")
+func _charge_windup_fx() -> void:
+	Audio.play_3d(&"hound_howl", global_position)
+	Captions.emit(&"hunter_charge", global_position, 32.0)
+
+
+## THE SUMMONING. A real NoiseBus event at a real position — the same bus a
+## kicked can rides — so anything that converges did so because it heard this.
+## Rate-limited hard: a permanent siren would make the pack's arrival meaningless
+## and would take the tactic of killing the caller away from the crew.
+func _summon() -> void:
+	if not _is_host or _howl_cooldown > 0.0:
+		return
+	_howl_cooldown = Balance.AI_HOWL_COOLDOWN
+	Audio.play_3d(&"hound_howl", global_position)
+	Captions.emit(&"hound_summon", global_position, 44.0)
+	NoiseBus.ping(global_position, Balance.AI_HOWL_ROOMS, "hound_howl",
+			Balance.AI_HOWL_HOLD, 1.0, self)
+
+
+func _on_suspicion(_from: int, to: int) -> void:
+	if to == Suspicion.State.HUNTING:
+		_summon()
+
+
+func _telegraph_sound(state: int) -> StringName:
+	match state:
+		Suspicion.State.HUNTING:
+			# `_summon` carries this one, and carries it further.
+			return &""
+		Suspicion.State.ALERT, Suspicion.State.LOST:
+			return &"scrubber_skitter"
+		Suspicion.State.CURIOUS:
+			return &"scrubber_chitter"
+		_:
+			return &""
+
+
+## THE TRAIL. The base's candidates (the last-known position, the decks, the
+## ledges, the ways out) with the crew's own recent noise prepended, so a Hound
+## that lost you re-walks where you have been loud rather than orbiting one spot.
+##
+## Bounded to `AI_HOUND_TRAIL` events, and every event is still filtered by
+## `HuntMemory.next_search_spot`'s radius test against the last-known position —
+## so it is a trail it can plausibly believe in, not a list of every noise on the
+## layer. Noise this creature never heard is not in `NoiseBus.recent`'s reach test
+## either; a trail is made of things it actually perceived.
+func _search_candidates(kinds: Array[String]) -> Array[Vector3]:
+	var spots: Array[Vector3] = []
+	for event: Dictionary in NoiseBus.recent(Balance.AI_HOUND_TRAIL):
+		if event.get("emitter", null) == self:
+			continue
+		spots.append(event["where"])
+		kinds.append("trail")
+	spots.append_array(super(kinds))
+	return spots
+
+
 func aim_point() -> Vector3:
 	return global_position + Vector3.UP * (BODY_HEIGHT * 0.55)
 
@@ -170,7 +361,17 @@ func _think() -> void:
 	# The wound check runs in every state: a Hound cut below the line breaks off
 	# whatever it was doing and runs, which is what opens the window.
 	if state != State.FLEE and health <= _flee_line():
+		_charge_windup = 0.0
+		_charge_time = 0.0
+		sync_charge = 0.0
 		_enter(State.FLEE)
+		return
+
+	# M11b: the CHARGE owns the creature while it runs. Considered before the
+	# ordinary machine so a committed run is never re-decided mid-flight — that
+	# commitment is what makes side-stepping it work.
+	_consider_charge(tick)
+	if charging():
 		return
 
 	match state:
@@ -190,25 +391,32 @@ func _flee_line() -> float:
 
 
 func _think_prowl() -> void:
-	var prey: Node3D = _nearest_player(Balance.HOUND_HEAR_RANGE, false)
-	if prey != null:
-		_target = prey
-		_last_seen = prey.global_position
+	# CHASE is now a claim about belief rather than about distance: it goes when
+	# the ladder says ALERT or better, which it can only reach through evidence
+	# it actually sensed.
+	if suspicion >= Suspicion.State.ALERT:
 		_enter(State.CHASE)
 		return
-	# No scent: converge on the loudest recent noise, else drift the dark.
 	if _alert_time > 0.0:
 		if global_position.distance_to(_alert_point) < 3.0:
 			_alert_time = 0.0
 		return
+	if suspicion == Suspicion.State.CURIOUS:
+		var look: Vector3 = hunt_goal()
+		if look != Vector3.INF:
+			_patrol = look
+			return
 	_patrol_time -= Balance.AI_TICK
 	if _patrol_time <= 0.0 or global_position.distance_to(_patrol) < 2.0:
 		_patrol_time = _rng.randf_range(2.5, 5.0)
-		_patrol = _wander_point()
+		# With nothing to go on it drifts toward the region the Director is
+		# pressing on, or the warmest room it remembers. A ZONE — never a player.
+		var pressed: Vector3 = drift_target()
+		_patrol = pressed if pressed != Vector3.INF else _wander_point()
 
 
 func _think_chase() -> void:
-	var prey: Node3D = _nearest_player(Balance.HOUND_LOSE_RANGE, false)
+	var prey: Node3D = hunted_body()
 	if prey != null:
 		_target = prey
 		_last_seen = prey.global_position
@@ -216,19 +424,21 @@ func _think_chase() -> void:
 				and _has_los(prey):
 			_enter(State.LUNGE)
 		return
-	# Lost the scent: finish the trip to the last-known / the noise, then prowl.
 	_target = null
-	var goal: Vector3 = _alert_point if _alert_time > 0.0 else _last_seen
-	if global_position.distance_to(goal) < 3.5:
+	# THE TRACKER, in one branch: it does NOT go back to prowling because it can
+	# no longer sense you. It stays in CHASE for as long as the ladder holds it in
+	# LOST, working down the noise trail and the plausible places, and only drops
+	# out when the belief itself has decayed.
+	if suspicion == Suspicion.State.UNAWARE and _alert_time <= 0.0:
 		_enter(State.PROWL)
 
 
 func _think_lunge() -> void:
 	if _recover_time > 0.0 or _lunge_time > 0.0:
 		return
-	var prey: Node3D = _nearest_player(Balance.HOUND_LOSE_RANGE, false)
+	var prey: Node3D = hunted_body()
 	if prey == null:
-		_enter(State.PROWL)
+		_enter(State.CHASE if suspicion != Suspicion.State.UNAWARE else State.PROWL)
 		return
 	_target = prey
 	_last_seen = prey.global_position
@@ -277,17 +487,23 @@ func _enter(next: State) -> void:
 # ------------------------------------------------------------------ movement --
 
 func _act(delta: float) -> void:
+	if charging():
+		_act_charge(delta)
+		return
 	match state:
 		State.PROWL:
 			var goal: Vector3 = _alert_point if _alert_time > 0.0 else _patrol
 			_steer(_route_to(goal), Balance.HOUND_PROWL_SPEED * speed_scale, delta)
 		State.CHASE:
-			var chase_goal: Vector3 = _last_seen
-			if _target != null and is_instance_valid(_target):
-				chase_goal = _target.global_position
-			elif _alert_time > 0.0:
-				chase_goal = _alert_point
-			_steer(_route_to(chase_goal), Balance.HOUND_CHASE_SPEED * speed_scale, delta)
+			# M11: the goal is the mind's — the body while contact holds, the trail
+			# and the search when it does not. The speed rides the rung, so a Hound
+			# that has lost you visibly slows to a searching pace: the player can
+			# see, from across a room, that it does not know where they are.
+			var chase_goal: Vector3 = hunt_goal()
+			if chase_goal == Vector3.INF:
+				chase_goal = _alert_point if _alert_time > 0.0 else _last_seen
+			_steer(_route_to(chase_goal),
+					Balance.HOUND_CHASE_SPEED * speed_scale * suspicion_speed(), delta)
 		State.LUNGE:
 			_act_lunge(delta)
 		State.FLEE:
@@ -362,19 +578,35 @@ func alert(where: Vector3, rooms: int = Balance.TAP_ALERT_ROOMS,
 	if seconds < _alert_time:
 		return
 	_alert_time = seconds
-	if state == State.PROWL:
-		# It does not need to see you — it heard you.
-		var prey: Node3D = _nearest_player(Balance.HOUND_LOSE_RANGE, false)
-		if prey != null:
-			_target = prey
-			_last_seen = prey.global_position
-			_enter(State.CHASE)
+	# M11 removed the omniscient half of this. It used to answer a noise by asking
+	# `_nearest_player(44 m, require_los=false)` and CHASING whoever that returned
+	# — which is how a creature that "only hears" ended up knowing your exact
+	# position through two slabs. The hearing itself is now graded and lives in
+	# `Antivirus.hear`, which fed the awareness track and the last-known position
+	# before this ever ran; all that is left here is the M6 attention hold, which
+	# is what keeps the Hound pointed at the noise while it closes.
+	#
+	# The behavioural difference is the whole milestone: it comes to the SOUND, and
+	# then it has to find you.
+	if state == State.PROWL and suspicion >= Suspicion.State.ALERT:
+		_enter(State.CHASE)
 
 
 ## M7 STACK PULSE. The lunge is cancelled the same way a Scrubber's is. Note what
 ## is NOT here: the Hound does not learn, does not remember the pulse and does not
 ## adapt to it. It is a hunter that hears; being shoved teaches it nothing.
 func _on_staggered() -> void:
+	# M11b: a STACK PULSE cancels a charge exactly as it cancels a lunge, wind-up
+	# or run. That is the crew's answer to the move and it must not be special-
+	# cased away — a committed heavy attack that a stagger could not interrupt
+	# would make the subroutine a lie.
+	if charging():
+		_charge_windup = 0.0
+		_charge_time = 0.0
+		sync_charge = 0.0
+		_recover_time = Balance.AI_CHARGE_RECOVER
+		_enter(State.CHASE)
+		return
 	if state == State.LUNGE:
 		_struck = true
 		_lunge_time = 0.0

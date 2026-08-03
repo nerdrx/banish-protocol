@@ -586,7 +586,10 @@ func _apply_identity() -> void:
 	visor_mat.roughness = 0.1
 	visor.material_override = visor_mat
 
-	beam.light_color = Color(0.86, 0.9, 1.0).lerp(player_color, 0.18)
+	# M10b: the torch's colour is a LIGHTING-RIG decision and lives in LightRig,
+	# because it turned out to be the dominant light source in the whole game —
+	# see the M10b THE TORCH block there for the measurement that says so.
+	beam.light_color = LightRig.torch_colour(player_color)
 	# The cone is a ShaderMaterial (nv_beam) since M4.95. Duplicate it per player
 	# and tint the `beam_color` uniform rather than an albedo — the shader owns the
 	# additive profile, so only the colour is per-player. Preserved from the old
@@ -596,7 +599,7 @@ func _apply_identity() -> void:
 	if beam_mat != null:
 		var tinted: ShaderMaterial = beam_mat.duplicate() as ShaderMaterial
 		tinted.set_shader_parameter("beam_color",
-				Color(0.7, 0.8, 1.0).lerp(player_color, 0.25))
+				LightRig.torch_cone_colour(player_color))
 		beam_cone.material_override = tinted
 
 
@@ -846,7 +849,7 @@ func _update_breaker(frozen: bool) -> void:
 			get_tree(), get_world_3d().direct_space_state, from, direction,
 			_breaker_range())
 	_breaker.show_lash(muzzle, _breaker_endpoint(from, direction),
-			_hit_world, _hit_normal)
+			_hit_world, _hit_normal, _hit_surface)
 	add_shake(0.22)
 	if Debug.log_ai:
 		_log_muzzle_alignment(from, basis, muzzle)
@@ -1009,6 +1012,11 @@ func _log_muzzle_alignment(from: Vector3, basis: Basis, muzzle: Vector3) -> void
 ## per-shot allocation for two floats and a bool is a cost with no reader.
 var _hit_normal: Vector3 = Vector3.ZERO
 var _hit_world: bool = false
+## M12 SENSATION: WHAT the last predicted shot landed on, so the impact fx can
+## throw the right debris. Written by `_breaker_endpoint` beside the other two,
+## and for the same reason they are fields rather than a returned Dictionary:
+## this is the trigger path at ~4 Hz per player.
+var _hit_surface: StringName = Fx.SURF_METAL
 
 
 ## Where the streak stops: whatever the cutter is pointing at, or the wall behind
@@ -1017,6 +1025,7 @@ func _breaker_endpoint(from: Vector3, direction: Vector3) -> Vector3:
 	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
 	_hit_normal = Vector3.ZERO
 	_hit_world = false
+	_hit_surface = Fx.SURF_METAL
 	var creature: Antivirus = Antivirus.pick_target(
 			get_tree(), space, from, direction, _breaker_range())
 	if creature != null:
@@ -1024,6 +1033,7 @@ func _breaker_endpoint(from: Vector3, direction: Vector3) -> Vector3:
 		# is what a cut into a body throws) and no scorch is left, because the
 		# thing it would be painted on may be gone in a second.
 		_hit_normal = -direction.normalized()
+		_hit_surface = Fx.SURF_CREATURE
 		return creature.aim_point()
 
 	var reach: Vector3 = from + direction * _breaker_range()
@@ -1040,7 +1050,39 @@ func _breaker_endpoint(from: Vector3, direction: Vector3) -> Vector3:
 		return reach
 	_hit_normal = Vector3(hit["normal"])
 	_hit_world = true
+	_hit_surface = _classify_surface(hit.get("collider"), _hit_normal)
 	return Vector3(hit["position"])
+
+
+## M12 SENSATION. What the cutter just bit into, from the collider the ray
+## returned. Two sources, in order of confidence:
+##
+##   1. **Group membership.** The M4.8 functional props are already in named
+##      groups the whole game agrees on (`Props.GROUP_*`), so a command terminal
+##      is a SCREEN and a rewire junction is CABLE by definition rather than by
+##      guess. This is the accurate half.
+##   2. **The surface normal.** Everything else is architecture, and the one
+##      thing a normal reliably tells you about architecture here is floor versus
+##      wall — the decks are grating over dust and the walls are structural slab,
+##      which are genuinely different materials and genuinely different debris.
+##
+## Deliberately NOT read off the material: the kit's meshes share trimsheet
+## materials across floor and wall, so a material lookup would be less accurate
+## than the normal AND would couple this to M10's art pipeline. If the world kit
+## later tags its colliders with a surface hint, this function is the one place
+## that has to learn about it.
+func _classify_surface(collider: Variant, normal: Vector3) -> StringName:
+	var node: Node = collider as Node
+	if node != null:
+		if node.is_in_group(Props.GROUP_TERMINAL):
+			return Fx.SURF_SCREEN
+		if node.is_in_group(Props.GROUP_JUNCTION) or node.is_in_group(Props.GROUP_CABINET):
+			return Fx.SURF_CABLE
+	# Floor-ish. 0.80 is about 37 degrees off flat, which takes in ramps and
+	# plinth tops (which are decking too) without claiming a steep wall.
+	if normal.y >= 0.80:
+		return Fx.SURF_GRATE
+	return Fx.SURF_METAL
 
 
 # ---------------------------------------------------------------- subroutines --

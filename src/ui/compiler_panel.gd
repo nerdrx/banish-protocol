@@ -28,6 +28,11 @@ static var _open: CompilerPanel = null
 const WIDTH: float = 880.0
 const ROW_HEIGHT: float = 52.0
 const PAD: float = 26.0
+## The detail block at the foot: rule + head line + two gloss rows + separations.
+const DETAIL_BLOCK: float = 76.0
+## The gloss's own height, held fixed so the panel does not resize as the
+## selection moves between a one-line body and a two-line one.
+const DETAIL_BODY_HEIGHT: float = 38.0
 
 ## Seconds per row of the type-in reveal, and how long a purchase keeps a row lit.
 const REVEAL_ROW: float = 0.055
@@ -61,6 +66,9 @@ var _beat_track: String = ""
 var _pip_fill: float = 0.0
 var _pip_row: int = -1
 var _wallet: Label = null
+## The detail block: the selected row's transition, and what it mechanically does.
+var _detail_head: Label = null
+var _detail_body: Label = null
 var _footer: Label = null
 var _sheen: ColorRect = null
 
@@ -119,6 +127,17 @@ func _ready() -> void:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	# Automation photographs the finished panel, never a reveal in progress.
 	_reveal = 99.0 if Debug.automated else 0.0
+	# `--compiler-select TRACK`: park the highlight on a named row so the detail
+	# block can be photographed against a track whose tiers the capture set up,
+	# WITHOUT buying anything (`--buy` spends, and a confirm stamp is a different
+	# picture). Read off the command line here rather than through a new `Debug`
+	# case — that file is append-only while several agents share this working copy,
+	# and this is the same argument `Patches._parse_forced` makes for `--patches`.
+	var args: PackedStringArray = OS.get_cmdline_user_args()
+	for i: int in args.size():
+		if args[i] == "--compiler-select" and i + 1 < args.size():
+			select(args[i + 1].strip_edges().to_lower())
+			break
 	print("[Compiler] panel open at terminal %d (stock tier %d%s)" % [
 		terminal.compiler_index, terminal.stock_tier,
 		", sanctuary" if terminal.sanctuary else ""])
@@ -232,9 +251,14 @@ func _build() -> void:
 	# than the tube-safe box at every UI scale — which is why it is wrapped in
 	# `SafeArea.modal`'s cap-and-scroll in the first place — so this is a number
 	# that has to be right rather than one that has to fit.
+	# CODEX adds the detail block (a rule, a head line and a two-row gloss) between
+	# the last subroutine and the footer. `DETAIL_BLOCK` is that height, named
+	# rather than folded into the constant, because the number above it has been
+	# wrong twice and both times it was because somebody added rows without adding
+	# room for them.
 	var holder: Control = SafeArea.modal(tube, Vector2(WIDTH,
 			ROW_HEIGHT * float(Balance.MODULE_TRACKS.size()
-					+ Balance.SUBROUTINE_TRACKS.size()) + 262.0))
+					+ Balance.SUBROUTINE_TRACKS.size()) + 262.0 + DETAIL_BLOCK))
 
 	# The piece the refusal glitch shakes. Separate from `holder` because a
 	# container owns its child's position and would put it back every frame.
@@ -262,6 +286,28 @@ func _build() -> void:
 	column.add_child(_rule(accent))
 	_wallet = _text(column, "", 14, UiFx.TEXT)
 	column.add_child(_rule(accent))
+	# --- THE DETAIL BLOCK (CODEX) --------------------------------------------
+	#
+	# The rows say what the next tier COSTS and what it MOVES. Neither of those is
+	# an answer to "what am I buying", which is the question a player standing at a
+	# Compiler for the first time actually has: the row for OPTICS reads
+	# `BEAM 34° → 39°` and nothing on the panel says the number is also the cone
+	# the Scrubbers will not walk into.
+	#
+	# So the highlighted row gets two lines at the foot of the panel, and they are
+	# deliberately different in kind:
+	#
+	#   HEAD  the transition, stated as a transition — "SERVOS  ·  TIER 2 → 3" and
+	#         the delta from what this player owns right now, read live off their
+	#         own tiers rather than off the catalogue's tier 1.
+	#   BODY  the MECHANISM, in sentence case, from `UpgradeText`. One authored
+	#         sentence about how the thing works; never a number, because every
+	#         number on this panel is interpolated and a second copy in prose is
+	#         the copy that goes stale.
+	column.add_child(_rule(accent))
+	_detail_head = _text(column, "", 14, UiFx.SYSTEM_HOT)
+	_detail_body = _gloss(column)
+
 
 	for i: int in Balance.MODULE_TRACKS.size():
 		var row: Control = _build_row(Balance.MODULE_TRACKS[i], i, false)
@@ -419,6 +465,25 @@ func _text(parent: Control, text: String, size: int, colour: Color) -> Label:
 	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	label.clip_text = true
 	label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	parent.add_child(label)
+	return label
+
+
+## The mechanism sentence's own label. Unlike every other cell on this panel it
+## WRAPS rather than clipping: a mechanism trimmed with an ellipsis is a mechanism
+## the player has to guess the end of, and the whole reason the block exists is
+## that guessing was the previous state of the art. Its height is fixed so the
+## panel's layout does not breathe as the selection moves.
+func _gloss(parent: Control) -> Label:
+	var label: Label = Label.new()
+	label.name = "Detail"
+	label.add_theme_font_size_override("font_size", UiFx.FONT_SMALL)
+	label.add_theme_color_override("font_color", UiFx.CAPTION)
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.custom_minimum_size = Vector2(0.0, DETAIL_BODY_HEIGHT)
+	label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	label.clip_contents = true
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(label)
 	return label
 
@@ -648,6 +713,7 @@ func _refresh() -> void:
 
 	for i: int in _rows.size():
 		_refresh_row(i)
+	_refresh_detail()
 
 	# The glitch is half a second; the *reason* stays until you look somewhere
 	# else. Being told no should be a moment, but being told WHY should be
@@ -824,12 +890,58 @@ func _apply_glitch(row: Control, index: int, price: Label) -> void:
 		_panel.position.x = (UiFx.hash01(tick * 1.7) - 0.5) * 3.0 * weight
 
 
+## The detail block, for whichever row is selected.
+##
+## Reads the player's OWN tier every frame rather than caching it, exactly like
+## the rest of the panel: a crewmate's siphon landing, a purchase and a walk-up
+## all move these two lines without a refresh path.
+func _refresh_detail() -> void:
+	if _detail_head == null or _detail_body == null:
+		return
+	var track: String = _track_at(_selected)
+	var subroutine: bool = _is_subroutine(_selected)
+	var deal: Dictionary = _quote_of(track, subroutine)
+	var tier: int = int(deal["tier"])
+	var total: int = _tiers_of(track, subroutine)
+	var label: String = _name_of(track, subroutine)
+
+	if tier >= total:
+		# Nothing left to sell. The block stops being a quote and becomes a
+		# statement of what you are carrying, which is still the answer to "what
+		# does this do" — it is just in the present tense.
+		var held: String = UpgradeText.subroutine_state(track, tier) if subroutine \
+				else _note_of(track, subroutine)
+		_detail_head.text = "%s  ·  TIER %d/%d  ·  FULLY COMPILED   ·   %s" % [
+			label, tier, total, held]
+		_detail_head.add_theme_color_override("font_color", UiFx.DIM)
+	else:
+		# The transition, said as a transition. "SERVOS 2 → 3" answers a question
+		# that "SERVOS ●●○○" only implies, and the delta beside it is computed off
+		# this player's own tier rather than off the catalogue's first entry.
+		var delta: String = UpgradeText.subroutine_delta(track, tier) if subroutine \
+				else UpgradeText.module_delta(track, tier)
+		var from: String = "TIER %d → %d" % [tier, tier + 1]
+		if subroutine and tier <= 0:
+			from = "NOT COMPILED → TIER 1"
+			delta = UpgradeText.subroutine_state(track, 1)
+		_detail_head.text = "%s  ·  %s   ·   %s" % [label, from, delta]
+		_detail_head.add_theme_color_override("font_color", UiFx.SYSTEM_HOT)
+
+	_detail_body.text = UpgradeText.subroutine_body(track) if subroutine \
+			else UpgradeText.module_body(track)
+
+
 ## What the next tier of this track actually does, in the units the player reads
 ## it in elsewhere: metres, degrees, seconds, percent. Deliberately concrete —
 ## "BEAM 26° → 30°" is a decision, "OPTICS II" is a shopping list.
 ## Which catalogue's effect line to print. Split from `_effect_line` so the
 ## module version below is untouched — it is eight `match` arms of tuned wording
 ## and none of it is M7's business.
+##
+## CODEX moved the arithmetic itself into `UpgradeText`, unchanged, so the Codex
+## prints the same lines this panel does rather than a second copy of them that
+## can drift. The dispatch and the maxed/tier-0 wording stay here, because they
+## are about this panel's ROWS rather than about the catalogue.
 func _effect_line_for(track: String, tier: int, maxed: bool,
 		subroutine: bool) -> String:
 	if not subroutine:
@@ -843,79 +955,12 @@ func _effect_line_for(track: String, tier: int, maxed: bool,
 ## shopping list. Tier 0 prints what the subroutine IS, because a player who does
 ## not own it needs the verb before the numbers.
 func _subroutine_line(track: String, tier: int, maxed: bool) -> String:
-	if maxed:
+	if maxed or tier <= 0:
 		return Subs.note(track)
-	if tier <= 0:
-		return Subs.note(track)
-	var next: int = tier + 1
-	var line: String = "COST %d → %d CYC   ·   CD %.1f → %.1f s" % [
-		int(Subs.value_at(track, "cost", tier)),
-		int(Subs.value_at(track, "cost", next)),
-		float(Subs.value_at(track, "cooldown", tier)),
-		float(Subs.value_at(track, "cooldown", next))]
-	# One track-specific number on top, chosen as the thing that changes the play
-	# rather than the thing that changes the most.
-	match track:
-		"stack_pulse":
-			line += "   ·   HOLD %.1f → %.1f s" % [
-				float(Subs.value_at(track, "stagger", tier)),
-				float(Subs.value_at(track, "stagger", next))]
-		"fork_decoy":
-			line += "   ·   LIFE %.0f → %.0f s" % [
-				float(Subs.value_at(track, "lifetime", tier)),
-				float(Subs.value_at(track, "lifetime", next))]
-		"checksum_barrier":
-			line += "   ·   ABSORB %d → %d" % [
-				int(Subs.value_at(track, "absorb", tier)),
-				int(Subs.value_at(track, "absorb", next))]
-	return line
+	return UpgradeText.subroutine_delta(track, tier)
 
 
 func _effect_line(track: String, tier: int, maxed: bool) -> String:
 	if maxed:
 		return Modules.note(track)
-	var next: int = tier + 1
-	match track:
-		"runtime":
-			return "SHARE %d → %d CYCLES   ·   DRAIN %.2f → %.2f /s" % [
-				int(Balance.CYCLES_PER_CREW + float(Modules.value_at(track, "share", tier))),
-				int(Balance.CYCLES_PER_CREW + float(Modules.value_at(track, "share", next))),
-				Balance.PASSIVE_DRAIN * float(Modules.value_at(track, "drain", tier)),
-				Balance.PASSIVE_DRAIN * float(Modules.value_at(track, "drain", next))]
-		"threading":
-			return "SPRINT COST ×%.2f → ×%.2f" % [
-				float(Modules.value_at(track, "sprint", tier)),
-				float(Modules.value_at(track, "sprint", next))]
-		"checksum":
-			return "MAX INTEGRITY %d → %d" % [
-				int(Modules.value_at(track, "integrity", tier)),
-				int(Modules.value_at(track, "integrity", next))]
-		"breaker":
-			return "DAMAGE %d → %d   ·   REACH %.1f → %.1f m" % [
-				int(Modules.value_at(track, "damage", tier)),
-				int(Modules.value_at(track, "damage", next)),
-				float(Modules.value_at(track, "range", tier)),
-				float(Modules.value_at(track, "range", next))]
-		"optics":
-			return "BEAM %.0f° → %.0f°   ·   REACH %d → %d m" % [
-				float(Modules.value_at(track, "angle", tier)),
-				float(Modules.value_at(track, "angle", next)),
-				int(Modules.value_at(track, "reach", tier)),
-				int(Modules.value_at(track, "reach", next))]
-		"servos":
-			return "MOVE ×%.2f → ×%.2f   ·   RESTORE %.1f → %.1f s" % [
-				float(Modules.value_at(track, "move", tier)),
-				float(Modules.value_at(track, "move", next)),
-				Balance.RESTORE_CHANNEL_TIME * float(Modules.value_at(track, "restore", tier)),
-				Balance.RESTORE_CHANNEL_TIME * float(Modules.value_at(track, "restore", next))]
-		"buffer":
-			return "FREE CARRY %d → %d CHIPS   ·   DRAG %d%% → %d%%" % [
-				int(Modules.value_at(track, "free", tier)),
-				int(Modules.value_at(track, "free", next)),
-				int(round(float(Modules.value_at(track, "penalty", tier)) * 100.0)),
-				int(round(float(Modules.value_at(track, "penalty", next)) * 100.0))]
-		"cache":
-			return "FLARES %d → %d" % [
-				int(Modules.value_at(track, "stock", tier)),
-				int(Modules.value_at(track, "stock", next))]
-	return Modules.note(track)
+	return UpgradeText.module_delta(track, tier)

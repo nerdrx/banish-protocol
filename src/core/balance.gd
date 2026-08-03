@@ -182,7 +182,12 @@ const RESTORE_INTEGRITY: float = 40.0
 ## Three hits kills a Scrubber (SCRUBBER_HEALTH / BREAKER_DAMAGE). A tool, not a
 ## gun: short reach, no ammo, and heat instead of a magazine.
 const BREAKER_DAMAGE: float = 42.0
-const BREAKER_RANGE: float = 8.0
+## M12 SENSATION: 8.0 -> 30.0. The base cutter now reaches exactly as far as the
+## base beam does, so what stops an engagement is the dark rather than the tool.
+## The full argument, the tier table that moved with it, and the one interaction
+## it does NOT fix are in the M12 section at the foot of this file — read that
+## before changing this number.
+const BREAKER_RANGE: float = 30.0
 const BREAKER_COOLDOWN: float = 0.26
 ## The cutter is forgiving about exactly where it lands. A Scrubber is a
 ## knee-high shape moving at 5 m/s in the dark, and a pixel-accurate hitscan
@@ -449,7 +454,10 @@ const MODULES: Dictionary = {
 		# so the 2-shot breakpoint moves to tier 2 where it is paid for — the deep
 		# tiers (76/104) are unchanged, so the endgame ceiling is the same.
 		"damage": [42.0, 48.0, 52.0, 62.0, 76.0, 104.0],
-		"range": [8.0, 9.0, 10.2, 11.6, 13.2, 15.0],
+		# M12 SENSATION: [8, 9, 10.2, 11.6, 13.2, 15] -> the below. Held just under
+		# the Optics `reach` row on every tier, so vision is the binding
+		# constraint at every honest pairing and buying sight keeps buying reach.
+		"range": [30.0, 33.0, 36.5, 40.0, 44.5, 50.0],
 	},
 	# --- Optics: buying vision ---------------------------------------------
 	# The one track whose purchase you can SEE the instant it lands, which is
@@ -1547,3 +1555,499 @@ static func patch_tier_name(tier: int) -> String:
 			return "UNSTABLE"
 		_:
 			return "STABLE"
+
+
+# ============================================================================
+# M11 — THE ANTIVIRUS. New numbers only; nothing above this line was touched.
+# ============================================================================
+#
+# The M10 verdict was "the enemy ai feels waayyyyyyy tooo simple", and ALIEN:
+# ISOLATION is the named benchmark. Everything in this section serves the one
+# structural change that closes that gap: creatures stop being single-stimulus
+# reflexes and start being things that SEARCH. None of the existing tuned
+# constants above are edited — the killability law says the AI gets smarter,
+# never spongier, so no health, damage, speed or range number that shipped in M6
+# is modified here. What is added is the *sensing and believing* layer that sits
+# in front of them.
+#
+# The whole section is read by `Perception`, `Suspicion`, `HuntMemory` and the
+# five creature doctrines, and every number in it is exercised by the AI half of
+# `--selftest`.
+
+# --- illumination: how the dark becomes the stealth system -------------------
+#
+# DESIGN.md pillar 2 says the dark is the enemy and your beam is the only thing
+# that reveals the world. M11 makes the antivirus read that same fact, which is
+# what turns a rendering pillar into a mechanic: a crewmate in a work light is
+# visible across a hall, a crewmate in the dark is a rumour, and a crewmate
+# holding a live beam is a lamp walking through a black building.
+
+## How far a room fixture still counts as lighting something, and how bright that
+## is relative to standing in a flare. Under 1.0 deliberately: room light is
+## ambient and diffuse, and a crew that has to cross a lit aisle is inconvenienced
+## rather than doomed.
+const AI_WORKLIGHT_REACH: float = 11.0
+const AI_WORKLIGHT_WEIGHT: float = 0.72
+
+## A live beam. THE number that makes light discipline the crouch button — at
+## 1.0 a beam-on crewmate is as visible as it is possible to be, so the single
+## most effective thing a player can do about a hunter is go dark.
+const AI_BEAM_BEACON: float = 1.0
+## And a muzzle flash, read off the same `Haunt.muzzle_light` pulse the Moth
+## already uses so the two senses can never disagree about a shot. Below a beam:
+## a flash is bright and brief, not a held lamp.
+const AI_MUZZLE_BEACON: float = 0.85
+
+# --- per-class senses --------------------------------------------------------
+#
+# The doctrine table in one place. Each hunter is a different MIND, and the
+# cheapest honest way to say so is to give each a different shape of sensorium:
+# the Hound is nearly blind and hears everything, the Moth sees light and nothing
+# else, the Auditor cannot be surprised because it barely senses at all, the
+# Sentinel has the best eyes in the game inside its zone and none outside it, and
+# the Scrubber is a scared thing with a wide, shallow cone and a scream.
+#
+# Cone half-angles, in degrees. Sight range, in metres. Hearing reach, in ROOMS
+# of the layer graph (the unit the antivirus has thought in since M3).
+
+const AI_SIGHT_SCRUBBER: float = 13.0
+const AI_CONE_SCRUBBER: float = 62.0
+const AI_HEAR_ROOMS_SCRUBBER: int = 1
+
+## Poor eyes, on purpose (HUNTER_DOSSIERS: "HEARING. EXCELLENT. THE ONLY ONE IT
+## HAS."). It will walk past you in the dark and still arrive at the noise.
+const AI_SIGHT_HOUND: float = 9.0
+const AI_CONE_HOUND: float = 45.0
+const AI_HEAR_ROOMS_HOUND: int = 3
+
+## The Moth's "sight" is the light-seeking sense it already had; this cone is
+## only what lets it strike the thing holding the light once it has arrived.
+const AI_SIGHT_MOTH: float = 16.0
+const AI_CONE_MOTH: float = 80.0
+const AI_HEAR_ROOMS_MOTH: int = 0
+
+## It has the schedule. A narrow cone and one room of hearing is enough to notice
+## you are standing in the room it was going to inspect anyway.
+const AI_SIGHT_AUDITOR: float = 12.0
+const AI_CONE_AUDITOR: float = 40.0
+const AI_HEAR_ROOMS_AUDITOR: int = 1
+
+## The best eyes in the game — and it will not follow you out of its zone.
+const AI_SIGHT_SENTINEL: float = 21.0
+const AI_CONE_SENTINEL: float = 55.0
+const AI_HEAR_ROOMS_SENTINEL: int = 1
+
+# --- how loud things are -----------------------------------------------------
+#
+# NoiseBus already carries reach in rooms; M11 adds INTENSITY, because "how far
+# it carried" and "how much it tells you" are different facts. A siphon channel
+# is a siren; a footstep at the far end of its reach is a maybe. Unknown sources
+# fall back to AI_NOISE_DEFAULT, so a noise added later is audible rather than
+# silently ignored.
+const AI_NOISE_DEFAULT: float = 0.55
+const AI_NOISE_INTENSITY: Dictionary = {
+	"siphon": 1.0,
+	"stack_pulse": 1.0,
+	"anomaly_cache": 0.95,
+	"scrubber_screech": 0.92,
+	"query": 0.7,
+	"rewire": 0.65,
+	"cabinet": 0.6,
+	"weld": 0.6,
+	"land": 0.55,
+	"debris": 0.5,
+	"pocket_secretary": 0.45,
+}
+
+# --- awareness pacing --------------------------------------------------------
+
+## How close a search target counts as reached, and how long the creature stands
+## there looking before it moves on. The dwell is most of what makes a search read
+## as a search rather than as a patrol with extra steps.
+const AI_SEARCH_ARRIVE: float = 2.6
+const AI_SEARCH_DWELL: float = 2.2
+
+## Speed multipliers by suspicion state, applied on top of each creature's own
+## authored speeds (which are NOT changed). A curious creature ambles; a searching
+## one moves with purpose; a hunting one runs at exactly the speed it always did.
+const AI_SPEED_CURIOUS: float = 0.7
+const AI_SPEED_ALERT: float = 0.9
+const AI_SPEED_LOST: float = 0.85
+
+## Seconds a Scrubber must wait between screeches. THE diegetic-coordination rate
+## limit: the screech is a real NoiseBus event that pulls the Hound, so an
+## unlimited one would be a permanent siren and the tactic of killing the screamer
+## before it screams would be worthless.
+const AI_SCREECH_COOLDOWN: float = 9.0
+## How far a screech carries, in rooms, and how long it holds a listener. Reaches
+## further than anything the crew can do by accident — that is the point of it.
+const AI_SCREECH_ROOMS: int = 3
+const AI_SCREECH_HOLD: float = 15.0
+
+# --- performance: LOD and stagger -------------------------------------------
+#
+# The gate is 60 fps with 6+ active creatures in the densest layer. Perception is
+# the only new per-tick cost, and it is bounded two ways: the expensive half (the
+# occlusion raycast and the illumination sweep) is skipped entirely for creatures
+# far from every crewmate, and the sense tick is phase-offset by slot index so
+# six creatures never think on the same frame.
+
+## Beyond this from the nearest crewmate a creature senses at the coarse rate and
+## skips occlusion and illumination entirely — it cannot see you from there
+## anyway, and the only thing it can still do is hear, which is graph arithmetic.
+const AI_LOD_FULL_RANGE: float = 26.0
+## How many AI ticks a far creature skips between senses. At AI_TICK 1/15 s this
+## is a sense every 0.27 s, which is four times cheaper and indistinguishable.
+const AI_LOD_FAR_EVERY: int = 4
+
+# --- director hints ----------------------------------------------------------
+#
+# THE DIRECTOR HINTS, THE CREATURE HUNTS. MOTHER may point a hunter at a ZONE and
+# must never hand it a position — the last gap is always closed by the creature's
+# own senses, which is what keeps the whole system fair and legible.
+
+## Seconds between the Director re-picking the region it is pressing on.
+const AI_HINT_INTERVAL: float = 9.0
+## A hint decays to nothing over this, so a hunter that has been sent somewhere
+## and found nothing goes back to its own doctrine rather than orbiting a stale
+## instruction forever.
+const AI_HINT_LIFETIME: float = 30.0
+
+# --- per-doctrine behaviour --------------------------------------------------
+
+## The Moth's ambush. Rather than chasing a light that went out, it goes to the
+## last light source it knows about and WAITS — an ambusher, not a pursuer.
+const AI_MOTH_AMBUSH_TIME: float = 9.0
+
+## How far outside its post the Sentinel will follow a search before it turns
+## round. Area denial means the zone is the character; a Sentinel that chased
+## across a layer would be a slow Hound.
+const AI_SENTINEL_ZONE: float = 14.0
+
+## The Hound's noise trail. How many recent noise events it will follow back
+## through, oldest to newest, when it has lost you — the tracker doctrine.
+const AI_HOUND_TRAIL: int = 3
+
+## Proximity. You cannot sneak past something you are close enough to touch,
+## whatever direction it happens to be facing — without this a player could walk
+## through a Sentinel's back arc, which reads as a bug rather than as stealth.
+## Requires line of sight, so it is a brush-past and not an aura.
+const AI_PROXIMITY: float = 3.2
+const AI_PROXIMITY_STRENGTH: float = 0.62
+
+## A live FORK DECOY is a running program, and a running program in this game
+## glows. Faint on purpose: a decoy is a rumour of a crewmate, not a torch, and it
+## must not out-compete the real thing at close range.
+const AI_DECOY_GLOW: float = 0.5
+
+
+# ============================================================================
+# M11b — HUNTER PRESENCE & SIGNATURE MOVES.
+# ============================================================================
+#
+# USER: "actually make the monsters (except the critters) more scary to face in
+# general (effects and sounds, maybe special moves)."
+#
+# The exclusion is load-bearing: SCRUBBERS ARE UNCHANGED. Their menace is
+# numbers, they are the cannon fodder and the crew's early-warning system, and
+# making an individual one dangerous would cost the game its swarm. Nothing in
+# this section touches a Scrubber constant.
+#
+# This is about the four HUNTERS. The M11 work above makes them feel ALIVE; this
+# makes them feel DANGEROUS. One signature move each, and each move IS that
+# hunter's doctrine expressed violently:
+#
+#   SENTINEL  OVERLOAD SLAM — area denial. Punishes standing still, radially.
+#   HOUND     RUN-DOWN CHARGE + the summoning HOWL — the tracker, closing.
+#   MOTH      CEILING DIVE — the ambusher, using the verticality it owns.
+#   AUDITOR   THE MARK — being processed. It does not attack you; it files you.
+#
+# THREE FAIRNESS RULES BIND ALL OF IT, ABSOLUTELY:
+#
+#   KILLABILITY. Not one health or armour number is touched. Every hunter still
+#   dies to the breaker in exactly the number of shots it did before this
+#   section existed. Scarier, never spongier — and two of the four moves make
+#   them MORE vulnerable while they commit, which is the direction the law wants.
+#
+#   THE SOLO INVARIANT. Every move is escapable by one player with no crewmate,
+#   and each wind-up is long enough for one to escape it from the worst position
+#   it can be started at. `--selftest` asserts the arithmetic rather than trusting
+#   the tuning: wind-up time x sprint speed must clear the reach, for every move.
+#
+#   THE MERCY LAYER. These are dread, not a souls game. Every damage figure below
+#   is a fraction of a bar, none of them corrupt a healthy agent outright, and
+#   the one move that persists (the Auditor's mark) does no damage at all.
+
+# --- SENTINEL: OVERLOAD SLAM -------------------------------------------------
+#
+# It stops, plants, and dumps its core into the deck. A radial shockwave — so
+# there is no facing to hide behind and no arc to walk around, only OUT.
+#
+# The counter is the doctrine: standing still in a Sentinel's zone is what this
+# punishes, and moving is what beats it. During the wind-up its shielding is down
+# and its core is lit (`core_exposed` is already true in every non-dormant state),
+# so the greedy play — stay in, put shots into the core, leave late — is real and
+# expensive, which is exactly the decision an armoured enemy should be asking.
+
+## Seconds of wind-up. Sized off the escape arithmetic: at SPRINT_SPEED a player
+## standing at the centre clears SLAM_RADIUS with margin to spare, and even a
+## walking one gets out. Long enough to read, short enough to be frightening.
+const AI_SLAM_WINDUP: float = 1.35
+const AI_SLAM_RADIUS: float = 6.0
+## Falls off with distance from the centre; this is the figure at the centre.
+## Under a third of a bar, and it staggers rather than corrupts.
+const AI_SLAM_DAMAGE: float = 22.0
+const AI_SLAM_STAGGER: float = 0.55
+const AI_SLAM_PUSH: float = 3.4
+const AI_SLAM_COOLDOWN: float = 9.0
+## How close a crewmate has to be before it is worth committing to at all.
+const AI_SLAM_TRIGGER: float = 5.2
+
+# --- HOUND: RUN-DOWN CHARGE + the summoning HOWL ----------------------------
+#
+# The ordinary lunge (HOUND_LUNGE_*, unchanged) is the close-quarters bite. The
+# CHARGE is the thing that makes a corridor stop being an escape route: from
+# range, in a committed straight line, fast.
+#
+# Committed is the counter. It runs at where you WERE when it launched, so it is
+# side-steppable exactly like a Scrubber lunge is — the skill the game already
+# taught you, at a longer range and a higher price for getting it wrong. And it
+# overshoots into a real recovery window, which is the crew's opening.
+
+const AI_CHARGE_MIN_RANGE: float = 7.0
+const AI_CHARGE_MAX_RANGE: float = 17.0
+## The growl. Its whole job is to be long enough to react to.
+const AI_CHARGE_WINDUP: float = 0.8
+const AI_CHARGE_SPEED: float = 13.5
+const AI_CHARGE_TIME: float = 1.0
+## Less than the lunge's, because the charge's threat is the distance it erases,
+## not the bite at the end of it.
+const AI_CHARGE_DAMAGE: float = 14.0
+const AI_CHARGE_RECOVER: float = 1.5
+const AI_CHARGE_COOLDOWN: float = 11.0
+
+## THE HOWL AS A SUMMONING ACT. Same diegetic rule as the Scrubber's screech: it
+## is a real NoiseBus event at a real position, so the pack converges because it
+## HEARD it. Reaches further than anything else in the game — that is the Hound's
+## whole contribution to a fight it is losing.
+const AI_HOWL_ROOMS: int = 4
+const AI_HOWL_HOLD: float = 18.0
+const AI_HOWL_COOLDOWN: float = 22.0
+
+# --- MOTH: THE CEILING DIVE --------------------------------------------------
+#
+# The one creature in the game that owns the vertical, finally using it as a
+# weapon. It climbs out of the beam into the dark of the ceiling, hangs, and
+# comes straight down.
+#
+# Counter: it has to CLIMB first, which is the tell — a Moth leaving your light
+# is about to arrive from above, and looking up is the answer. Straight down and
+# committed, so stepping aside beats it; and the climb puts it directly under the
+# room's own headroom, which is where a beam finds it.
+
+const AI_DIVE_MIN_HEIGHT: float = 4.0
+const AI_DIVE_CLIMB_TIME: float = 0.9
+## The hang at the top. THE tell, and the window to look up and shoot it.
+const AI_DIVE_HANG: float = 0.75
+const AI_DIVE_SPEED: float = 15.0
+const AI_DIVE_DAMAGE: float = 15.0
+const AI_DIVE_STAGGER: float = 0.4
+const AI_DIVE_COOLDOWN: float = 12.0
+const AI_DIVE_RANGE: float = 9.0
+
+# --- AUDITOR: THE MARK -------------------------------------------------------
+#
+# It does not attack you. It FILES you.
+#
+# Stand in an Auditor's inspection cone for long enough and it completes its scan
+# and marks your process. The mark does no damage and cannot kill you. What it
+# does is make you READABLE: a marked agent is perceived as brightly lit by every
+# process on the ring, whether or not their beam is on, for as long as it lasts.
+#
+# That is the scariest thing this creature could do, because it is the exact
+# inverse of the game's one reliable defence. Going dark stops working. You have
+# been indexed, and the whole layer can see you until it wears off.
+#
+# Counter: walk out of the cone. It is slow, it is announced, the cone is narrow
+# and it does not follow you. And it expires on its own, and on descent.
+
+const AI_MARK_SCAN_TIME: float = 3.4
+const AI_MARK_CONE_DEG: float = 26.0
+const AI_MARK_RANGE: float = 12.0
+const AI_MARK_LIFETIME: float = 45.0
+## How lit a marked agent reads as. Below a live beam — being indexed is as bad
+## as carrying a torch, not worse than one.
+const AI_MARK_GLOW: float = 0.9
+
+# --- PRESENCE ----------------------------------------------------------------
+#
+# A hunter arriving should be an EVENT. Everything here is per-peer, computed
+# locally off the replicated pose, and routed through the existing governed
+# systems (`Fx.shake` is rate-limited and scaled by `A11y.effect_scale`; every
+# emissive spike rides the `hurt_flash` cap) — no new flash path, and nothing
+# self-illuminates the room, because the darkness law is absolute.
+
+## How close before a heavy hunter's footfalls are felt at all, and how hard the
+## worst one shakes at point-blank. Deliberately small: this is weight, not a
+## screen effect, and it has to survive being on screen for a whole fight.
+const AI_PRESENCE_SHAKE_RANGE: float = 16.0
+const AI_FOOTFALL_SHAKE: float = 0.075
+## And the slam, which is allowed to be a real hit.
+const AI_SLAM_SHAKE: float = 0.55
+
+# ============================================================================
+# M12 — SENSATION. New numbers only; nothing above this line was touched EXCEPT
+# the two documented in "THE RANGE CHANGE" below, which could not be expressed
+# any other way — see the note there for exactly what moved and why.
+# ============================================================================
+#
+# Three user reports drove this milestone:
+#
+#   1. "the sound needs some more revrb, it doesnt fell like theres any room."
+#   2. "the gun should maybe fire as far as a gun would, lets not have it be a
+#       cutting tool thats so close range, that feels cluncy."
+#   3. "we neeed mooooore particle effects."
+#
+# The acoustic model's own constants live in `src/core/room_acoustics.gd`,
+# because they are physics and belong next to the equation that uses them. What
+# is here is what the rest of the game reads.
+
+# --- THE RANGE CHANGE --------------------------------------------------------
+#
+# READ THIS BEFORE RETUNING EITHER OF THE TWO CONSTANTS IT DESCRIBES.
+#
+# The breaker reached 8 m at tier 0 and 15 m fully compiled. The player's own
+# beam reaches 30 m at Optics tier 0 and 55 m fully compiled. So the weapon was
+# somewhere between a quarter and a half of the player's own SIGHT, and the
+# thing stopping an engagement was never the dark — it was the gun. That is the
+# exact inverse of DESIGN.md pillar 2, and "that feels clunky" is the correct
+# description of what it feels like.
+#
+# The fix is the elegant one rather than the safe one: make the weapon reach
+# past the light, so the limiting factor on an engagement becomes VISION. You
+# can shoot as far as you can see; shooting at a half-lit shape at the edge of
+# your beam becomes a real, tense choice instead of an impossibility. The dark
+# stays the enemy — it just becomes the enemy for the right reason.
+#
+# THE RULE, and it is worth keeping: **base breaker range == base beam reach.**
+# Both are 30 m at tier 0. The cutter reaches exactly as far as your lamp does,
+# which is a sentence a player can hold in their head, and it makes the Optics
+# track the thing that opens up long engagements — buying vision buys reach,
+# which is what DESIGN.md says Optics is for ("literally buying vision").
+#
+# Two constants above this section changed, and only two:
+#
+#   * `BREAKER_RANGE`             8.0 -> 30.0  (the bare-program base)
+#   * `MODULES.breaker.range`     [8, 9, 10.2, 11.6, 13.2, 15]
+#                              -> [30, 33, 36.5, 40, 44.5, 50]
+#
+# They had to change in place: the host re-resolves reach from `Modules.loadout`
+# in `run_state.gd` and the shooter predicts from the same table, so a new
+# constant beside the old one would have desynced the drawn lash from the
+# authoritative kill. One number, one source, both ends agree.
+#
+# Fully compiled the Breaker track now reaches 50 m against Optics' 55 m, so
+# vision stays the binding constraint at every tier pairing except a program
+# that bought reach and no sight — which correctly gets nothing for it.
+#
+# THE INTERACTION THIS DOES NOT FIX, STATED PLAINLY: `BREAKER_AIM_DEG` is a
+# fixed 7.5-degree half-angle, which was about a metre of aim slack at 8 m and
+# is now about FOUR METRES at 30 m. That is far too forgiving at range and it
+# wants to become a slack that is capped in metres rather than in degrees. The
+# constant is here, ready; the change belongs in `Antivirus.pick_target`, which
+# `src/creatures` owns. See `BREAKER_AIM_SLACK_M`.
+
+## The lateral aim slack the cutter SHOULD have, in metres, once
+## `Antivirus.pick_target` is taught to cap its cone by distance. One metre is
+## what 7.5 degrees bought at the old 8 m range — the number the close-quarters
+## feel was actually tuned around — so capping at it preserves point-blank
+## forgiveness exactly and removes the windfall at range.
+##
+## The three-line change this is waiting for, in `Antivirus.pick_target`:
+##
+##     var limit: float = cos(deg_to_rad(Balance.BREAKER_AIM_DEG))
+##     # ... per candidate, after `distance` is known:
+##     var slack: float = minf(distance * tan(deg_to_rad(Balance.BREAKER_AIM_DEG)),
+##             Balance.BREAKER_AIM_SLACK_M)
+##     var need: float = cos(atan(slack / distance))
+##
+## and compare `alignment` against `maxf(need, best_dot)` instead of `best_dot`.
+const BREAKER_AIM_SLACK_M: float = 1.05
+
+## Where the lash stops being drawn as a solid streak and starts being sold by
+## its endpoints. Nothing reads it yet; it is the documented boundary the
+## `nv_lash` shader's width ramp was tuned against.
+const M12_LASH_READ_RANGE: float = 30.0
+
+# --- particle budgets --------------------------------------------------------
+#
+# Per-emitter particle counts for the M12 families. Sized against the stated
+# worst case — 4 crew and 6 processes in one room, everything firing — and held
+# deliberately low: the perceived-quality win in this milestone is that a hit
+# looks like the thing it hit, which is a VARIETY win, not a count win. Doubling
+# these would cost frames and buy almost nothing.
+
+## Chunky surface fragments per impact (glass off a panel, plating off a wall).
+const M12_DEBRIS_FRAGMENTS: int = 12
+## Soft lit puffs per gel splatter / steam / coolant burst.
+const M12_MIST_PARTICLES: int = 14
+## Fragments that outlive the burst, arc, slow and settle.
+const M12_EMBER_COUNT: int = 8
+## Data motes per loot pickup / siphon tap / exfil.
+const M12_MOTE_COUNT: int = 14
+## Sparks per electrical arc.
+const M12_ARC_SPARKS: int = 10
+## Dust displaced by movement, a hard landing, or a heavy footfall.
+const M12_WAKE_PARTICLES: int = 16
+
+## Impacts now happen up to 30 m away instead of 8, and a 2 cm spark at 30 m is
+## one pixel. Spark and debris scale is multiplied by this per metre of distance
+## from the ear, clamped by the cap below — so a far hit still READS as a hit
+## without a near one turning into confetti.
+const M12_DISTANCE_SCALE_PER_M: float = 0.055
+const M12_DISTANCE_SCALE_MAX: float = 2.6
+
+# --- hunter presence hooks (M11 calls these) ---------------------------------
+#
+# The hunter pass wants heavy footfalls that shake dust loose from the ceiling
+# and attack moves that displace the room. These are the numbers behind the
+# `Fx.footfall`, `Fx.ceiling_dust` and `Fx.telegraph` entry points; the
+# behaviour that decides WHEN to call them is M11's.
+
+## How far above a heavy footfall the dust is shaken loose from, and how wide the
+## fall is. A 2.6 m process putting its foot down should disturb the air over
+## your head, not at your knees.
+const M12_CEILING_DUST_HEIGHT: float = 3.6
+const M12_CEILING_DUST_RADIUS: float = 2.2
+## Fall speed of shaken ceiling dust. Slow: this is the thing you notice a beat
+## AFTER the thump, which is what makes the thump feel heavy.
+const M12_CEILING_DUST_FALL: float = 1.15
+## A telegraphed attack's displacement ring, as a fraction of the move's own
+## radius, and how long it takes to travel. The ring IS the reach.
+const M12_TELEGRAPH_LIFE: float = 0.55
+
+# --- MOTHER presence ---------------------------------------------------------
+#
+# Glitch particulate when she speaks in the deep layers. Deliberately gated by
+# DEPTH rather than by category: the effect is "the architecture around you is
+# not holding together while she talks", and that is a statement about how far
+# down you are. Nothing about it flashes — it is particles and no light at all.
+const M12_MOTHER_GLITCH_LAYER: int = 12
+const M12_MOTHER_GLITCH_COUNT: int = 10
+const M12_MOTHER_GLITCH_RADIUS: float = 2.6
+
+## M11 fix. How many seconds of continuous evidence one discrete NOISE event is
+## worth to the awareness accumulator.
+##
+## Found by the screech demo failing to converge a Hound staged two rooms from the
+## screamer. `Antivirus.hear` was feeding the perception model one AI TICK's worth
+## of evidence per noise — 1/15 s — so a scream at 0.46 strength moved awareness
+## by 0.019 against a CURIOUS threshold of 0.16. Nine screams to raise an eyebrow.
+##
+## That was a units error, not a tuning one: sight is a CONTINUOUS stimulus and is
+## correctly integrated per tick, but a noise is an IMPULSE — it happens once and
+## it is over — so charging it one tick of gain undercounts it by whatever the
+## tick rate happens to be. At 1.2 s a close scream lands near ALERT and a distant
+## one lands in CURIOUS, which is the behaviour the whole diegetic-coordination
+## layer is built on.
+const AI_NOISE_IMPULSE: float = 1.2

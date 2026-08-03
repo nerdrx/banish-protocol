@@ -84,6 +84,50 @@ const TABLE: Dictionary = {
 	&"auditor_step": {"line": "Audit advancing — a room away", "cat": Cat.THREAT},
 	&"auditor_strike": {"line": "Auditor strike!", "cat": Cat.THREAT},
 	&"auditor_ended": {"line": "Audit ended — sector safe", "cat": Cat.INFO},
+	# --- M11 suspicion telegraphs (THE ship gate for the new AI) ---
+	#
+	# A deep AI the player cannot READ is not scary, it is unfair. Every suspicion
+	# state a process can enter has an audio tell and a posture change, and these
+	# are the deaf player's copy of exactly that information — the same event, from
+	# the same call site (`Antivirus._enter_suspicion`), so they cannot drift apart.
+	#
+	# The wording carries the state, not the creature, because the state is the
+	# actionable fact: "searching" means it lost you and is checking places, which
+	# is when you move; "hunting" means it has you, which is when you run or fight.
+	# `--selftest` asserts that every state in `Suspicion.caption_key` resolves
+	# here, so a state added later without a tell fails the gate.
+	&"ai_curious": {"line": "Something noticed you", "cat": Cat.THREAT},
+	&"ai_alert": {"line": "Process alerted — sweeping", "cat": Cat.THREAT},
+	&"ai_hunting": {"line": "HUNTING you", "cat": Cat.THREAT},
+	&"ai_searching": {"line": "Lost you — searching", "cat": Cat.THREAT},
+	## The pack's early-warning scream, and the whole of M11's diegetic
+	## coordination: a Scrubber that spots the crew SCREECHES, the screech is a
+	## real noise event at a real position, and the Hound converges because it
+	## HEARD it. A player who can read this caption can learn the language and can
+	## choose to kill the screamer before it screams.
+	&"scrubber_screech": {"line": "Scrubber SCREECHING — calling the pack", "cat": Cat.THREAT},
+	# --- M11b signature-move wind-ups ---
+	#
+	# THE MOST IMPORTANT CAPTIONS IN THE GAME AFTER THE LUNGE SHRIEK. Each of the
+	# four hunters has exactly one committed, telegraphed move, and the wind-up
+	# cue is the player's ONLY warning. A hearing player gets a growl, a servo
+	# spin-up, a wing-climb or a scan tone; these are the same warning, at the
+	# same instant, from the same call site.
+	#
+	# The wording carries the COUNTER, not just the threat, because the counter is
+	# what the warning is for and a caption has one line to say it: get out of the
+	# radius, step aside, look up, leave the cone.
+	&"hunter_slam": {"line": "Sentinel OVERLOADING — get clear!", "cat": Cat.THREAT},
+	&"hunter_charge": {"line": "Hound CHARGING — step aside!", "cat": Cat.THREAT},
+	&"hunter_dive": {"line": "Moth climbing — it will dive!", "cat": Cat.THREAT},
+	&"hunter_audit": {"line": "Auditor scanning YOU — leave the cone", "cat": Cat.THREAT},
+	## Not a wind-up but a state you now have to play around, so it is a threat
+	## line and not an info one: the dark has stopped hiding you.
+	&"hunter_marked": {"line": "INDEXED — the layer can see you", "cat": Cat.THREAT},
+	&"hunter_unmarked": {"line": "Index expired — the dark works again", "cat": Cat.INFO},
+	## The Hound's howl is a summoning act, and a player who learns that is a
+	## player who knows to move before the rest arrive.
+	&"hound_summon": {"line": "The Hound HOWLS — calling the others", "cat": Cat.THREAT},
 	# --- world threats (MOTHER hears these, or does these) ---
 	&"siphon_channel": {"line": "Siphon channeling — pinging hunters", "cat": Cat.THREAT},
 	&"debris": {"line": "Debris clatter", "cat": Cat.THREAT},

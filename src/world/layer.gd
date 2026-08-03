@@ -219,11 +219,21 @@ func _rebuild() -> void:
 	# decides whether a four-player layer holds 60 fps.
 	var lights: int = 0
 	var shadowed: int = 0
+	# M10b: the palette census, in the same line, because "what colour is this
+	# layer lit by" was a question only a photograph could answer and a
+	# photograph costs a gamescope lock and four minutes. Buckets are the same
+	# hue bands the m10b frame instrument uses (cyan 165-210, warm 330-60,
+	# cool 210-265) so the log and the picture can be read against each other,
+	# and each fixture is weighted by ENERGY rather than counted: forty dim
+	# channel washes and one key are not the same photograph.
+	var hue_energy: PackedFloat32Array = PackedFloat32Array([0.0, 0.0, 0.0, 0.0])
 	if _builder != null and is_instance_valid(_builder):
 		for node: Node in _builder.find_children("*", "Light3D", true, false):
 			lights += 1
-			if (node as Light3D).shadow_enabled:
+			var light: Light3D = node as Light3D
+			if light.shadow_enabled:
 				shadowed += 1
+			hue_energy[_hue_bucket(light.light_color)] += light.light_energy
 	var decals: int = 0
 	if _builder != null and is_instance_valid(_builder):
 		decals = _builder.find_children("*", "Decal", true, false).size()
@@ -257,10 +267,32 @@ func _rebuild() -> void:
 		what = "THE PARTITION: the crew's staging sector"
 	elif Run.use_test_layer:
 		what = "layer %d: hand-authored test layer" % Run.layer_number
-	print("[Layer] built %s  nodes=%d lights=%d shadowed=%d decals=%d build=%.0fms%s%s" % [
+	var hue_total: float = maxf(hue_energy[0] + hue_energy[1] + hue_energy[2]
+			+ hue_energy[3], 0.001)
+	var palette: String = " palette=[cyan %.0f%% cool %.0f%% warm %.0f%% neutral %.0f%%]" % [
+		100.0 * hue_energy[0] / hue_total, 100.0 * hue_energy[1] / hue_total,
+		100.0 * hue_energy[2] / hue_total, 100.0 * hue_energy[3] / hue_total]
+	print("[Layer] built %s  nodes=%d lights=%d shadowed=%d decals=%d build=%.0fms%s%s%s" % [
 		what,
 		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)), lights, shadowed,
-		decals, elapsed, decay, clutter])
+		decals, elapsed, decay, clutter, palette])
+
+
+## Which palette bucket a fixture colour falls in: 0 cyan, 1 cool, 2 warm,
+## 3 neutral. Saturation floor 0.20, matching the frame instrument — below it
+## a fixture is a white light with a tint, not a colour, and counting it as one
+## is how a desaturation pass gets to claim a win it did not earn.
+static func _hue_bucket(c: Color) -> int:
+	if c.s < 0.20:
+		return 3
+	var h: float = c.h * 360.0
+	if h >= 165.0 and h < 210.0:
+		return 0
+	if h >= 210.0 and h < 265.0:
+		return 1
+	if h >= 330.0 or h < 60.0:
+		return 2
+	return 3
 
 
 ## The longest corridor on the layer, entered from one end looking down it.
@@ -393,6 +425,14 @@ const GRADE_LUTS: Array[String] = [
 	"res://assets/luts/lut_mid.png",
 	"res://assets/luts/lut_deep.png",
 ]
+## The pre-M10b grade, at `make_luts.CHROMA_LEGACY`. Same three bands, three
+## times the chroma — see the M10b header in tools/make_luts.py for what that
+## turned out to be doing to every neutral surface in the game.
+const GRADE_LUTS_LEGACY: Array[String] = [
+	"res://assets/luts/lut_surface_legacy.png",
+	"res://assets/luts/lut_mid_legacy.png",
+	"res://assets/luts/lut_deep_legacy.png",
+]
 ## Per-band cinematic exposure offset in stops (INTEGRATION2 §7): a touch up at the
 ## clean surface, drifting down into the deep, so the world dims further as it goes
 ## wrong. Measured alone this pass makes the game DARKER, which is why it ships.
@@ -418,7 +458,10 @@ static var _lut_textures: Array[Texture2D] = []
 ## The three depth-band LUTs, loaded once and shared across every layer.
 static func _lut(index: int) -> Texture2D:
 	if _lut_textures.is_empty():
-		for path: String in GRADE_LUTS:
+		var paths: Array[String] = GRADE_LUTS
+		if not NeonBudget.cyan_cut():
+			paths = GRADE_LUTS_LEGACY
+		for path: String in paths:
 			_lut_textures.append(load(path) as Texture2D)
 	return _lut_textures[clampi(index, 0, _lut_textures.size() - 1)]
 
@@ -451,8 +494,21 @@ func _apply_environment() -> void:
 	var band: float = grade_position(Run.layer_number)
 	var low: int = 0 if band < 1.0 else 1
 	var mix: float = band if band < 1.0 else band - 1.0
-	scaled.ambient_light_color = GRADE_AMBIENT[low].lerp(GRADE_AMBIENT[low + 1], mix)
-	scaled.volumetric_fog_albedo = GRADE_FOG[low].lerp(GRADE_FOG[low + 1], mix)
+	# M10b: the SURFACE anchor's own hue, rotated toward neutral at matched
+	# luminance. (0.075, 0.115, 0.200) is a blue fill and (0.32, 0.40, 0.50) is
+	# blue air, and together they are a cool cast over every pixel of a surface
+	# ring whether or not a fixture is anywhere near it — which is most of what
+	# the m10b instrument scores as `blue` in a bus-junction frame. Luminance is
+	# held to within 0.4%, so this is a grade change and not an exposure change,
+	# exactly as the table's own header requires. Bands 1 and 2 were already
+	# near-neutral and are untouched.
+	var ambient_lo: Color = GRADE_AMBIENT[low]
+	var fog_lo: Color = GRADE_FOG[low]
+	if low == 0 and NeonBudget.cyan_cut():
+		ambient_lo = NeonBudget.GRADE_AMBIENT_SURFACE
+		fog_lo = NeonBudget.GRADE_FOG_SURFACE
+	scaled.ambient_light_color = ambient_lo.lerp(GRADE_AMBIENT[low + 1], mix)
+	scaled.volumetric_fog_albedo = fog_lo.lerp(GRADE_FOG[low + 1], mix)
 	scaled.background_color = GRADE_BACKGROUND[low].lerp(GRADE_BACKGROUND[low + 1], mix)
 	# M4.95: the Environment adjustment grade is disabled (the depth-band LUTs own
 	# it now), so the old per-band adjustment_saturation is gone from here — its job
@@ -544,6 +600,25 @@ func _apply_environment() -> void:
 		grade.set_shader_parameter("lut_amount", 1.0)
 		grade.set_shader_parameter("exposure",
 				lerpf(GRADE_EXPOSURE[low], GRADE_EXPOSURE[low + 1], mix))
+		# M10b: the post shader's cool shadow lift, de-blued at matched luminance.
+		# See NeonBudget.SHADOW_TINT — this was the third and least visible of the
+		# three places the frame's colour was coming from something other than a
+		# light, and it is the one that reaches EVERY dark pixel in the game.
+		var cut: bool = NeonBudget.cyan_cut()
+		grade.set_shader_parameter("shadow_tint",
+				NeonBudget.SHADOW_TINT if cut else NeonBudget.SHADOW_TINT_LEGACY)
+		grade.set_shader_parameter("shadow_lift",
+				NeonBudget.SHADOW_LIFT if cut else NeonBudget.SHADOW_LIFT_LEGACY)
+		# `-- --gradeprobe`: read back what the post material ACTUALLY holds.
+		# Added because a Color handed to a `vec3` uniform is dropped in silence,
+		# and the resulting null A/B is indistinguishable from a wrong diagnosis.
+		# A capture round is expensive; this is free.
+		if OS.get_cmdline_user_args().has("--gradeprobe"):
+			print("[GradeProbe] shadow_tint=%s lift=%.4f lut_amount=%s exposure=%.3f" % [
+					str(grade.get_shader_parameter("shadow_tint")),
+					float(grade.get_shader_parameter("shadow_lift")),
+					str(grade.get_shader_parameter("lut_amount")),
+					float(grade.get_shader_parameter("exposure"))])
 		grade.set_shader_parameter("exposure_breathe", GRADE_EXPOSURE_BREATHE)
 
 

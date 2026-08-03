@@ -275,7 +275,12 @@ func _dress_rig() -> void:
 ## Where a crew comes home. A low plinth with a lip, so the arrival reads as a
 ## place you are set down on rather than as a patch of floor.
 func _dress_arrival() -> void:
-	_box(ARRIVAL + Vector3(0.0, 0.09, 0.0), Vector3(9.0, 0.18, 9.0), MAT_GRATE)
+	# M10 Z-FIGHT: the plinth's underside was laid exactly on the plane the hub's
+	# floor modules present their own undersides at — 81 m2 of coplanar
+	# same-facing surface, the largest single finding `--auditz` reported
+	# anywhere. Lifted clear; the lip is 18 cm tall, so 6 mm is invisible.
+	_box(ARRIVAL + Vector3(0.0, 0.09 + ZFIGHT_STANDOFF, 0.0),
+			Vector3(9.0, 0.18, 9.0), MAT_GRATE)
 	_mesh_box(ARRIVAL + Vector3(0.0, 0.2, 0.0), Vector3(8.2, 0.05, 8.2), MAT_TRIM)
 	for corner: Vector3 in [Vector3(-4.2, 0.0, -4.2), Vector3(4.2, 0.0, -4.2),
 			Vector3(-4.2, 0.0, 4.2), Vector3(4.2, 0.0, 4.2)]:

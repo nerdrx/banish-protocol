@@ -165,6 +165,10 @@ func _ready() -> void:
 	# belonging to the fidelity pass, and src/core/debug.gd is a shared file under
 	# concurrent edit. Returns null without the flag, so this costs one array scan.
 	FreecamProbe.arm(self)
+	# `--auditz` (M10). Same argument, same one-array-scan cost: a geometric audit
+	# is an instrument, not a game system, and it builds its own layers — so it
+	# needs no window, no `--autohost` and no branch in the shared parser.
+	AuditZFightProbe.arm(self)
 
 
 ## `-- --photonics baseline|enhanced|cinema`. A capture flag, and it lives here

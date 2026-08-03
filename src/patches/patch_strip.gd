@@ -66,6 +66,75 @@ const ROW_GLYPH_SIZE: int = 15
 const ROW_TEXT_SIZE: int = 13
 const EXPAND_RATE: float = 9.0
 
+# --- the expanded list's geometry (CODEX) ------------------------------------
+#
+# The list stopped being a column of names and became a column of NAMES AND WHAT
+# THEY ARE DOING, which is several times as wide and, in its roomy form, twice as
+# tall. None of that can be a constant, because the canvas it has to fit inside is
+# not one: `Screen.ui_scale` SHRINKS the 2D coordinate space (1280/scale wide), so
+# at UI SCALE 1.6 on a 3440x1440 panel the whole instrument box is 955x382 canvas
+# pixels and the band above the Cycles gauge is 164 of them. A fixed 620x450 list
+# would hang off the top of the tube at exactly the setting a player turns up
+# BECAUSE they were struggling to read it.
+#
+# So `_solve_list` measures the room it actually has every frame and degrades in
+# three named steps rather than clipping:
+#
+#   ROOMY    two lines a patch — name and stack count over the live effect clause.
+#   TIGHT    one line a patch, the clause trimmed into what is left of the row.
+#   CAPPED   as many rows as fit, and a tail line naming how many are not shown.
+#
+# `--ui-audit` at 3440x1440 x1.0 and x1.6 is what says this works; see the M9.5
+# section of debug.gd.
+
+## What the list would like to be, and the narrowest it is still worth drawing.
+const LIST_WIDTH: float = 700.0
+const LIST_WIDTH_MIN: float = 300.0
+## Kept clear on the right for the minimap, which expands on the same key.
+const LIST_MAP_RESERVE: float = 448.0
+## Breathing room above the list, inside the instrument box.
+const LIST_TOP_MARGIN: float = 8.0
+## The header line's own share of the height.
+const LIST_HEADER: float = 22.0
+## Row heights for the two layouts.
+const ROW_ROOMY: float = 30.0
+const ROW_TIGHT: float = 20.0
+## Column geometry. The name column holds "INSTRUCTION FUSION  x6" at 13 px.
+const LIST_GLYPH_X: float = 4.0
+const LIST_NAME_X: float = 28.0
+const LIST_NAME_WIDTH: float = 190.0
+## THE CAP ANNOTATION IS NOT A COLUMN. It used to be one, right-aligned at the
+## far edge, and the gate report on the first capture is the whole argument
+## against it: "the right-hand cap annotations render as a loose second column
+## floating over the corridor at low contrast, colliding with world geometry and
+## each other. It reads as debug spill, not as an instrument."
+##
+## Every word of that is a property of RIGHT-ALIGNING SHORT TEXT ACROSS A GAP. The
+## eye cannot associate `ceiling +90%` with a clause 300 px to its left, so it
+## reads as loose text; the gap is where the corridor shows through, so it reads as
+## floating; and a lane only contains what is narrower than it.
+##
+## So the annotation is now drawn IMMEDIATELY AFTER the clause it qualifies, as
+## part of the same run of text, with the clause yielding the space rather than the
+## annotation being clipped. There is no second column to collide with anything,
+## the association is adjacency, and the cap can never be the thing that gets
+## truncated — which matters most for `CAPPED`, the one annotation that changes a
+## decision.
+const CAP_SEPARATOR: String = "   ·   "
+
+## And a GROUND. The expanded list is the one HUD surface that puts a paragraph of
+## body copy over a lit corridor, and the quiet-instrument rule's "no plate" is
+## about the RESTING instrument — the menu, the Compiler and the terminal all have
+## plates because they are things you stop and read. So does this, while it is
+## held open; it fades out with the expansion and the resting row of glyphs keeps
+## the bare-instrument treatment it always had.
+const PLATE_COLOUR: Color = Color(0.022, 0.015, 0.006, 1.0)
+const PLATE_EDGE_ALPHA: float = 0.40
+## The accent bar down the left edge, which is what makes a rectangle read as a
+## panel rather than as a box drawn behind some words.
+const PLATE_BAR: float = 3.0
+const PLATE_PAD: float = 8.0
+
 ## How long the strip stays up after a patch lands.
 const HOLD_GAINED: float = 2.6
 ## The arrival mark: a bracket that expands and fades, once, on the cell that
@@ -84,6 +153,8 @@ var _marks: Dictionary = {}
 ## Last seen stack counts, so a change can be detected without a signal per cell.
 var _seen: Dictionary = {}
 var _alpha: float = REST_ALPHA
+## The solved expanded-list geometry for this frame. See `_solve_list`.
+var _list: Dictionary = {}
 
 
 static func create() -> PatchStrip:
@@ -161,11 +232,14 @@ func _process(delta: float) -> void:
 
 	# Grow UPWARD when expanded: the strip is bottom-anchored and the row above it
 	# is empty screen, while the row below it is the Cycles gauge.
-	var rows: float = float(ids.size()) * ROW_HEIGHT + 22.0
-	var height: float = lerpf(STRIP_HEIGHT, maxf(rows, STRIP_HEIGHT), _expand)
+	_list = _solve_list(ids.size())
+	var height: float = lerpf(STRIP_HEIGHT,
+			maxf(float(_list["height"]), STRIP_HEIGHT), _expand)
+	var width: float = lerpf(STRIP_WIDTH, float(_list["width"]), _expand)
 	offset_top = STRIP_TOP + STRIP_HEIGHT - height
 	offset_bottom = STRIP_TOP + STRIP_HEIGHT
-	pivot_offset = Vector2(STRIP_WIDTH * 0.5, height * 0.5)
+	offset_right = STRIP_LEFT + width
+	pivot_offset = Vector2(width * 0.5, height * 0.5)
 
 	var lit: float = _surface.tick(delta)
 	modulate.a = 1.0
@@ -271,35 +345,182 @@ func _draw_mark(id: String, cell: Rect2, hue: Color, alpha: float) -> void:
 			cell.size + Vector2(grow, grow) * 2.0), halo, false, 1.4)
 
 
+## How much list there is room for, this frame, in this canvas.
+##
+## Measured off the strip's PARENT rather than off the viewport: the parent is the
+## HUD's instrument root, which is already the tube-safe / instrument box at
+## whatever aspect and UI SCALE the player is running. Asking it how big it is is
+## the same question `--ui-audit` asks, so the two can never disagree.
+##
+## Returns {width, height, rows, row_height, roomy}. `rows` may be fewer than
+## `count`, in which case the tail line says so.
+func _solve_list(count: int) -> Dictionary:
+	var room: Vector2 = get_parent_area_size()
+	# The band between the top of the instrument box and the strip's own bottom
+	# edge, which is pinned above the Cycles gauge and does not move.
+	var tall: float = maxf(room.y + STRIP_TOP + STRIP_HEIGHT - LIST_TOP_MARGIN,
+			STRIP_HEIGHT)
+	var wide: float = clampf(room.x - STRIP_LEFT - LIST_MAP_RESERVE,
+			LIST_WIDTH_MIN, LIST_WIDTH)
+	# A canvas too narrow to reserve the minimap's corner at all still gets a list;
+	# it gets the widest one that fits inside the box, and the trimmer does the rest.
+	wide = minf(wide, maxf(room.x - STRIP_LEFT * 2.0, LIST_WIDTH_MIN))
+
+	# Everything that is not a row: the header above the list and the resting
+	# glyph band the control keeps at its own foot. Counted rather than assumed —
+	# leaving `CELL_HEIGHT` out of this sum is what put the first build's header 24
+	# rows ABOVE the control's own rect, ink outside the box that claimed it.
+	var chrome: float = LIST_HEADER + CELL_HEIGHT
+	var rows: int = maxi(count, 1)
+	var roomy: bool = float(rows) * ROW_ROOMY + chrome <= tall
+	var row_height: float = ROW_ROOMY if roomy else ROW_TIGHT
+	var shown: int = rows
+	if not roomy and float(rows) * ROW_TIGHT + chrome > tall:
+		# CAPPED. One row is surrendered to the tail line that admits it.
+		shown = maxi(int((tall - chrome) / ROW_TIGHT) - 1, 1)
+	var lines: float = float(shown + (0 if shown == rows else 1))
+	return {
+		"width": wide,
+		"height": minf(lines * row_height + chrome, tall),
+		"rows": shown,
+		"row_height": row_height,
+		"roomy": roomy,
+	}
+
+
 ## The expanded read, held on the map key: every carried patch by name, with its
-## stack count and its rarity word. This is where the fiction is legible — a
-## player who wants to know what HOT LOOP does holds the same key they hold to
-## read the map.
+## stack count and — the part that makes it worth holding a key for — WHAT IT IS
+## DOING AT THAT STACK COUNT, computed from the constants the simulation runs on.
+##
+## "HOT LOOP x3 · consecutive cuts on one process ramp to +63% within 1.6 s" is a
+## decision. "HOT LOOP x3 · STABLE" was a label.
+##
+## Rarity keeps its non-colour channel (pillar 7): the bracket SHAPE that the
+## resting row draws is drawn here too, around the glyph, so a KERNEL patch is
+## bracketed in both reads and the tier is never carried by hue alone.
 func _draw_list(ids: Array[String]) -> void:
 	var alpha: float = _alpha * _expand
-	if alpha <= 0.01:
+	if alpha <= 0.01 or _list.is_empty():
 		return
-	var top: float = size.y - CELL_HEIGHT - float(ids.size()) * ROW_HEIGHT
+	var width: float = size.x
+	var row_height: float = float(_list["row_height"])
+	var roomy: bool = bool(_list["roomy"])
+	var shown: int = mini(int(_list["rows"]), ids.size())
+	var hidden: int = ids.size() - shown
+	var lines: float = float(shown + (1 if hidden > 0 else 0))
+	var top: float = size.y - CELL_HEIGHT - lines * row_height
+
+	_draw_plate(Rect2(Vector2(0.0, top - LIST_HEADER + 2.0),
+			Vector2(width, lines * row_height + LIST_HEADER + 2.0)), alpha)
+
 	var header: Color = UiFx.DIM
 	header.a = alpha
-	draw_string(_font, Vector2(2.0, top - 6.0), "HOT-PATCHES  ·  RUN-SCOPED",
+	draw_string(_font, Vector2(PLATE_PAD, top - 7.0), "HOT-PATCHES  ·  RUN-SCOPED",
 			HORIZONTAL_ALIGNMENT_LEFT, -1.0, ROW_TEXT_SIZE, header)
 
-	for i: int in ids.size():
+	for i: int in shown:
 		var id: String = ids[i]
-		var y: float = top + float(i) * ROW_HEIGHT + ROW_HEIGHT - 5.0
+		var count: int = Patches.local_stacks(id)
+		var y: float = top + float(i) * row_height
 		var tier: int = Patches.rarity(id)
 		var hue: Color = PatchFx.rarity_colour(tier)
-		hue.a = alpha
-		draw_string(_font, Vector2(4.0, y), Patches.glyph(id),
-				HORIZONTAL_ALIGNMENT_LEFT, -1.0, ROW_GLYPH_SIZE, hue)
+		var measured: Dictionary = UpgradeText.patch_measure(id, count)
+		var capped: bool = bool(measured["capped"])
+
+		# The glyph, wearing the same rarity bracket the resting cell wears.
+		var glyph_cell: Rect2 = Rect2(Vector2(LIST_GLYPH_X + PLATE_PAD - 3.0, y + 1.0),
+				Vector2(24.0, row_height - 4.0))
+		_draw_bracket(glyph_cell, tier, hue, alpha)
+		var lit: Color = hue
+		lit.a = alpha
+		draw_string(_font,
+				Vector2(LIST_GLYPH_X + PLATE_PAD, y + row_height * 0.5 + 4.0),
+				Patches.glyph(id), HORIZONTAL_ALIGNMENT_LEFT, -1.0, ROW_GLYPH_SIZE, lit)
+
 		var body: Color = UiFx.TEXT
 		body.a = alpha
-		draw_string(_font, Vector2(26.0, y),
-				"%s  x%d" % [Patches.display_name(id), Patches.local_stacks(id)],
-				HORIZONTAL_ALIGNMENT_LEFT, -1.0, ROW_TEXT_SIZE, body)
-		var word: Color = UiFx.DIM
-		word.a = alpha
-		draw_string(_font, Vector2(STRIP_WIDTH - 92.0, y),
-				Balance.patch_tier_name(tier), HORIZONTAL_ALIGNMENT_LEFT, -1.0,
-				ROW_TEXT_SIZE, word)
+		var title: String = "%s  x%d" % [Patches.display_name(id), count]
+		var name_x: float = LIST_NAME_X + PLATE_PAD
+		var clause_x: float = name_x
+		var right: float = width - PLATE_PAD
+		if roomy:
+			# Two lines: the identity, then the mechanism under it and indented, so
+			# the eye can run down the names without reading every clause.
+			draw_string(_font, Vector2(name_x, y + 13.0),
+					UpgradeText.fit(_font, title, ROW_TEXT_SIZE, right - name_x),
+					HORIZONTAL_ALIGNMENT_LEFT, -1.0, ROW_TEXT_SIZE, body)
+		else:
+			draw_string(_font, Vector2(name_x, y + row_height - 5.0),
+					UpgradeText.fit(_font, title, ROW_TEXT_SIZE, LIST_NAME_WIDTH - 6.0),
+					HORIZONTAL_ALIGNMENT_LEFT, -1.0, ROW_TEXT_SIZE, body)
+			clause_x = name_x + LIST_NAME_WIDTH
+
+		_draw_clause(measured, capped, clause_x, y + row_height - 5.0,
+				right - clause_x, alpha)
+
+	if hidden <= 0:
+		return
+	# The admission. A list that silently stopped at row six would be worse than
+	# the label-only list it replaced, because a player would not know to look.
+	var tail_colour: Color = UiFx.DIM
+	tail_colour.a = alpha
+	draw_string(_font,
+			Vector2(LIST_NAME_X + PLATE_PAD, top + lines * row_height - 5.0),
+			"+%d MORE  ·  FULL CATALOGUE IN THE CODEX" % hidden,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, ROW_TEXT_SIZE, tail_colour)
+
+
+## The ground. A dark plate with a hairline edge and an accent bar down its left,
+## so a paragraph of body copy is read off a surface rather than off a corridor.
+##
+## Drawn rather than themed, and drawn HERE rather than as a child ColorRect, for
+## the reason this whole widget is one Control: a node added and removed with the
+## expansion is a node the layout has to re-solve, and this is two `draw_rect`
+## calls that already know the box.
+func _draw_plate(box: Rect2, alpha: float) -> void:
+	if box.size.x <= 0.0 or box.size.y <= 0.0:
+		return
+	var plate: Color = PLATE_COLOUR
+	plate.a = PLATE_COLOUR.a * alpha
+	draw_rect(box, plate, true)
+	var edge: Color = UiFx.SYSTEM
+	edge.a = PLATE_EDGE_ALPHA * alpha
+	draw_rect(box, edge, false, 1.0)
+	# The accent bar. Full-height on the left edge — the same "this is a panel,
+	# and it is yours" mark the Compiler's rows wear.
+	draw_rect(Rect2(box.position, Vector2(PLATE_BAR, box.size.y)), edge, true)
+
+
+## The mechanism clause and, immediately after it, the bound in force.
+##
+## ONE RUN OF TEXT, not two columns. The cap is measured first and the CLAUSE is
+## what yields — so `CAPPED` and `ceiling +90%` are never the thing that gets
+## ellipsised, and never end up anywhere but touching the sentence they qualify.
+## `CAPPED` also keeps its word (pillar 7: colour is never the only channel); the
+## WARNING tint is the second channel, not the first.
+func _draw_clause(measured: Dictionary, capped: bool, at_x: float, at_y: float,
+		room: float, alpha: float) -> void:
+	if room <= 0.0:
+		return
+	var clause: String = String(measured["effect"])
+	var cap: String = "CAPPED" if capped else String(measured["ceiling"])
+	var cap_text: String = "" if cap.is_empty() else CAP_SEPARATOR + cap
+	var cap_width: float = 0.0
+	if not cap_text.is_empty():
+		cap_width = _font.get_string_size(cap_text, HORIZONTAL_ALIGNMENT_LEFT,
+				-1.0, ROW_TEXT_SIZE).x
+
+	var gloss: Color = UiFx.CAPTION
+	gloss.a = alpha
+	var drawn: String = UpgradeText.fit(_font, clause, ROW_TEXT_SIZE,
+			maxf(room - cap_width, 0.0))
+	draw_string(_font, Vector2(at_x, at_y), drawn,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, ROW_TEXT_SIZE, gloss)
+	if cap_text.is_empty():
+		return
+	var used: float = _font.get_string_size(drawn, HORIZONTAL_ALIGNMENT_LEFT,
+			-1.0, ROW_TEXT_SIZE).x
+	var mark: Color = UiFx.WARNING if capped else UiFx.DIM
+	mark.a = alpha
+	draw_string(_font, Vector2(at_x + used, at_y), cap_text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, ROW_TEXT_SIZE, mark)

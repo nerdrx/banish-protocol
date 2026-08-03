@@ -86,7 +86,13 @@ func _assemble() -> void:
 	_light.light_energy = 1.9
 	_light.omni_range = 15.0
 	_light.omni_attenuation = 0.8
-	_light.light_volumetric_fog_energy = 3.0
+	# M10b: 3.0 -> 1.35. The shaft SHOULD be a cyan beacon — it is MOTHER's own
+	# lift and the layer's navigational objective, and it is the one prop in the
+	# game whose teal nobody should touch. But a fog energy of 3.0 on a 15 m omni
+	# is not a beacon, it is a fog machine: it turned every cubic metre of air in
+	# the trunk room cyan, which is how a deliberate accent becomes the room's
+	# colour. The RINGS are untouched; only the air is.
+	_light.light_volumetric_fog_energy = 1.35 if NeonBudget.cyan_cut() else 3.0
 	_light.shadow_enabled = false
 	add_child(_light)
 

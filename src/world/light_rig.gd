@@ -71,6 +71,72 @@ const PHOSPHOR: Color = Color(0.52, 0.92, 0.64)
 const SODIUM: Color = Color(1.00, 0.66, 0.30)
 const HOSTILE: Color = Color(1.00, 0.13, 0.15)
 
+# =========================================== M10b THE TORCH, AND THE FINDING ==
+#
+# THE MEASUREMENT THAT MOVED THIS MILESTONE, and it is not about the kit at all.
+#
+# M10 found that ~93% of a frame's luminance was cool and named four suspects in
+# the architecture. M10b cut all four, plus the colour-grade LUTs on top, and
+# photographed an A/B of the same build with one flag between the arms. The
+# frame moved by two per cent. So the question stopped being "what is teal" and
+# became "what is actually lighting this picture", and the answer is one line:
+#
+#     the brightest 0.5% of the world in a bus-junction frame measures
+#         rgb (0.723, 0.853, 0.960) — hue 207 deg, saturation 0.246
+#     and the player's carried beam is authored as
+#         Color(0.86, 0.90, 1.00).lerp(player_colour, 0.18)
+#       = rgb (0.759, 0.882, 1.000) — hue 209 deg, saturation 0.241
+#
+# Those are the same colour. In a game whose first pillar is "unrendered space
+# is near-black", THE PLAYER'S OWN TORCH IS THE DOMINANT LIGHT SOURCE IN EVERY
+# FRAME, and it was a saturated cyan-blue. Every surface the player has ever
+# looked at has been lit cyan by the thing in their hands, and no amount of
+# re-colouring fixtures across the room could ever have shown up against it.
+# Two milestones of null results are explained by this one number.
+#
+# The fix obeys the rule at the top of this file — NO LIGHT DOES TWO JOBS. The
+# beam was doing two: it was the room's illumination AND the co-op identity
+# channel, the thing that tells you whose beam just swept past in the dark. Those
+# jobs want opposite colours, so they get split:
+#
+#   THE LIGHT that falls on surfaces becomes a real torch. `TORCH` is a filament
+#   in a handheld housing, which is warm-white — the same argument `TUNGSTEN`
+#   already makes about the working practical. It keeps a HINT of the owner's
+#   colour (`TORCH_IDENTITY`) so a beam is still faintly personal.
+#
+#   THE CONE the player can see keeps the identity tint at full strength. That
+#   is the channel the identity actually lives in: you recognise a crewmate by
+#   the colour of the shaft of light, not by the colour of the wall it lands on.
+#
+# `-- --cyan legacy` restores both, so the A/B is one build with one flag.
+const TORCH: Color = Color(1.00, 0.94, 0.86)
+const TORCH_LEGACY: Color = Color(0.86, 0.90, 1.00)
+## How much of the owner's colour survives in the light that lands on a wall.
+## 0.18 was enough to drag the whole game to hue 209; 0.07 is a tint you notice
+## when two beams cross and never otherwise.
+const TORCH_IDENTITY: float = 0.07
+const TORCH_IDENTITY_LEGACY: float = 0.18
+## The visible cone. Warmed a little less than the light — it is additive in the
+## fog and it is where the identity read lives — but not left at (0.7, 0.8, 1.0),
+## which put a cyan wash across every metre of lit air in the game.
+const TORCH_CONE: Color = Color(0.94, 0.92, 0.90)
+const TORCH_CONE_LEGACY: Color = Color(0.70, 0.80, 1.00)
+
+
+## The colour of the light a player's beam casts on the world.
+static func torch_colour(owner: Color) -> Color:
+	if not NeonBudget.cyan_cut():
+		return TORCH_LEGACY.lerp(owner, TORCH_IDENTITY_LEGACY)
+	return TORCH.lerp(owner, TORCH_IDENTITY)
+
+
+## The colour of the visible beam cone, which keeps its owner's identity.
+static func torch_cone_colour(owner: Color) -> Color:
+	if not NeonBudget.cyan_cut():
+		return TORCH_CONE_LEGACY.lerp(owner, 0.25)
+	return TORCH_CONE.lerp(owner, 0.25)
+
+
 ## Nothing in the architectural rig is allowed past this. Emissive geometry and
 ## the HOSTILE red are exempt — a warning light that obeys a comfort budget is a
 ## warning light nobody looks at.
@@ -325,7 +391,8 @@ static func key(parent: Node3D, pos: Vector3, target: Vector3, energy: float = 5
 	l.name = "Key"
 	l.position = pos
 	l.light_color = color
-	l.light_energy = energy * (KEY_PEAK if on else 1.0)
+	l.light_energy = energy * (KEY_PEAK if on else 1.0) \
+			* (NeonBudget.KEY_LIFT if NeonBudget.cyan_cut() else 1.0)
 	# The showcase rooms were 12 m across; generated ones reach 25 m, and a key
 	# whose range dies two metres short of the wall it is aimed at is a key that
 	# does nothing at all. Callers size this to the room.
@@ -369,7 +436,8 @@ static func accent(parent: Node3D, pos: Vector3, target: Vector3,
 	l.name = "Accent"
 	l.position = pos
 	l.light_color = color
-	l.light_energy = energy * (ACCENT_PEAK if on else 1.0)
+	l.light_energy = energy * (ACCENT_PEAK if on else 1.0) \
+			* (NeonBudget.ACCENT_LIFT if NeonBudget.cyan_cut() else 1.0)
 	l.spot_range = range_m
 	# NOT spread. The wash is the one cone in the game that has to stay narrow —
 	# it is thrown 24 m down a wall and widening it puts the energy in the fog and
@@ -407,6 +475,13 @@ static func practical(parent: Node3D, pos: Vector3, energy: float = 1.5,
 	# every time the setting moves.
 	var on: bool = soft()
 	var peak: float = PRACTICAL_PEAK if on else 1.0
+	# M10b THE BRIGHTNESS NOTE is NOT applied here, and the first cut of it was.
+	# See `apply_colour_script`: lifting every practical at construction time also
+	# lifted `Practical_trace` and `Practical_c*`, which are MOTHER's teal and are
+	# the exact fixtures this milestone is trying to make quieter — the junction
+	# frame came back with 75% MORE absolute cyan luminance than the arm it was
+	# supposed to beat. The lift belongs after the grade, where a fixture's final
+	# colour is known.
 	l.set_meta("fidelity_base", energy * peak)
 	l.light_energy = energy * peak * Photonics.practical_gain()
 	l.omni_range = range_m
@@ -589,6 +664,78 @@ const SCRIPT_ACCENT: Array[Color] = [TEAL, SERVICE, TEAL, SODIUM, TEAL, TUNGSTEN
 const SCRIPT_PRACTICAL: Array[Color] = [TUNGSTEN, PHOSPHOR, PHOSPHOR, TUNGSTEN,
 	TUNGSTEN, PHOSPHOR]
 
+## M10b: THE SAME TABLE WITH TEAL DEMOTED FROM LIGHT SOURCE TO ACCENT.
+##
+## Three of the six rows above spend their ACCENT — the wide raking wash, the
+## biggest area any fixture in the rig covers — on teal, and the siphon spends
+## its KEY on it. Measured, that is most of the cyan in a frame that is not
+## coming off the kit's own emissive channels, and none of it is motivated: an
+## arrival hall and a drop shaft are rooms MOTHER built, not systems she is
+## running, and the grammar in NeonBudget has said so since M10 without anything
+## acting on it.
+##
+## What changes, row by row, and what the room keeps:
+##
+##   ARRIVAL   accent TEAL -> TUNGSTEN. The teal in the crew's first four seconds
+##             is now entirely her gates and her wall channels — objects — rather
+##             than a wash with no fitting behind it.
+##   BUS       unchanged. It was already the warm room.
+##   VAULT     accent TEAL -> VAULT_COLD, and this one was decided by a
+##             measurement rather than by the rule. The first cut kept the teal
+##             on the grounds that an archive IS her system; shot, the vault came
+##             back at 89% cool against a bus junction's 29%, because the accent
+##             is the WIDEST fixture in the rig and a wide teal wash is a teal
+##             room however well motivated it is. The distinction that resolves
+##             it: her archive's CONTENTS are hers and stay teal — the racks,
+##             the glyph panel, the quarantine bar, all of which are props the
+##             player can walk up to — and the ROOM is merely refrigerated, so
+##             it is lit by a cold service white. Teal on the objects, not on the
+##             air.
+##   SIPHON    key and accent SWAP. The room keeps both of its hues and the same
+##             two-colour identity — teal coolant rake over old sodium — but the
+##             DOMINANT fixture is now the sodium, which is what the row's own
+##             comment argued for in the first place ("a siphon junction is
+##             legacy plumbing").
+##   SHAFT     accent TEAL -> SODIUM. An unattended drop is lit by fittings
+##             nobody has relamped, which is the depth drift's own story told one
+##             room early.
+##   BACKDOOR  unchanged. Never had any teal to lose.
+##
+## The practical row is untouched: it was already tungsten and phosphor.
+const SCRIPT_KEY_CUT: Array[Color] = [SERVICE, TUNGSTEN, VAULT_COLD, SODIUM,
+	SERVICE, AMBER]
+const SCRIPT_ACCENT_CUT: Array[Color] = [TUNGSTEN, SERVICE, VAULT_COLD, TEAL,
+	SODIUM, TUNGSTEN]
+
+
+## COOL-WHITE MEANS WHITE, and this is the largest single number in the M10b cut.
+##
+## `SERVICE` is documented above as "cool-white maintenance light, specified by an
+## engineer, not chosen by anybody — the neutral the other hues are read against".
+## It ships at (0.74, 0.82, 0.95): hue 218 degrees, saturation 0.22. That is not a
+## neutral, it is a blue light, and because SERVICE and its sibling `KEY_COLD` are
+## the key of two archetypes and the accent of a third, it is what the m10b
+## instrument was scoring as 74% of the bus junction's frame luminance. The teal
+## was never the whole of "the picture is cool"; half of it was the white.
+##
+## So the cool end of the script gets a saturation cap on the way out. It is a HUE
+## correction and it costs nothing — a desaturated colour at the same value is
+## marginally BRIGHTER, which the brightness note is glad of.
+##
+## The band is 205-265 degrees, which is deliberately ABOVE teal (194.5) and
+## VAULT_COLD's own 215 sits inside it: a refrigerated archive still reads colder
+## than the rooms around it because its neighbours are tungsten and sodium, not
+## because its lamps are blue. Nothing warm, nothing green and nothing teal is in
+## the band at all, so this cannot quietly launder the semantic palette.
+static func cool_trim(c: Color) -> Color:
+	if not NeonBudget.cyan_cut():
+		return c
+	if c.h * 360.0 < 205.0 or c.h * 360.0 > 265.0:
+		return c
+	if c.s <= NeonBudget.COOL_SAT_CAP:
+		return c
+	return Color.from_hsv(c.h, NeonBudget.COOL_SAT_CAP, c.v, c.a)
+
 ## How far the depth drift is allowed to travel, and where it lands.
 ##
 ## Deeper rings are lit by fittings nobody has relamped in decades. Warm fixtures
@@ -716,11 +863,20 @@ static func apply_colour_script(root: Node3D, rooms: Array, layer: int) -> void:
 		if was.r > 0.75 and was.g < 0.35 and was.b < 0.35:
 			continue
 		var row: int = _row_at(rooms, light.global_position)
+		var cut: bool = NeonBudget.cyan_cut()
+		# Element by element, never a ternary between the two tables: a typed
+		# array out of a ternary infers untyped and throws AT RUNTIME, which is
+		# the failure mode CLAUDE.md has a rule about.
+		var key_hue: Color = SCRIPT_KEY[row]
+		var accent_hue: Color = SCRIPT_ACCENT[row]
+		if cut:
+			key_hue = SCRIPT_KEY_CUT[row]
+			accent_hue = SCRIPT_ACCENT_CUT[row]
 		var picked: Color
 		if role == 0:
-			picked = SCRIPT_KEY[row]
+			picked = key_hue
 		elif role == 1:
-			picked = SCRIPT_ACCENT[row]
+			picked = accent_hue
 		else:
 			# Practicals carry the room's accent colour MOST of the time and its key
 			# colour the rest, so a machinery hall is a field of warm cans with the
@@ -730,8 +886,24 @@ static func apply_colour_script(root: Node3D, rooms: Array, layer: int) -> void:
 			var at: Vector3 = light.global_position
 			var roll: int = absi(hash(Vector3i(int(roundf(at.x * 4.0)), 977,
 					int(roundf(at.z * 4.0)))))
-			picked = SCRIPT_PRACTICAL[row] if roll % 5 == 0 else SCRIPT_KEY[row]
-		picked = restrain(drift(picked, t))
+			picked = SCRIPT_PRACTICAL[row] if roll % 5 == 0 else key_hue
+			# THE BRIGHTNESS LIFT, here rather than in `practical()` and only on the
+			# fixtures the script actually grades. Those are the room's generic cans
+			# — tungsten, sodium, phosphor, service white — i.e. exactly the
+			# "practicals take up the slack" the M10b brief asks for. The ungraded
+			# ones (`Practical_trace` on a wall channel, `Practical_c*` on a
+			# corridor's inlaid data path) are hers, keep their teal, and keep their
+			# authored energy. Both metas are rewritten for the same reason
+			# `set_practical_gain` rewrites both.
+			if cut and light is OmniLight3D:
+				var lifted: float = float(light.get_meta("fidelity_base",
+						light.light_energy)) * NeonBudget.PRACTICAL_LIFT
+				light.set_meta("fidelity_base", lifted)
+				light.light_energy = lifted * Photonics.practical_gain()
+		# `cool_trim` LAST, after the drift and the saturation clamp: the drift
+		# pushes cool hues toward DRAINED, which is itself a desaturation, and
+		# capping before it would let the drift put saturation back on.
+		picked = cool_trim(restrain(drift(picked, t)))
 		light.light_color = picked
 		# Both metas, for the same reason `set_practical_gain` rewrites both: the
 		# alert lerps FROM `authored_color`, so leaving it stale would make an
