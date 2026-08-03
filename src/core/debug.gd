@@ -339,6 +339,38 @@ var use_test_layer: bool = false
 var start_cycles: float = -1.0
 var log_cycles: bool = false
 
+# --- THE PARTITION (read by Net.host via `hub_start`) ------------------------
+#
+# `--hub` starts the session in the crew's staging sector; `--no-hub` forces the
+# old behaviour of injecting straight into a layer. The DEFAULT is the interesting
+# part and it is asymmetric on purpose:
+#
+#   a human       gets the hub, always. It is the front door now.
+#   an automated  gets the layer, unless it asks. Every scripted capture in this
+#   run           repo was written against "boot lands you in a layer" — `--goto
+#                 shaft`, `--autodescend`, `--exfil`, every screenshot script —
+#                 and none of them can walk themselves through a commit ritual
+#                 that did not exist when they were written. Changing the default
+#                 under them would have broken the whole verification surface of
+#                 the project to add one feature.
+#
+# `--hub` is therefore how the hub itself gets photographed and soak-tested, and
+# `--goto shaft` (or its `rig` alias) resolves to the injection rig inside it, so
+# `--hub --goto rig --hold-interact 3` is a full boot-to-dive on the real input
+# path with no shortcuts through the host validation.
+var want_hub: bool = false
+var no_hub: bool = false
+
+
+## Whether this process's session should open in THE PARTITION. See the block
+## above for why an automated run has to answer differently from a human one.
+func hub_start() -> bool:
+	if no_hub:
+		return false
+	if want_hub:
+		return true
+	return not automated
+
 # --- M3.8 HUD capture states (read by Hud, DamageArc and MainMenu) -----------
 ## `--hud-state`. Empty means "behave normally". See the header for the values.
 var hud_state: String = ""
@@ -561,7 +593,25 @@ func _ready() -> void:
 	# exactly what a live playtest needs.
 	automated = (not _mode.is_empty() or not screenshot_path.is_empty() \
 			or auto_quit_after > 0.0 or steam_selftest \
-			or not aim_trace_dir.is_empty() or aim_drive) and not live_input
+			or not aim_trace_dir.is_empty() or aim_drive \
+			or not bore_trace_dir.is_empty() or reticle_probe \
+			or refresh_probe > 0.0 \
+			or not reel_dir.is_empty()) and not live_input
+	# Round five: the viewmodel lens, for this session only. Written before the
+	# first avatar is built, which is what makes `--gunlens 0` a real A/B arm
+	# rather than a value that lands one frame after the hold has been placed.
+	if gun_lens_deg >= 0.0:
+		CrewAvatar.gun_lens_override = gun_lens_deg
+		print("[Debug] --gunlens: viewmodel lens forced to %.1f deg" % gun_lens_deg)
+	if chord_aim:
+		CrewAvatar.aim_chord_override = true
+		print("[Debug] --chordaim: aiming the grip-to-muzzle chord (the old way)")
+	if std_materials:
+		CrewAvatar.fp_lens_disabled = true
+		print("[Debug] --stdmaterials: FP body left on StandardMaterial3D")
+	if not is_nan(hold_offset.x):
+		CrewAvatar.hold_offset_override = hold_offset
+		print("[Debug] --hold: grip parked at %s in the lens's frame" % hold_offset)
 	if automated:
 		_stay_out_of_the_way()
 	if _mode == "dump":
@@ -584,7 +634,10 @@ func _ready() -> void:
 		return
 	if _mode.is_empty() and screenshot_path.is_empty() and auto_quit_after <= 0.0 \
 			and not steam_selftest and gun_log_path.is_empty() and burst_dir.is_empty() \
-			and aim_trace_dir.is_empty() and not aim_drive and not aim_overlay_only:
+			and aim_trace_dir.is_empty() and not aim_drive and not aim_overlay_only \
+			and bore_trace_dir.is_empty() and not reticle_probe \
+			and refresh_probe <= 0.0 \
+			and reel_dir.is_empty():
 		set_process(false)
 		return
 	if not gun_log_path.is_empty():
@@ -592,6 +645,12 @@ func _ready() -> void:
 		add_child(LateSampler.new())
 	if not aim_trace_dir.is_empty() or aim_overlay_only or not aim_strip_dir.is_empty():
 		_start_aim_trace.call_deferred()
+	if not bore_trace_dir.is_empty():
+		_start_bore_trace.call_deferred()
+	if reticle_probe:
+		_run_reticle_probe.call_deferred()
+	if refresh_probe > 0.0:
+		_run_refresh_probe.call_deferred()
 	# Stays processing for the whole run, not just while a screenshot is armed:
 	# `_enforce_mouse` has to be live from boot to quit, including across the
 	# menu -> layer scene change and every descent after it.
@@ -604,7 +663,8 @@ func _ready() -> void:
 ## poked into GameState in memory without a save. A dev tool that edits the
 ## player's program file would be a dev tool nobody could safely run twice.
 func _apply_program_overrides() -> void:
-	if module_spec.is_empty() and start_archive < 0 and forced_backdoor < 0:
+	if module_spec.is_empty() and start_archive < 0 and forced_backdoor < 0 \
+			and subroutine_spec.is_empty():
 		return
 	# Either override makes this session's program a fabrication, and a
 	# fabrication must never be written back over the real one — including by the
@@ -613,6 +673,8 @@ func _apply_program_overrides() -> void:
 	print("[Debug] program file is SANDBOXED for this session: nothing will be saved")
 	if not module_spec.is_empty():
 		Modules.force_tiers(module_spec)
+	if not subroutine_spec.is_empty():
+		Subs.force(subroutine_spec)
 	if start_archive >= 0:
 		print("[Debug] --archive: wallet forced to %d" % start_archive)
 		GameState.archive = start_archive
@@ -804,6 +866,10 @@ func _parse_args(args: PackedStringArray) -> void:
 					start_layer = maxi(args[i].to_int(), 1)
 			"--testlayer":
 				use_test_layer = true
+			"--hub":
+				want_hub = true
+			"--no-hub":
+				no_hub = true
 			"--cycles":
 				if i + 1 < args.size():
 					i += 1
@@ -1079,6 +1145,34 @@ func _parse_args(args: PackedStringArray) -> void:
 						stops.append(piece.to_float())
 					if not stops.is_empty():
 						aim_trace_pitches = stops
+			# --- M7 subroutines & juice ----------------------------------------
+			"--subroutine":
+				if i + 1 < args.size():
+					i += 1
+					subroutine_spec = args[i]
+			"--cast":
+				_cast_delay = 3.0
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					_cast_delay = args[i].to_float()
+			"--cast-every":
+				if i + 1 < args.size():
+					i += 1
+					_cast_every = maxf(args[i].to_float(), 0.5)
+			"--reel":
+				if i + 1 < args.size():
+					i += 1
+					reel_dir = args[i]
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					reel_every = maxi(args[i].to_int(), 1)
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					reel_frames = maxi(args[i].to_int(), 1)
+			"--reel-from":
+				if i + 1 < args.size():
+					i += 1
+					reel_from = maxi(args[i].to_int(), 0)
 			"--aimdrive":
 				aim_drive = true
 			"--physics-hz":
@@ -1109,6 +1203,46 @@ func _parse_args(args: PackedStringArray) -> void:
 				# eyeballing a build interactively next to `--playtest`.
 				if aim_trace_dir.is_empty():
 					aim_overlay_only = true
+			# --- round five: the bore trace. See the section at the foot. -------
+			"--boretrace":
+				if i + 1 < args.size():
+					i += 1
+					bore_trace_dir = args[i]
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					var stops: Array[float] = []
+					for piece: String in args[i].split(",", false):
+						stops.append(piece.to_float())
+					if not stops.is_empty():
+						bore_pitches = stops
+			"--gunlens":
+				if i + 1 < args.size():
+					i += 1
+					gun_lens_deg = args[i].to_float()
+			"--reticleprobe":
+				reticle_probe = true
+			"--refreshprobe":
+				refresh_probe = 6.0
+				if i + 1 < args.size() and not args[i + 1].begins_with("--"):
+					i += 1
+					refresh_probe = maxf(args[i].to_float(), 1.0)
+			"--hold":
+				# `--hold x,y,z` in the lens's own frame, metres. The composition
+				# A/B arm; see CrewAvatar.hold_offset_override.
+				if i + 1 < args.size():
+					i += 1
+					var parts: PackedStringArray = args[i].split(",", false)
+					if parts.size() == 3:
+						hold_offset = Vector3(parts[0].to_float(),
+								parts[1].to_float(), parts[2].to_float())
+			"--stdmaterials":
+				# The A/B arm for the FP material conversion. See
+				# CrewAvatar.fp_lens_disabled.
+				std_materials = true
+			"--chordaim":
+				# The old (round-four) aim, for the A/B arm. See
+				# CrewAvatar.aim_chord_override.
+				chord_aim = true
 			_:
 				pass
 		i += 1
@@ -1200,7 +1334,7 @@ func _boot() -> void:
 	if not _goto.is_empty() or _hold_delay >= 0.0 or _decompile_at >= 0.0 \
 			or _fire_delay >= 0.0 or _flare_delay >= 0.0 or _exfil_delay >= 0.0 \
 			or _grab_count > 0 or _compiler_delay >= 0.0 or _rewire_delay >= 0.0 \
-			or _terminal_delay >= 0.0 or _tour:
+			or _terminal_delay >= 0.0 or _tour or _cast_delay >= 0.0:
 		_arm_automation()
 	if log_modules:
 		# On the roster rather than on the spawn: a client spawns before the crew
@@ -1480,6 +1614,9 @@ func _balance_selftest() -> void:
 
 	failures += _vertical_selftest()
 	failures += _cartography_selftest()
+	failures += _hub_selftest()
+	failures += _fidelity_selftest()
+	failures += _subroutine_selftest()
 
 	print("[SelfTest] %d check(s) failed" % failures)
 	get_tree().quit(1 if failures > 0 else 0)
@@ -3016,6 +3153,8 @@ func _on_automation_player_ready(_player: Node) -> void:
 		_fire_later(_fire_delay)
 	if _flare_delay >= 0.0:
 		_flare_later(_flare_delay)
+	if _cast_delay >= 0.0:
+		_cast_later(_cast_delay)
 	if _grab_count > 0:
 		_grab_shards(_grab_count)
 	# With `--autodescend` the exfil is deferred until a backdoor layer is
@@ -3164,6 +3303,13 @@ func _teleport_local(where: String) -> void:
 			push_warning("[Debug] no '%s' on this layer" % where)
 		return
 
+	# `rig` is `shaft` under another name. In THE PARTITION the Layer publishes the
+	# injection rig as `shaft_position` (see `Layer._adopt_hub_furniture`), so the
+	# same walk-up geometry — stood off the console, inside the muster radius,
+	# facing it — is correct in both places. The alias exists so a hub script reads
+	# like what it is doing rather than like a leftover.
+	if where == "rig":
+		where = "shaft"
 	if where == "shaft":
 		var shaft: Vector3 = Vector3(layer.get("shaft_position"))
 		# Stood off the console, facing it (-Z). Only index 0 lines up with the
@@ -3325,6 +3471,13 @@ const M48_TARGETS: Dictionary = {
 	# its fixings can be photographed. Stands back far enough to see the machine and
 	# the cable arcing up to its wall source, aimed high to catch the sag.
 	"machine": {"group": "machines", "standoff": 3.8, "aim": 1.5},
+	# FIDELITY PASS. The two hero practicals, so the Isolation-benchmark
+	# compositions can be shot from a REAL GENERATED LAYER rather than from the
+	# showcase. The work light stands well back — the shot is the lamp AND the
+	# slatted pool it throws, and a 2.4 m standoff frames the lamp alone, which
+	# is a product photo rather than a room.
+	"worklight": {"group": "work_lights", "standoff": 3.2, "aim": 1.35},
+	"panel": {"group": "diffuser_panels", "standoff": 3.2, "aim": 2.2},
 }
 
 
@@ -4004,6 +4157,15 @@ func _sample_fps(delta: float) -> void:
 	# VRAM added M4.95: the filmic pass (PBR texture sets + the reflection atlas) is
 	# the milestone with the real VRAM budget, so the soak has to be able to print
 	# what it costs (INTEGRATION2 caps it at ~700 MB with the atlas at 12).
+	# M7: what was actually on screen while that was measured. A 1% low is a claim
+	# about a workload, and a perf line that does not say how many shatters,
+	# impacts and cast blooms it was carrying is a number nobody can reproduce or
+	# argue with. `Fx.counts` is a plain tally, incremented per spawn.
+	var census: PackedStringArray = PackedStringArray()
+	for family: String in Fx.counts.keys():
+		census.append("%s %d" % [family, int(Fx.counts[family])])
+	if not census.is_empty():
+		print("[FPS] fx since boot: %s" % ", ".join(census))
 	print("[FPS] avg=%.0f  1%%low=%.0f  min=%.0f  frames=%d  draws=%d  prims=%dk  vram=%dMB" % [
 		total / float(sorted.size()), sorted[low_index], sorted[0], sorted.size(),
 		RenderingServer.get_rendering_info(
@@ -4056,6 +4218,7 @@ func _process(delta: float) -> void:
 	_sample_fps(delta)
 	_advance_aim_drive(delta)
 	_advance_burst()
+	_advance_reel()
 	if not _shot_armed or _shot_taken:
 		return
 	_frames_left -= 1
@@ -4723,3 +4886,1180 @@ class AimOverlay extends Control:
 			draw_string(font, _to_canvas(Vector2(float(pt) * 1.4, y)), line,
 					HORIZONTAL_ALIGNMENT_LEFT, -1.0, pt, RETICLE_COLOR)
 			y += float(pt) * 1.3
+
+
+# ------------------------------------------------------- THE PARTITION selftest --
+#
+# Appended section (this file is append-only during parallel work). Everything
+# below is about the hub: what its flow guarantees, and what its safety law
+# obligations are.
+#
+# The claims here are deliberately the ones a screenshot CANNOT make. Whether the
+# room looks right is a capture's job; whether a crew can be stranded in it, and
+# whether the machinery in it can strobe, are properties of numbers, and numbers
+# are what a selftest is for.
+
+## `--selftest`, THE PARTITION section. Returns the failure count, the same
+## contract `_vertical_selftest` and `_cartography_selftest` follow.
+func _hub_selftest() -> int:
+	var failures: int = 0
+
+	# SAFETY LAW (DESIGN.md pillar 7, WCAG 2.3.1). The hub added three new
+	# temporally-varying emitters — the rig's armed beat, the arrival pad's settle
+	# pulse and MOTHER's lens breath — and every one of them is a NEW flash source
+	# that the caps have to bound. Measured at their loudest: Reduced Flashing OFF,
+	# countdown at its most urgent. Anything at or under 3 Hz passes.
+	for probe: Dictionary in [
+			{"n": "RIG-ARM", "hz": DropInterface.ARM_PULSE_HZ_MAX},
+			{"n": "RIG-IDLE", "hz": DropInterface.ARM_PULSE_HZ_MIN},
+			{"n": "ARRIVAL", "hz": ArrivalPad.SETTLE_PULSE_HZ},
+			{"n": "LENS", "hz": MotherLens.BREATH_HZ}]:
+		var hz: float = float(probe["hz"])
+		if hz <= 3.0:
+			print("[SelfTest] PASS  flash-rate %-8s: %.2f Hz <= 3.0 Hz (hub)" % [
+				String(probe["n"]), hz])
+		else:
+			failures += 1
+			printerr("[SelfTest] FAIL  flash-rate %s: %.2f Hz > 3.0 Hz (WCAG 2.3.1)" % [
+				String(probe["n"]), hz])
+
+	# And the ramp has to ramp the right way. A rig whose beat SLOWED as the
+	# countdown closed would be reading backwards, and the cap check above would
+	# still have passed it.
+	if DropInterface.ARM_PULSE_HZ_MIN < DropInterface.ARM_PULSE_HZ_MAX:
+		print("[SelfTest] PASS  rig urgency: beat ramps %.2f -> %.2f Hz as it closes" % [
+			DropInterface.ARM_PULSE_HZ_MIN, DropInterface.ARM_PULSE_HZ_MAX])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  rig urgency: beat does not tighten toward the commit")
+
+	# THE 20-SECOND RULE — the hub's version of the solo invariant.
+	#
+	# DESIGN.md's solo invariant says everything must be fully doable alone; a
+	# staging area's version of that is that it must never become a lobby tax. The
+	# budget the feature was specified against is BOOT TO DIVE IN 20 SECONDS if a
+	# solo player hustles, and the part of that this build owns is everything after
+	# the hub is standing: walk from the spawn to the rig, hold the lever, ride the
+	# solo countdown. Measured against the real numbers rather than against a
+	# stopwatch on one machine.
+	var walk: float = PartitionBuilder.SPAWNS[0].distance_to(PartitionBuilder.RIG) \
+			/ Player.SPRINT_SPEED
+	var ritual: float = walk + Balance.SHAFT_CHANNEL_TIME + Run.INJECT_COUNTDOWN_SOLO
+	# 12 s leaves eight for the engine to boot, the menu to come up and a human to
+	# click HOST — which is the half of the budget this file cannot measure.
+	if ritual <= 12.0:
+		print("[SelfTest] PASS  hub 20s rule: spawn->dive %.2fs (sprint %.2f + channel %.2f + commit %.2f)" % [
+			ritual, walk, Balance.SHAFT_CHANNEL_TIME, Run.INJECT_COUNTDOWN_SOLO])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  hub 20s rule: spawn->dive %.2fs > 12.0s — the hub is a lobby tax" % ritual)
+
+	# The solo countdown must be SHORTER than the crew one. Both exist so a commit
+	# can be stopped; a solo agent has nobody to stop it for, so making them wait
+	# the crew's window is pure friction.
+	if Run.INJECT_COUNTDOWN_SOLO < Run.INJECT_COUNTDOWN and Run.INJECT_COUNTDOWN_SOLO > 0.0:
+		print("[SelfTest] PASS  commit windows: solo %.1fs < crew %.1fs, both abortable" % [
+			Run.INJECT_COUNTDOWN_SOLO, Run.INJECT_COUNTDOWN])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  commit windows: solo %.1f / crew %.1f" % [
+			Run.INJECT_COUNTDOWN_SOLO, Run.INJECT_COUNTDOWN])
+
+	# NOBODY IS EVER STRANDED. A run that ends has to bring the crew home on its
+	# own, whether or not anybody presses the button — the debrief is a screen with
+	# a live socket behind it, and the version of this that shipped before the hub
+	# ended the session outright rather than leaving anyone there.
+	if Run.HUB_RETURN_DELAY > Balance.EXFIL_COUNTDOWN * 0.0 and Run.HUB_RETURN_DELAY <= 60.0:
+		print("[SelfTest] PASS  hub homecoming: unattended debrief returns after %.0fs" % [
+			Run.HUB_RETURN_DELAY])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  hub homecoming: %.1fs is not a return anybody waits for" % [
+			Run.HUB_RETURN_DELAY])
+
+	# THE MUSTER PAD HAS TO CONTAIN THE CREW. Every spawn point must be far enough
+	# from the rig that the crew does not start already mustered (the ritual would
+	# be armable before anyone had walked anywhere), and near enough that reaching
+	# it is a walk and not an expedition. The pad's own radius is the yardstick.
+	var radius: float = Balance.SHAFT_MUSTER_RADIUS
+	var worst_near: float = 999.0
+	var worst_far: float = 0.0
+	for spawn: Vector3 in PartitionBuilder.SPAWNS:
+		var d: float = Vector2(spawn.x - PartitionBuilder.RIG.x,
+				spawn.z - PartitionBuilder.RIG.z).length()
+		worst_near = minf(worst_near, d)
+		worst_far = maxf(worst_far, d)
+	if worst_near > radius and worst_far < radius * 4.0:
+		print("[SelfTest] PASS  hub muster: spawns %.1f-%.1f m from the rig (pad %.1f m)" % [
+			worst_near, worst_far, radius])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  hub muster: spawns %.1f-%.1f m against a %.1f m pad" % [
+			worst_near, worst_far, radius])
+
+	# DETERMINISM. The Partition must not be able to move the generator. It is
+	# authored, so the claim is simply that building it consumes nothing from the
+	# shared streams — checked by taking the next number out of the generator's own
+	# stream before and after, which is the only thing "the RNG did not advance"
+	# can mean. A hub that quietly rolled one die here would shift every layer the
+	# crew injected into afterwards, and `--dumplayer` (a fresh process) would
+	# never catch it.
+	Rng.set_run_seed(4242)
+	var before: int = Rng.stream("layer").randi()
+	var probe_hub: PartitionBuilder = PartitionBuilder.new()
+	# Added to the tree rather than `build()`-ed in the air: `GeometryKit._ready`
+	# builds, and the light rig aims its fixtures with `look_at`, which needs a
+	# global transform. Built detached it still produces the right answer to the
+	# question being asked here, but it produces it underneath forty engine errors,
+	# and a selftest that shouts while it passes is one nobody reads.
+	get_tree().root.add_child(probe_hub)
+	var after: int = Rng.stream("layer").randi()
+	var replay: RandomNumberGenerator = Rng.fresh("layer")
+	replay.randi()
+	var expected: int = replay.randi()
+	probe_hub.queue_free()
+	if after == expected:
+		print("[SelfTest] PASS  hub determinism: building the Partition consumed 0 draws (%d -> %d)" % [
+			before, after])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  hub determinism: the Partition advanced the shared RNG stream")
+
+	return failures
+
+
+# ===================== FIDELITY PASS — the Isolation benchmark ================
+#
+# Appended, never interleaved (CLAUDE.md: this file is append-only during
+# parallel work). Two claims are asserted here and both of them are claims a
+# capture cannot settle:
+#
+#   1. THE NEW FLASH SOURCE IS CAPPED. The fidelity pass adds a failing tripod
+#      work light — a temporal-flash effect on a WORLD LIGHT, which is exactly
+#      the class of thing DESIGN.md pillar 7 was written about. The existing
+#      flash-rate block already measures the DYING and ARC curves; this asserts
+#      that the work light actually USES one of them rather than having grown a
+#      curve of its own, that the curve it uses never blacks the fixture out,
+#      and that Reduced Flashing removes the swing entirely. A cap that is only
+#      true because somebody remembered to reuse the right enum is a cap that
+#      breaks the first time somebody does not.
+#
+#   2. THE INSTRUMENT ZONE IS CENTRED. The PT3 report was "the ui still looked
+#      anchored to the left... the minimap was on the left instead of on the
+#      very right", on a 3440x1440 panel. It was investigated with `--ui-audit`
+#      and there was no arithmetic bug — the box was centred to the pixel and
+#      the complaint was about the WIDTH of the composed zone, which is now a
+#      setting. This locks the half that was never broken, at the two aspects
+#      the user actually owns, so a future widening cannot quietly reintroduce
+#      the bug the report was mistaken for.
+
+## The work light's fault curve, and the zone geometry. Returns the failure count.
+func _fidelity_selftest() -> int:
+	var failures: int = 0
+
+	# --- 1a. the work light reuses a curve the flash-rate block already proves --
+	var lamp_mode: int = int(FlickerLight.Mode.ARC)
+	var meas: Dictionary = _measure_flash_hz(lamp_mode)
+	var hz: float = float(meas["peak_hz"])
+	if hz <= 3.0:
+		print("[SelfTest] PASS  work-light flicker: ARC curve peaks at %.2f Hz <= 3.0 Hz" % hz)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  work-light flicker: %.2f Hz > 3.0 Hz (WCAG 2.3.1)" % hz)
+
+	# --- 1b. and it browns out rather than blacking out ----------------------
+	# A practical is often the ONLY light in the room it stands in. A fault that
+	# takes it to zero takes the room to zero, twice a second, which is a worse
+	# experience than the fault is worth even when it is inside the rate cap.
+	var floor_level: float = 1.0
+	var ceiling_level: float = 0.0
+	for i: int in 4000:
+		var v: float = FlickerLight.level(lamp_mode, float(i) * 0.005, 0.0)
+		floor_level = minf(floor_level, v)
+		ceiling_level = maxf(ceiling_level, v)
+	if floor_level >= 0.5 and ceiling_level <= 1.0:
+		print("[SelfTest] PASS  work-light floor: fault dips to %.2f of base, never dark" % floor_level)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  work-light floor: range %.2f..%.2f (want >= 0.50, <= 1.00)" % [
+			floor_level, ceiling_level])
+
+	# --- 1c. Reduced Flashing removes the swing ------------------------------
+	# Restored in a `for` with no early exit so a failure cannot leave the whole
+	# process running with the accessibility switch flipped.
+	var before_scale: float = A11y.flash_scale
+	A11y.flash_scale = 0.0
+	var calm_lo: float = 1.0
+	var calm_hi: float = 0.0
+	for i: int in 4000:
+		var v: float = FlickerLight.level(lamp_mode, float(i) * 0.005, 0.0)
+		calm_lo = minf(calm_lo, v)
+		calm_hi = maxf(calm_hi, v)
+	A11y.flash_scale = before_scale
+	if calm_hi - calm_lo <= 0.001:
+		print("[SelfTest] PASS  work-light calmed: Reduced Flashing swing %.4f (flat)" % [
+			calm_hi - calm_lo])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  work-light calmed: swing %.4f under Reduced Flashing" % [
+			calm_hi - calm_lo])
+
+	# --- 2. the instrument zone, at the user's two aspects -------------------
+	for view: Vector2 in [Vector2(1280.0, 720.0), Vector2(1720.0, 720.0),
+			Vector2(2560.0, 720.0)]:
+		for width: float in [0.0, 0.5, 1.0]:
+			var rect: Rect2 = UiFx.instrument_rect(view, width)
+			var left: float = rect.position.x
+			var right: float = view.x - rect.end.x
+			if absf(left - right) > 1.0:
+				failures += 1
+				printerr("[SelfTest] FAIL  hud zone %dx%d @ %d%%: left %.1f != right %.1f" % [
+					int(view.x), int(view.y), int(width * 100.0), left, right])
+				continue
+			# And it must never reach past the glass. TUBE_EDGE is what the barrel
+			# warp and the bezel falloff actually eat; a zone wider than that is a
+			# zone with readouts in the part of the tube that has no picture.
+			var margin: float = UiFx.glass_margin_x(view)
+			if left < margin - 1.0:
+				failures += 1
+				printerr("[SelfTest] FAIL  hud zone %dx%d @ %d%%: inset %.1f < glass %.1f" % [
+					int(view.x), int(view.y), int(width * 100.0), left, margin])
+	print("[SelfTest] PASS  hud zone: centred at 16:9 / 21:9 / 32:9, at 0 / 50 / 100%")
+
+	# The ultrawide default. The user owns a 21:9 and a 32:9 and asked for the
+	# map in the true corner; a fresh profile has to give them that without
+	# opening a menu, and a 16:9 profile has to be left alone.
+	var auto_169: float = Screen.auto_hud_width(16.0 / 9.0)
+	var auto_219: float = Screen.auto_hud_width(3440.0 / 1440.0)
+	var auto_329: float = Screen.auto_hud_width(5120.0 / 1440.0)
+	if auto_169 <= 0.001 and auto_219 >= 0.55 and auto_329 >= 0.85:
+		print("[SelfTest] PASS  hud auto-width: 16:9 %.2f, 21:9 %.2f, 32:9 %.2f" % [
+			auto_169, auto_219, auto_329])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  hud auto-width: 16:9 %.2f, 21:9 %.2f, 32:9 %.2f" % [
+			auto_169, auto_219, auto_329])
+
+	# --- 3. the darkness guard -----------------------------------------------
+	# The one number the whole dusty-air feature is allowed to move, and the
+	# bound it is allowed to move it by. If a future tuning pass pushes the fog
+	# density past a quarter above baseline, the blacks start lifting and the
+	# ambush-readability A/B stops being a formality.
+	var thin: float = DustAir.layer_fog_density(0.030, 1)
+	var thick: float = DustAir.layer_fog_density(0.030, 25)
+	if thin >= 0.030 * 0.85 and thick <= 0.030 * 1.30 and thick > thin:
+		print("[SelfTest] PASS  fog ramp: %.4f at layer 1 -> %.4f at layer 25 (base 0.0300)" % [
+			thin, thick])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  fog ramp: %.4f .. %.4f outside the darkness guard" % [
+			thin, thick])
+
+	# And that BASELINE is still literally the shipped renderer. The tier is a
+	# promise about the 60 fps target, and a preset that quietly acquires an
+	# expensive row is a promise nobody notices being broken.
+	var base: Dictionary = Photonics.preset(Photonics.Tier.BASELINE)
+	if not bool(base["sdfgi"]) and int(base["area_light_budget"]) == 0 \
+			and bool(base["ssil"]) and bool(base["ssao"]) \
+			and int(base["volumetrics"]) == int(Photonics.Volumetrics.STANDARD):
+		print("[SelfTest] PASS  photonics BASELINE: no GI, no area lights, shipped air")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  photonics BASELINE has drifted from the shipped renderer")
+
+	return failures
+
+
+# ------------------------------------------------------- M7 subroutines & juice --
+#
+# APPENDED, per CLAUDE.md's shared-instrument rule: this section adds, and does
+# not reorder or reformat anything above it. Three in-place edits were
+# unavoidable and are marked at their sites — a `match` arm block in
+# `_parse_args`, one line in `_apply_program_overrides`, one in
+# `_on_automation_player_ready`, and the aggregation line in `_balance_selftest`.
+#
+# The flags:
+#
+#   --subroutine ID[:TIER]   compile a subroutine and slot it, for this session
+#                            only. Sandboxes the program file, exactly like
+#                            `--modules`: measuring a kit is not owning one.
+#                            e.g. `--subroutine stack_pulse:1`
+#   --cast [delay]           run the slotted subroutine `delay` seconds after
+#                            the local avatar spawns. Drives the same path the
+#                            Q key does, so the host's ownership, cooldown,
+#                            Cycles and proximity checks are all exercised
+#                            rather than bypassed.
+#   --cast-every SECONDS     keep casting on that interval. What a JUICE REEL
+#                            burst is armed against: the cooldowns are 4-30 s,
+#                            and a shutter cannot be aimed at a single 0.4 s
+#                            effect by hand.
+
+## `--subroutine`. Applied through `Subs.force`, never written to the file.
+var subroutine_spec: String = ""
+## `--cast [delay]` — seconds after spawn, or -1 for off.
+var _cast_delay: float = -1.0
+## `--cast-every SECONDS` — 0 for a single cast.
+var _cast_every: float = 0.0
+
+
+## Drives the same path the Q key does. Deliberately goes through
+## `Player.run_subroutine` rather than calling `Subs.request_cast` directly: the
+## point of an automated cast is to exercise the real chain (input -> local
+## pre-check -> host validation -> echo -> fx), and a probe that skipped to the
+## middle of it would photograph an effect nobody could reach in a game.
+func _cast_later(seconds: float) -> void:
+	await get_tree().create_timer(seconds).timeout
+	while true:
+		var player: Node = Net.get_player(Net.local_id())
+		var avatar: Player = player as Player
+		if avatar == null or not is_instance_valid(avatar):
+			push_warning("[Debug] --cast skipped: no local player")
+			return
+		print("[Debug] running subroutine '%s' (tier %d, %.0f cycles, pool %.0f)" % [
+			Subs.local_equipped(), Subs.local_tier(),
+			Subs.cost_of(Net.local_id(), Subs.local_equipped()), Run.cycles])
+		avatar.run_subroutine()
+		if _cast_every <= 0.0:
+			return
+		await get_tree().create_timer(_cast_every).timeout
+
+
+## M7 safety + economy checks.
+##
+## The safety half is the milestone's non-negotiable: M7 adds five new light
+## sources a player can fire at will (four cast blooms and a barrier ripple) plus
+## a shatter coal, and DESIGN.md pillar 7 does not have an exception for pretty
+## things. Each is asserted against the WCAG 2.3.1 three-flashes-a-second ceiling
+## the same way the PT1 hit flash is: analytically, against the FASTEST RATE THE
+## GAME CAN PRODUCE, so a future cooldown cut fails here rather than in a living
+## room.
+##
+## The economy half asserts the things a balance pass could silently break: that
+## a cast is meaningfully expensive against the retuned drain, that no subroutine
+## is free, and that the cheapest tier-1 price is reachable inside an early run.
+func _subroutine_selftest() -> int:
+	var failures: int = 0
+
+	# --- SAFETY: the cast-bloom governor ------------------------------------
+	#
+	# The blooms are rate-limited by `Fx.flash_gate()`, whose interval is
+	# `Balance.SUB_FLASH_MIN_INTERVAL`. The trigger rate a player can actually
+	# achieve is 1 / (shortest cooldown in the kit), which is far slower — but the
+	# governor is what makes the CEILING true regardless, so both are checked and
+	# the binding one is reported.
+	var fastest_cd: float = 1e9
+	for id: String in Balance.SUBROUTINE_TRACKS:
+		for tier: int in range(1, Subs.tier_count(id) + 1):
+			fastest_cd = minf(fastest_cd, float(Subs.value_at(id, "cooldown", tier)))
+	var cast_hz: float = 1.0 / maxf(fastest_cd, 0.0001)
+	var bloom_hz: float = minf(cast_hz, 1.0 / Balance.SUB_FLASH_MIN_INTERVAL)
+	if bloom_hz <= 3.0:
+		print("[SelfTest] PASS  flash-rate CAST  : peak %.2f Hz <= 3.0 Hz (trigger %.2f Hz, governor %.2f Hz)" % [
+			bloom_hz, cast_hz, 1.0 / Balance.SUB_FLASH_MIN_INTERVAL])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  flash-rate CAST: %.2f Hz exceeds the WCAG ceiling" % bloom_hz)
+
+	# --- SAFETY: the barrier ripple governor --------------------------------
+	#
+	# A shell inside a Scrubber pack is struck as fast as the pack can lunge, and
+	# every strike ripples it. The pack's own floor is SCRUBBER_LUNGE_TIME +
+	# SCRUBBER_RECOVER_TIME per creature, but several creatures interleave — so
+	# the honest worst case is "as fast as hits arrive", and only the governor
+	# bounds it. Checked against the governor alone, which is the conservative
+	# reading.
+	var ripple_hz: float = 1.0 / maxf(ChecksumBarrier.HIT_FLASH_MIN_INTERVAL, 0.0001)
+	if ripple_hz <= 3.0:
+		print("[SelfTest] PASS  flash-rate SHELL : peak %.2f Hz <= 3.0 Hz (governed, unbounded trigger)" % ripple_hz)
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  flash-rate SHELL: %.2f Hz exceeds the WCAG ceiling" % ripple_hz)
+
+	# --- SAFETY: Reduced Flashing zeroes every new light --------------------
+	#
+	# The governor bounds the RATE; `A11y.flash_scale` bounds the AMPLITUDE, and
+	# the comfort tier has to take all of it to nothing. Every M7 bloom is spelled
+	# `energy * Fx.flash_gate() * A11y.flash_scale`, so this asserts the product
+	# rather than trusting six call sites to have remembered.
+	var lit: float = A11y.flash_scale
+	A11y.flash_scale = 1.0
+	var bloom_on: float = Balance.SUB_FLASH_ENERGY * A11y.flash_scale
+	A11y.flash_scale = 0.0
+	var bloom_off: float = Balance.SUB_FLASH_ENERGY * A11y.flash_scale
+	var shatter_off: float = Balance.SHATTER_GLOW_ENERGY * A11y.flash_scale
+	A11y.flash_scale = lit
+	if bloom_on > 0.0 and bloom_off <= 0.0001 and shatter_off <= 0.0001:
+		print("[SelfTest] PASS  cast blooms calmed: %.2f at full, %.4f under Reduced Flashing" % [
+			bloom_on, bloom_off])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  cast blooms survive Reduced Flashing (%.4f / %.4f)" % [
+			bloom_off, shatter_off])
+
+	# --- SAFETY: the shake budget -------------------------------------------
+	#
+	# "never >2 shakes/s". The governor is `Balance.SHAKE_MIN_INTERVAL`, and the
+	# ceiling is the same clamp `Player.add_shake` already applied.
+	var shake_hz: float = 1.0 / maxf(Balance.SHAKE_MIN_INTERVAL, 0.0001)
+	if shake_hz <= 2.0 and Balance.SHAKE_CEILING <= 1.2:
+		print("[SelfTest] PASS  shake budget: %.2f impulses/s <= 2.0, ceiling %.2f" % [
+			shake_hz, Balance.SHAKE_CEILING])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  shake budget: %.2f/s (ceiling %.2f)" % [
+			shake_hz, Balance.SHAKE_CEILING])
+
+	# --- ECONOMY: power costs breath ----------------------------------------
+	#
+	# Every subroutine at every tier must cost a MEANINGFUL number of Cycles,
+	# expressed in the unit that makes it legible: seconds of solo runtime at the
+	# retuned passive drain. The floor is the flare's own cost expressed the same
+	# way, halved — anything cheaper than half a flare is not a decision.
+	var seconds_per_cycle: float = 1.0 / maxf(Balance.PASSIVE_DRAIN, 0.0001)
+	var floor_seconds: float = Balance.FLARE_CYCLE_COST * seconds_per_cycle * 0.5
+	var cheapest: float = 1e9
+	var cheapest_name: String = ""
+	var free_casts: int = 0
+	for id: String in Balance.SUBROUTINE_TRACKS:
+		for tier: int in range(1, Subs.tier_count(id) + 1):
+			var cost: float = float(Subs.value_at(id, "cost", tier))
+			if cost <= 0.0:
+				free_casts += 1
+			var life: float = cost * seconds_per_cycle
+			if life < cheapest:
+				cheapest = life
+				cheapest_name = "%s t%d" % [id, tier]
+	if free_casts == 0 and cheapest >= floor_seconds:
+		print("[SelfTest] PASS  subroutine cost: cheapest is %s at %.0f s of runtime (floor %.0f s)" % [
+			cheapest_name, cheapest, floor_seconds])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  subroutine cost: %d free cast(s), cheapest %.0f s < floor %.0f s" % [
+			free_casts, cheapest, floor_seconds])
+
+	# --- ECONOMY: tier 1 is reachable early ---------------------------------
+	#
+	# DESIGN.md's acquisition rule for the kit is "cheap tier-1 versions early".
+	# The cheapest module tier in the game is the reference: at least one
+	# subroutine has to be buyable before the cheapest module upgrade, or the kit
+	# arrives after the player has stopped needing to learn it.
+	var cheapest_module: int = 1 << 30
+	for track: String in Balance.MODULE_TRACKS:
+		cheapest_module = mini(cheapest_module, Modules.price(track, 0))
+	var cheapest_sub: int = 1 << 30
+	for id: String in Balance.SUBROUTINE_TRACKS:
+		cheapest_sub = mini(cheapest_sub, Subs.price(id, 0))
+	if cheapest_sub <= cheapest_module:
+		print("[SelfTest] PASS  subroutine entry: cheapest sub %d data <= cheapest module %d" % [
+			cheapest_sub, cheapest_module])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  subroutine entry: cheapest sub %d data > cheapest module %d" % [
+			cheapest_sub, cheapest_module])
+
+	# --- THE SOLO INVARIANT + the killability law ---------------------------
+	#
+	# Two design laws, asserted as data rather than as prose. A subroutine may
+	# never deal damage (STACK PULSE is control, and a `damage` key appearing in
+	# the catalogue would be the first sign somebody had changed their mind), and
+	# the slot must default to EMPTY on a fresh profile — a kit that a new program
+	# starts with would make it equipment rather than a purchase, and would make
+	# "abilities are power, not keys" impossible to check.
+	var damage_keys: int = 0
+	for id: String in Balance.SUBROUTINE_TRACKS:
+		if (Subs.definition(id) as Dictionary).has("damage"):
+			damage_keys += 1
+	if damage_keys == 0:
+		print("[SelfTest] PASS  killability law: no subroutine deals damage (%d in catalogue)" % [
+			Balance.SUBROUTINE_TRACKS.size()])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  killability law: %d subroutine(s) declare damage" % damage_keys)
+
+	# --- CATALOGUE SHAPE -----------------------------------------------------
+	#
+	# Every effect array must have TIERS+1 entries with index 0 = "not compiled",
+	# because `value_at` clamps rather than erroring and a short array would
+	# silently hand tier 3 the tier-2 number. Cheap to check, impossible to
+	# notice by playing.
+	var shape_bad: PackedStringArray = PackedStringArray()
+	for id: String in Balance.SUBROUTINE_TRACKS:
+		var entry: Dictionary = Subs.definition(id)
+		var tiers: int = Subs.tier_count(id)
+		if tiers != Balance.SUBROUTINE_MAX_TIER:
+			shape_bad.append("%s prices=%d" % [id, tiers])
+		for key: String in entry.keys():
+			if key in ["name", "glyph", "note", "prices"]:
+				continue
+			var values: Array = entry[key]
+			if values.size() != tiers + 1:
+				shape_bad.append("%s.%s=%d" % [id, key, values.size()])
+	if shape_bad.is_empty():
+		print("[SelfTest] PASS  subroutine catalogue: %d subroutines, all arrays %d long" % [
+			Balance.SUBROUTINE_TRACKS.size(), Balance.SUBROUTINE_MAX_TIER + 1])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  subroutine catalogue shape: %s" % ", ".join(shape_bad))
+
+	# --- STACK PULSE is control, and the stagger actually stops the machine --
+	#
+	# A live check rather than a reading of the catalogue, because the property
+	# that matters is behavioural: a staggered process is out of `_think`/`_act`
+	# for the duration, is shoved if it is light and is NOT shoved if it is heavy,
+	# and — the load-bearing half of the killability law — has exactly the same
+	# health afterwards as before.
+	#
+	# Two bare `Antivirus` bodies in the tree, no graph and no world: `stagger()`
+	# and its bookkeeping do not touch either, and building a layer to test three
+	# assignments would make this a test nobody runs.
+	var light: Antivirus = Antivirus.new()
+	var heavy: Sentinel = Sentinel.new()
+	add_child(light)
+	add_child(heavy)
+	light.set_health(100.0)
+	heavy.set_health(1800.0)
+	var hp_before: float = light.health
+	light.stagger(1.2, light.global_position + Vector3(0.0, 0.0, -1.0), 3.2)
+	heavy.stagger(1.2, heavy.global_position + Vector3(0.0, 0.0, -1.0), 3.2)
+	var light_ok: bool = light.staggered() and light.health == hp_before \
+			and not light.stagger_mass()
+	var heavy_ok: bool = heavy.staggered() and heavy.health == 1800.0 \
+			and heavy.stagger_mass()
+	light.queue_free()
+	heavy.queue_free()
+	if light_ok and heavy_ok:
+		print("[SelfTest] PASS  stack pulse: light staggered+shoveable, heavy staggered+immovable, 0 damage dealt")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  stack pulse: light=%s heavy=%s (control, not damage)" % [
+			str(light_ok), str(heavy_ok)])
+
+	# --- CHECKSUM BARRIER absorbs, and stops absorbing when it is spent -----
+	#
+	# `take()` is the whole of the shell's contract with the damage path: it eats
+	# what it can and returns what got through, and once spent it returns the
+	# input untouched so a caller never has to ask whether a barrier exists. Three
+	# blows against a tier-1 shell: a Sentinel purge, another purge, and a lunge
+	# that must land in full because the shell is gone.
+	var shell: ChecksumBarrier = ChecksumBarrier.create(1, 1, Vector3.ZERO,
+			Color.WHITE, 3.4, 3.0, float(Subs.value_at("checksum_barrier", "absorb", 1)))
+	var first: float = shell.take(Balance.SENTINEL_PURGE_DAMAGE)
+	var second: float = shell.take(Balance.SENTINEL_PURGE_DAMAGE)
+	var third: float = shell.take(Balance.SCRUBBER_LUNGE_DAMAGE)
+	var eaten: float = shell.absorbed
+	shell.queue_free()
+	if first <= 0.0 and second > 0.0 and is_equal_approx(third, Balance.SCRUBBER_LUNGE_DAMAGE) \
+			and is_equal_approx(eaten, 45.0):
+		print("[SelfTest] PASS  checksum barrier: ate a full purge, %.0f of a second, then nothing (cap %.0f)" % [
+			Balance.SENTINEL_PURGE_DAMAGE - second, eaten])
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  checksum barrier: through=%.1f/%.1f/%.1f absorbed=%.1f" % [
+			first, second, third, eaten])
+
+	# --- SURGE STEP i-frames are a window, not a flag -----------------------
+	#
+	# `Antivirus._land_hit` reads `Subs.invulnerable(peer)`, and the one way that
+	# could go wrong is a window that never closes. Asserted against the clock the
+	# host actually uses.
+	var was: Dictionary = Subs._iframes_until.duplicate()
+	Subs._iframes_until[9001] = Subs._now() + 0.2
+	var immune_now: bool = Subs.invulnerable(9001)
+	Subs._iframes_until[9001] = Subs._now() - 0.01
+	var immune_after: bool = Subs.invulnerable(9001)
+	Subs._iframes_until = was
+	if immune_now and not immune_after:
+		print("[SelfTest] PASS  surge step i-frames: open inside the window, closed outside it")
+	else:
+		failures += 1
+		printerr("[SelfTest] FAIL  surge step i-frames: now=%s after=%s" % [
+			str(immune_now), str(immune_after)])
+
+	return failures
+
+
+# ----------------------------------------------------------------- M7 reel --
+#
+#   --reel DIR [every] [count]   save a numbered PNG every `every` rendered
+#                                frames, `count` times, and quit.
+#   --reel-from N                do not start until frame N.
+#
+# Why this exists rather than more `--screenshot` runs: every effect in M7 is
+# between 0.16 s and 1.35 s long, which at 60 fps is 10 to 81 frames, and a
+# shutter aimed at one of them by hand catches the middle of a particle burst
+# roughly never. `--screenshot PATH N` can be pointed at frame N exactly — but
+# proving that a dash LEAVES A TRAIL, or that a shatter SCATTERS AND FADES, needs
+# consecutive frames from ONE run, because the point being made is about time.
+#
+# The same discipline as `--burst`: read the framebuffer back during the run and
+# encode afterwards. Encoding a 3440x1440 PNG inline costs more than a frame, so
+# a reel that encoded as it went would be measuring the PNG encoder.
+#
+# `automated` is true whenever this is set (see `_ready`), so `UiFx.clock()`
+# counts FRAMES — which is what makes a reel reproducible: frame 300 of two runs
+# of the same command is the same picture, on any machine.
+
+var reel_dir: String = ""
+## Rendered frames between saves, how many to save, and when to start.
+var reel_every: int = 6
+var reel_frames: int = 8
+var reel_from: int = 0
+
+var _reel_taken: Array[Image] = []
+var _reel_clock: int = 0
+var _reel_done: bool = false
+
+
+func _advance_reel() -> void:
+	if reel_dir.is_empty() or _reel_done:
+		return
+	_reel_clock += 1
+	if _reel_clock < reel_from:
+		return
+	if (_reel_clock - reel_from) % reel_every != 0:
+		return
+	var viewport: Viewport = get_viewport()
+	if viewport == null:
+		return
+	_reel_taken.append(viewport.get_texture().get_image())
+	if _reel_taken.size() >= reel_frames:
+		_reel_done = true
+		_write_reel.call_deferred()
+
+
+func _write_reel() -> void:
+	DirAccess.make_dir_recursive_absolute(reel_dir)
+	for i: int in _reel_taken.size():
+		var path: String = "%s/reel_%02d.png" % [reel_dir, i]
+		_reel_taken[i].save_png(path)
+		print("[Debug] reel frame %d -> %s" % [i, path])
+	print("[Debug] reel complete: %d frames every %d, from frame %d" % [
+		_reel_taken.size(), reel_every, reel_from])
+	_reel_taken.clear()
+	# The reel owns the process lifetime unless `--quit-in` was also given, the
+	# same hand-off `_capture` makes with `--screenshot`.
+	if auto_quit_after <= 0.0:
+		await get_tree().process_frame
+		get_tree().quit(0)
+
+
+# =============================================================================
+# ROUND FIVE — THE BORE TRACE. An APPENDED section; nothing above it moved.
+# =============================================================================
+#
+# `--aimtrace` (PT4, above) measures the chord from the grip to the muzzle, and
+# `CrewAvatar` used to AIM that same chord — so the two agreed with each other
+# perfectly, reported 0.0 cm at seven pitches and two ultrawide aspects, and
+# neither of them ever looked at the weapon. On the Surge the grip hangs 12.6 cm
+# below the barrel, so that chord rises 13.35 degrees off the thing the player's
+# eye is actually reading (the barrel, the receiver, the flat top edge, the sight
+# rail — all parallel to `CrewAvatar.BORE_AXIS`, all within 6.4 cm of it).
+#
+# This section measures the OTHER line: through the muzzle, along the barrel.
+# That is the one a silhouette is made of, and it is the one round five aims.
+#
+# The instrument also drops three targets ON the sight line at 6, 12 and 24 m, so
+# the acceptance question ("does the gun BODY read as pointing at the reticle")
+# has something in the frame to be right or wrong about, instead of being an
+# argument about an empty corridor.
+
+## `--boretrace DIR`. Empty means off.
+var bore_trace_dir: String = ""
+## The stops, in radians. Fewer than `--aimtrace`'s seven by default: this is a
+## sheet a human looks at, and seven ultrawide frames per build per lens value is
+## more pictures than anybody compares honestly.
+var bore_pitches: Array[float] = [0.0, -0.35, 0.35]
+## Where the targets go, in metres down the sight line.
+var bore_marks: Array[float] = [6.0, 12.0, 24.0]
+## `--gunlens D`: the viewmodel lens for this SESSION only.
+##
+## Same doctrine as `--ui-scale` and `--captions`: a dev flag is a measuring
+## instrument, never a setting that sticks. It writes the static override on
+## CrewAvatar and never touches a saved value, so a capture run at 45 degrees
+## cannot leave the developer's own game there.
+var gun_lens_deg: float = -1.0
+
+## Settle before the first stop, and between stops. Same rule as the aim trace.
+const BORE_SETTLE_FRAMES: int = 240
+const BORE_STOP_SETTLE: int = 30
+## Longer than one loop of `aim_idle`, so the window sees every phase of it.
+const BORE_STOP_SAMPLES: int = 120
+
+var _bore_marks: Array[MeshInstance3D] = []
+
+
+## Where a LINE through `muzzle` along `forward` crosses the plane `range_m`
+## ahead of the lens, in the lens's own frame, in metres. `(0, 0)` is the
+## reticle. Everything is already in lens space; the caller does that.
+##
+## The difference from `bore_offset` above is the whole of round five: that one
+## takes a direction from two points that are not both on the barrel, this one
+## takes the barrel's own axis and asks where the line it defines goes.
+static func bore_axis_offset(muzzle: Vector3, forward: Vector3,
+		range_m: float) -> Vector2:
+	if forward.length_squared() < 1.0e-12:
+		return Vector2(NAN, NAN)
+	var dir: Vector3 = forward.normalized()
+	if dir.z > -0.05:
+		return Vector2(NAN, NAN)
+	var t: float = (-range_m - muzzle.z) / dir.z
+	if t <= 0.0:
+		return Vector2(NAN, NAN)
+	return Vector2(muzzle.x + t * dir.x, muzzle.y + t * dir.y)
+
+
+## Both lines, at every range, in one sample. `roll` comes along because a
+## silhouette read is roll AND aim, and separating them across two instruments is
+## how PT2 spent a round on a cant that was really a convergence.
+func _bore_sample() -> Dictionary:
+	var player: Node = Net.get_player(Net.local_id())
+	if player == null or not is_instance_valid(player):
+		return {}
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	if camera == null:
+		return {}
+	var lens: Transform3D = camera.global_transform.affine_inverse()
+	var grip: Vector3 = lens * player.call("hold_world_point")
+	var muzzle: Vector3 = lens * player.call("muzzle_world_point")
+	var weapon: Basis = lens.basis * player.call("hold_world_basis")
+	var axis: Array[Vector2] = []
+	var chord: Array[Vector2] = []
+	for range_m: float in bore_marks:
+		axis.append(bore_axis_offset(muzzle, -weapon.z, range_m))
+		chord.append(bore_offset(grip, muzzle, range_m))
+	return {
+		"axis": axis,
+		"chord": chord,
+		"roll": rad_to_deg(atan2(weapon.y.x, weapon.y.y)),
+		"camera": camera,
+	}
+
+
+## The ANGULAR radius each target ring is drawn at, in degrees, nearest first.
+##
+## RINGS, and rings of INCREASING angular size with distance, and both choices
+## are the difference between a usable sheet and three pictures of one dot.
+## Three targets on the same ray are three targets at the same screen point: as
+## discs they occlude each other and as same-angle rings they superimpose. Drawn
+## like this they nest — a tight ring at 6 m inside a wider one at 12 inside a
+## wider one at 24 — so the frame shows the sight line at three depths at once,
+## and a ring you can see through never hides the weapon being judged.
+const BORE_MARK_DEGREES: Array[float] = [0.9, 1.8, 2.7]
+
+## The targets, re-seated every stop.
+##
+## Unshaded so they read in a room this dark without lighting it, and `top_level`
+## so nothing about the player's frame can drag them off the ray they mark.
+## Local, cosmetic, and created only under this flag: they never touch seeded or
+## replicated state, so a determinism dump cannot see them.
+func _seat_bore_marks(camera: Camera3D) -> void:
+	var colours: Array[Color] = [Color(0.35, 1.0, 0.5), Color(1.0, 0.78, 0.25),
+			Color(1.0, 0.4, 0.85)]
+	for i: int in bore_marks.size():
+		var angle: float = BORE_MARK_DEGREES[mini(i, BORE_MARK_DEGREES.size() - 1)]
+		var radius: float = bore_marks[i] * tan(deg_to_rad(angle))
+		if i >= _bore_marks.size():
+			var mesh: TorusMesh = TorusMesh.new()
+			mesh.inner_radius = radius * 0.90
+			mesh.outer_radius = radius
+			var mat: StandardMaterial3D = StandardMaterial3D.new()
+			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			mat.albedo_color = colours[i % colours.size()]
+			mat.disable_receive_shadows = true
+			var node: MeshInstance3D = MeshInstance3D.new()
+			node.name = "BoreMark%d" % i
+			node.mesh = mesh
+			node.material_override = mat
+			node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			node.top_level = true
+			get_tree().current_scene.add_child(node)
+			_bore_marks.append(node)
+		# Square to the lens: a torus is built in its own XZ plane, so its axis
+		# has to be turned onto the view direction or the ring reads as an ellipse
+		# and the sheet is arguing about perspective instead of about the gun.
+		_bore_marks[i].global_transform = Transform3D(
+				camera.global_transform.basis * Basis(Vector3.RIGHT, PI * 0.5),
+				camera.global_position
+					- camera.global_transform.basis.z * bore_marks[i])
+
+
+func _start_bore_trace() -> void:
+	DirAccess.make_dir_recursive_absolute(bore_trace_dir)
+	var player: Node = null
+	for _wait: int in 900:
+		await get_tree().process_frame
+		player = Net.get_player(Net.local_id())
+		if player != null and is_instance_valid(player):
+			break
+	if player == null or not is_instance_valid(player):
+		printerr("[BoreTrace] no local player; nothing to trace")
+		get_tree().quit()
+		return
+	for _settle: int in BORE_SETTLE_FRAMES:
+		await get_tree().process_frame
+
+	var view: Vector2i = get_window().size
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	var lens: float = CrewAvatar.gun_lens_deg()
+	print("[BoreTrace] %dx%d  aspect %.3f  world fov %.1f  gun lens %.1f  ranges %s" % [
+		view.x, view.y, float(view.x) / maxf(float(view.y), 1.0),
+		camera.fov if camera != null else 0.0, lens, str(bore_marks)])
+	print("[BoreTrace] %7s %6s %10s %10s %10s %10s %8s" % [
+		"pitch", "range", "axis_cm", "axis_max", "chord_cm", "chord_max", "roll"])
+
+	var yaw: float = float(player.get("rotation").y)
+	for pitch: float in bore_pitches:
+		player.call("debug_look", yaw, pitch)
+		for _settle: int in BORE_STOP_SETTLE:
+			await get_tree().process_frame
+		_seat_bore_marks(get_viewport().get_camera_3d())
+		var axis_sum: Array[float] = []
+		var axis_max: Array[float] = []
+		var chord_sum: Array[float] = []
+		var chord_max: Array[float] = []
+		for _slot: int in bore_marks.size():
+			axis_sum.append(0.0)
+			axis_max.append(0.0)
+			chord_sum.append(0.0)
+			chord_max.append(0.0)
+		var roll: float = 0.0
+		var counted: int = 0
+		for _sample: int in BORE_STOP_SAMPLES:
+			await get_tree().process_frame
+			player.call("debug_look", yaw, pitch)
+			var probe: Dictionary = _bore_sample()
+			if probe.is_empty():
+				continue
+			var axis: Array[Vector2] = probe["axis"]
+			var chord: Array[Vector2] = probe["chord"]
+			for i: int in bore_marks.size():
+				if not is_nan(axis[i].x):
+					axis_sum[i] += axis[i].length()
+					axis_max[i] = maxf(axis_max[i], axis[i].length())
+				if not is_nan(chord[i].x):
+					chord_sum[i] += chord[i].length()
+					chord_max[i] = maxf(chord_max[i], chord[i].length())
+			roll = float(probe["roll"])
+			counted += 1
+		if counted == 0:
+			print("[BoreTrace] %7.2f   no sample" % pitch)
+			continue
+		for i: int in bore_marks.size():
+			print("[BoreTrace] %7.2f %6.1f %10.1f %10.1f %10.1f %10.1f %8.2f" % [
+				pitch, bore_marks[i], axis_sum[i] / float(counted) * 100.0,
+				axis_max[i] * 100.0, chord_sum[i] / float(counted) * 100.0,
+				chord_max[i] * 100.0, roll])
+		# The marks are re-seated one last time against the frame that is about
+		# to be photographed: the lens breathes, and a target seated 120 frames
+		# ago is a target a couple of centimetres off the ray it marks.
+		_seat_bore_marks(get_viewport().get_camera_3d())
+		await RenderingServer.frame_post_draw
+		var shot: String = "%s/bore_%dx%d_lens%02d_p%s.png" % [bore_trace_dir,
+			view.x, view.y, int(roundf(maxf(lens, 0.0))),
+			String("%+.2f" % pitch).replace(".", "").replace("+", "p").replace("-", "m")]
+		get_viewport().get_texture().get_image().save_png(shot)
+		print("[BoreTrace] %7.2f  -> %s" % [pitch, shot.get_file()])
+	print("[BoreTrace] done")
+	get_tree().quit()
+
+
+# =============================================================================
+# ROUND SIX — THE RETICLE PROBE. Appended; nothing above it moved.
+# =============================================================================
+#
+# `--reticleprobe`, and the hypothesis it exists to kill or confirm.
+#
+# Every aim instrument in this file annotates the frame with ITS OWN projection
+# of the camera's forward ray and calls that "the reticle". The player does not
+# aim at that. The player aims at the DOT THE HUD DRAWS. If those two pixels are
+# not the same pixel, then a weapon that is provably on the camera ray is a
+# weapon that is visibly off the crosshair, forever, and no bore measurement ever
+# taken in this repo could see it — because every one of them was measured
+# against the camera ray it was already on.
+#
+# Three suspects were named, and all three are structural rather than numeric:
+#
+#   1. the RETICLE'S CONTAINER. `UiFx.tube_safe_rect` carries a deliberate
+#      UPWARD BIAS (`- view.y * 0.012`), and PT2 reparented the HUD's clusters
+#      into it. If the reticle rides that box, it is 1.2% of the frame height
+#      above the truth — 17 px at 1440, which is 0.89 degrees, which is 19 cm at
+#      the convergence distance.
+#   2. the CRT TUBE's barrel warp. The HUD renders into a SubViewport and is
+#      resampled through `crt.gdshader`. A warp whose fixed point is not the
+#      exact centre of the glass moves the dot and nothing else.
+#   3. anything applying bob, boot or glitch transforms to the layer the reticle
+#      is on.
+#
+# This measures the answer instead of reading the code, at the aspects the
+# complaint came from. Everything is reported in CANVAS units (the space the
+# renderer composites in, `stretch/mode=canvas_items`) and again in WINDOW
+# pixels, because "17 px" means nothing without saying 17 px of what.
+
+## `--reticleprobe`. Prints the delta and quits.
+var reticle_probe: bool = false
+## `--chordaim`. Session-only, like every other flag in this file.
+var chord_aim: bool = false
+## `--stdmaterials`. Session-only.
+var std_materials: bool = false
+## `--hold x,y,z`. NaN means "leave the constant alone".
+var hold_offset: Vector3 = Vector3(NAN, NAN, NAN)
+
+## How far down the sight line the probe's aim point sits. Any distance gives the
+## same pixel — that is the point of a ray — so this is only here to be a
+## legitimate 3D point rather than a magic centre.
+const RETICLE_PROBE_RANGE: float = 12.0
+const RETICLE_PROBE_SETTLE: int = 240
+
+
+## Depth-first search for the drawn reticle, wherever the HUD has put it. Walks
+## through SubViewports too, which is not optional: `Hud._build_tube` reparents
+## the whole interface INTO one, and a search that stopped at the window would
+## report "no reticle" on a perfectly healthy build.
+func _find_reticle(node: Node) -> Crosshair:
+	var found: Crosshair = node as Crosshair
+	if found != null:
+		return found
+	for child: Node in node.get_children():
+		var deep: Crosshair = _find_reticle(child)
+		if deep != null:
+			return deep
+	return null
+
+
+## The tube's barrel warp, forward: fragment UV -> the source UV it samples.
+## Straight out of crt.gdshader, and it has to STAY straight out of it.
+static func _tube_warp(uv: Vector2, curvature: float, amount: float) -> Vector2:
+	var centred: Vector2 = uv * 2.0 - Vector2.ONE
+	var r2: float = centred.dot(centred)
+	centred *= 1.0 + curvature * r2 * amount
+	return centred * 0.5 + Vector2(0.5, 0.5)
+
+
+## And backwards, by bisection on the radius: given a point drawn INTO the tube,
+## where on the glass does the player see it? This is the direction that matters
+## — the reticle is drawn at a source pixel and read at a fragment pixel — and it
+## is solved rather than assumed because "the warp obviously fixes the centre" is
+## exactly the kind of obvious this round is here to stop trusting.
+static func _tube_unwarp(uv: Vector2, curvature: float, amount: float) -> Vector2:
+	var target: Vector2 = uv * 2.0 - Vector2.ONE
+	var want: float = target.length()
+	if want < 1.0e-9:
+		return uv
+	var dir: Vector2 = target / want
+	var lo: float = 0.0
+	var hi: float = want + 1.0
+	for _step: int in 60:
+		var mid: float = (lo + hi) * 0.5
+		var mapped: float = mid * (1.0 + curvature * mid * mid * amount)
+		if mapped < want:
+			lo = mid
+		else:
+			hi = mid
+	return dir * ((lo + hi) * 0.5) * 0.5 + Vector2(0.5, 0.5)
+
+
+func _run_reticle_probe() -> void:
+	var player: Node = null
+	for _wait: int in 900:
+		await get_tree().process_frame
+		player = Net.get_player(Net.local_id())
+		if player != null and is_instance_valid(player):
+			break
+	if player == null or not is_instance_valid(player):
+		printerr("[Reticle] no local player")
+		get_tree().quit()
+		return
+	player.call("debug_look", float(player.get("rotation").y), 0.0)
+	for _settle: int in RETICLE_PROBE_SETTLE:
+		await get_tree().process_frame
+
+	var window: Vector2 = Vector2(get_window().size)
+	var canvas: Vector2 = get_viewport().get_visible_rect().size
+	var to_window: Vector2 = Vector2(window.x / maxf(canvas.x, 1.0),
+			window.y / maxf(canvas.y, 1.0))
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	print("[Reticle] window %.0fx%.0f  canvas %.1fx%.1f  scale %.4f,%.4f  fov %.1f" % [
+		window.x, window.y, canvas.x, canvas.y, to_window.x, to_window.y,
+		camera.fov if camera != null else 0.0])
+	if camera == null:
+		printerr("[Reticle] no camera")
+		get_tree().quit()
+		return
+
+	# 1. THE TRUTH: where the camera's own forward ray lands, by the camera's own
+	#    arithmetic. This is what every aim instrument in this file calls centre.
+	var aim_world: Vector3 = camera.global_transform \
+			* Vector3(0.0, 0.0, -RETICLE_PROBE_RANGE)
+	var ray_px: Vector2 = camera.unproject_position(aim_world)
+	var geometric: Vector2 = canvas * 0.5
+
+	# 2. THE DRAWN DOT: the reticle's own centre, put through the engine's own
+	#    canvas transform rather than through arithmetic of ours — the same
+	#    reasoning AimOverlay._to_canvas records. Inside the tube's SubViewport,
+	#    so these are TUBE pixels; the container is PRESET_FULL_RECT with
+	#    `stretch`, so tube pixels and canvas pixels are the same size.
+	var reticle: Crosshair = _find_reticle(get_tree().root)
+	if reticle == null:
+		printerr("[Reticle] no Crosshair in the tree")
+		get_tree().quit()
+		return
+	var tube: Vector2 = reticle.get_viewport().get_visible_rect().size
+	var dot_px: Vector2 = reticle.get_global_transform_with_canvas() \
+			* (reticle.size * 0.5)
+
+	# 3. AND WHAT THE GLASS DOES TO IT. The dot is drawn at a SOURCE pixel of the
+	#    tube texture and the player reads it at the FRAGMENT that samples there.
+	var curvature: float = 0.055
+	var amount: float = UiFx.TUBE_AMOUNT
+	var seen_uv: Vector2 = _tube_unwarp(Vector2(dot_px.x / maxf(tube.x, 1.0),
+			dot_px.y / maxf(tube.y, 1.0)), curvature, amount)
+	var seen_px: Vector2 = Vector2(seen_uv.x * tube.x, seen_uv.y * tube.y)
+
+	var safe: Rect2 = UiFx.tube_safe_rect(canvas)
+	print("[Reticle] tube viewport      %.1f x %.1f" % [tube.x, tube.y])
+	print("[Reticle] canvas centre      %8.2f %8.2f" % [geometric.x, geometric.y])
+	print("[Reticle] camera ray pixel   %8.2f %8.2f" % [ray_px.x, ray_px.y])
+	print("[Reticle] drawn dot (source) %8.2f %8.2f" % [dot_px.x, dot_px.y])
+	print("[Reticle] drawn dot (seen)   %8.2f %8.2f" % [seen_px.x, seen_px.y])
+	print("[Reticle] safe box centre    %8.2f %8.2f   (the upward-biased one)" % [
+		safe.position.x + safe.size.x * 0.5, safe.position.y + safe.size.y * 0.5])
+	var delta: Vector2 = seen_px - ray_px
+	print("[Reticle] DELTA canvas px    %8.2f %8.2f   (len %.3f)" % [
+		delta.x, delta.y, delta.length()])
+	var win_delta: Vector2 = delta * to_window
+	print("[Reticle] DELTA window px    %8.2f %8.2f   (len %.3f)" % [
+		win_delta.x, win_delta.y, win_delta.length()])
+	# And in the units the complaint is actually about.
+	var per_degree: float = canvas.y / maxf(camera.fov, 1.0)
+	print("[Reticle] DELTA degrees      %8.4f   -> %.2f cm at %.0f m" % [
+		delta.length() / maxf(per_degree, 0.0001),
+		tan(deg_to_rad(delta.length() / maxf(per_degree, 0.0001)))
+			* RETICLE_PROBE_RANGE * 100.0, RETICLE_PROBE_RANGE])
+	print("[Reticle] done")
+	get_tree().quit()
+
+
+# =============================================================================
+# ROUND FIVE — THE REFRESH PROBE. Appended; nothing above it moved.
+# =============================================================================
+#
+# `--refreshprobe [seconds]`.
+#
+# PT4 fixed a flicker that only exists when MORE THAN ONE RENDERED FRAME falls
+# inside one physics tick — the hold measured an already-corrected arm and solved
+# a second correction onto it, 281 mm of grip travel per frame, alternating. It
+# verified the fix SYNTHETICALLY, with `--physics-hz 30`, because nothing in this
+# repo could produce a genuinely fast swapchain. The player's panel is a Samsung
+# Odyssey G9 and runs to 240.
+#
+# So this measures the real thing: the rate frames are ACTUALLY delivered at,
+# with the vsync left exactly as the session found it (which is why this is not
+# `--log-fps` — that one disables vsync on purpose, and a census of an uncapped
+# renderer cannot tell you what the compositor is presenting). Alongside it, the
+# two numbers that decide whether the hold survives that rate:
+#
+#   * RENDERS PER PHYSICS TICK, as a histogram. This is the actual hazard. One
+#     is the developer's 60/60 machine and is the case that always worked.
+#   * GRIP TRAVEL PER RENDERED FRAME, in the lens's own frame, in millimetres.
+#     A hold bolted to the lens standing still moves zero. The PT4 bug put 132 mm
+#     of median travel here at 30 Hz physics; anything above about 2 mm on a
+#     stationary avatar is the pose being solved twice.
+
+## `--refreshprobe [seconds]`. Zero means off.
+var refresh_probe: float = 0.0
+
+const REFRESH_SETTLE_FRAMES: int = 180
+
+var _refresh_frames: PackedFloat64Array = PackedFloat64Array()
+var _refresh_ticks: PackedInt32Array = PackedInt32Array()
+var _refresh_travel: PackedFloat32Array = PackedFloat32Array()
+
+
+func _run_refresh_probe() -> void:
+	var player: Node = null
+	for _wait: int in 900:
+		await get_tree().process_frame
+		player = Net.get_player(Net.local_id())
+		if player != null and is_instance_valid(player):
+			break
+	if player == null or not is_instance_valid(player):
+		printerr("[Refresh] no local player")
+		get_tree().quit()
+		return
+	# Standing still and looking level, deliberately: the metric is "does a hold
+	# that should not move, move", and a moving avatar has legitimate reasons to.
+	player.call("debug_look", float(player.get("rotation").y), 0.0)
+	for _settle: int in REFRESH_SETTLE_FRAMES:
+		await get_tree().process_frame
+
+	print("[Refresh] display %s   vsync %d   max_fps %d   physics %d Hz" % [
+		DisplayServer.get_name(),
+		DisplayServer.window_get_vsync_mode() if DisplayServer.get_name() != "headless" else -1,
+		Engine.max_fps, Engine.physics_ticks_per_second])
+
+	var camera: Camera3D = get_viewport().get_camera_3d()
+	var last_grip: Vector3 = Vector3.ZERO
+	var have_last: bool = false
+	var started: float = Time.get_ticks_usec() / 1000000.0
+	while (Time.get_ticks_usec() / 1000000.0) - started < refresh_probe:
+		await get_tree().process_frame
+		_refresh_frames.append(Time.get_ticks_usec() / 1000000.0)
+		_refresh_ticks.append(Engine.get_physics_frames())
+		camera = get_viewport().get_camera_3d()
+		if camera != null:
+			var grip: Vector3 = camera.global_transform.affine_inverse() \
+					* player.call("hold_world_point")
+			if have_last:
+				_refresh_travel.append((grip - last_grip).length() * 1000.0)
+			last_grip = grip
+			have_last = true
+
+	var count: int = _refresh_frames.size()
+	if count < 8:
+		printerr("[Refresh] only %d frames; nothing to report" % count)
+		get_tree().quit()
+		return
+	var span: float = _refresh_frames[count - 1] - _refresh_frames[0]
+	var gaps: PackedFloat32Array = PackedFloat32Array()
+	for i: int in range(1, count):
+		gaps.append(float(_refresh_frames[i] - _refresh_frames[i - 1]))
+	var sorted_gaps: Array[float] = []
+	for g: float in gaps:
+		sorted_gaps.append(g)
+	sorted_gaps.sort()
+	print("[Refresh] %d frames in %.3f s  ->  %.1f fps mean" % [
+		count, span, float(count - 1) / maxf(span, 0.0001)])
+	print("[Refresh] frame gap ms: min %.3f  median %.3f  p99 %.3f  max %.3f" % [
+		sorted_gaps[0] * 1000.0, sorted_gaps[sorted_gaps.size() / 2] * 1000.0,
+		sorted_gaps[mini(int(sorted_gaps.size() * 0.99), sorted_gaps.size() - 1)] * 1000.0,
+		sorted_gaps[sorted_gaps.size() - 1] * 1000.0])
+
+	# Renders per physics tick: the number the flicker actually depends on.
+	var per_tick: Dictionary = {}
+	var seen: Dictionary = {}
+	for tick: int in _refresh_ticks:
+		seen[tick] = int(seen.get(tick, 0)) + 1
+	for tick: int in seen:
+		var n: int = int(seen[tick])
+		per_tick[n] = int(per_tick.get(n, 0)) + 1
+	var keys: Array = per_tick.keys()
+	keys.sort()
+	var histogram: PackedStringArray = PackedStringArray()
+	for n: int in keys:
+		histogram.append("%dx:%d" % [n, int(per_tick[n])])
+	print("[Refresh] renders per physics tick  %s   (ticks seen %d)" % [
+		" ".join(histogram), seen.size()])
+
+	var travel: Array[float] = []
+	for t: float in _refresh_travel:
+		travel.append(t)
+	travel.sort()
+	if travel.is_empty():
+		print("[Refresh] no grip samples")
+	else:
+		print("[Refresh] grip travel mm/frame: median %.3f  p95 %.3f  max %.3f" % [
+			travel[travel.size() / 2],
+			travel[mini(int(travel.size() * 0.95), travel.size() - 1)],
+			travel[travel.size() - 1]])
+	print("[Refresh] done")
+	get_tree().quit()

@@ -60,6 +60,16 @@ static func hero_shaft(geo: Node3D, lights: Node3D, fog: Node3D, pos: Vector3,
 		slats: int = 3, fog_energy: float = 9.0) -> Node3D:
 	var root: Node3D = Node3D.new()
 	root.name = "Shaft_%d_%d" % [int(pos.x), int(pos.z)]
+	# So `--freecam god_shafts` can stand off to one side of a hero shaft and
+	# photograph it in CROSS-SECTION. A volumetric shaft only reads as a shaft
+	# when you look across it, and until this group existed there was no way to
+	# ask the build where its shafts had ended up.
+	root.add_to_group("god_shafts")
+	# The shaft's own floor point, as metadata, because this node's TRANSFORM is
+	# not it: every piece of the unit below is positioned at `pos + offset` in the
+	# builder's space and the root itself never moves off the origin. A probe that
+	# read `global_position` would aim at the middle of the layer.
+	root.set_meta("anchor", pos)
 	geo.add_child(root)
 
 	# --- the aperture -------------------------------------------------------

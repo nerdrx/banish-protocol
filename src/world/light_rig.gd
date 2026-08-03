@@ -38,6 +38,33 @@ const GOBO_DUST: String = "res://assets/textures/gobo_dust.png"
 const GOBO_APERTURE: String = "res://assets/textures/gobo_aperture.png"
 const GOBO_CIRCUIT: String = "res://assets/textures/gobo_circuit.png"
 
+# --- FIDELITY PASS: the authored mask library ---------------------------------
+#
+# Five masks built by the R&D forge (assets/gobos/, demo at
+# tools/fidelity_bench/gobo_demo.tscn) and one rule about how they are used:
+#
+#     A MASK IS AN OBJECT, NOT A PATTERN.
+#
+# The five gobos above are generic light shapes. These five are pictures of
+# specific hardware — a louvre stack, a perforated plate, a stopped extract fan,
+# an overhead ladder tray, a walkway grating with runnels. That difference is the
+# motivation law (DESIGN.md pillar 6) aimed at lighting: if a key throws slat
+# shadows, there is a louvre in the path of that light, and the player should be
+# able to find it. So `ProcLayerBuilder` does NOT roll for these — it asks the
+# room what is actually standing in it and picks the mask that matches (see
+# `_key_gobo_for` and `_ceiling_gobo_for` there).
+#
+# The old pattern gobos are NOT retired. They still hold the jobs a picture of a
+# fitting cannot: GOBO_DUST is atmosphere on an unshadowed wall wash and has
+# nothing to be a photograph of, and GOBO_APERTURE is the cheap ceiling shaft in
+# rooms that did not earn a real hole. Retiring either would be swapping a
+# working effect for a more expensive one that says the same thing.
+const GOBO_VENT_SLAT: String = "res://assets/gobos/gobo_vent_slat.png"
+const GOBO_FINE_GRILLE: String = "res://assets/gobos/gobo_fine_grille.png"
+const GOBO_FAN_BLADES: String = "res://assets/gobos/gobo_fan_blades.png"
+const GOBO_CABLE_TRAY: String = "res://assets/gobos/gobo_cable_tray.png"
+const GOBO_DRIP_GRATE: String = "res://assets/gobos/gobo_drip_grate.png"
+
 ## Godot's positional lights fall off as pow(distance, -attenuation). The game
 ## already uses this gentle decay so a fixture still delivers usable light
 ## several metres out; keeping the same number means energies transfer directly.
@@ -140,7 +167,12 @@ static func practical(parent: Node3D, pos: Vector3, energy: float = 1.5,
 	l.name = "Practical"
 	l.position = pos
 	l.light_color = color
-	l.light_energy = energy
+	# What the level author asked for, kept separately from what is shipped: the
+	# PHOTONICS gain below multiplies this, and `set_practical_gain` has to be able
+	# to re-derive from the authored figure rather than compounding on itself
+	# every time the setting moves.
+	l.set_meta("fidelity_base", energy)
+	l.light_energy = energy * Photonics.practical_gain()
 	l.omni_range = range_m
 	l.omni_attenuation = DECAY
 	l.light_specular = 0.65
@@ -167,6 +199,29 @@ static func _remember(light: Light3D) -> Light3D:
 	light.set_meta("authored_color", light.light_color)
 	light.set_meta("base_energy", light.light_energy)
 	return light
+
+
+## Re-scale every practical under `root` to the current PHOTONICS gain.
+##
+## Called when the quality tier moves so the CINEMA practical lift lands on a
+## layer that is already standing, instead of only on the next one the crew
+## descends into. It rewrites the authored/base metas as well as the live energy,
+## because `set_alert` lerps FROM `authored_energy` and a flicker driver reads its
+## ceiling out of `base_energy` — leaving either stale would make an alerted or
+## failing fixture snap back to the other tier's brightness.
+##
+## Practicals only. The keys and accents are the architecture's own exposure and
+## the darkness law is written about them; the lift is specifically a lift on the
+## SHORT-RANGE fixtures that sit on visible sources (see Photonics).
+static func set_practical_gain(root: Node3D, gain: float) -> void:
+	for node: Node in root.find_children("Practical*", "OmniLight3D", true, false):
+		var light: OmniLight3D = node as OmniLight3D
+		if light == null or not light.has_meta("fidelity_base"):
+			continue
+		var authored: float = float(light.get_meta("fidelity_base")) * gain
+		light.set_meta("authored_energy", authored)
+		light.set_meta("base_energy", authored)
+		light.light_energy = authored
 
 
 ## Attach a flicker behaviour to any light. See flicker.gd for the modes.

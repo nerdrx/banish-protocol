@@ -827,3 +827,249 @@ const HAUNT_GLITCH_RATE: float = 1.8
 ## glitch-proximity ceiling all multiply by this when it is on.
 const DAMPENED_REVEAL_SCALE: float = 0.55
 const DAMPENED_GLITCH_SCALE: float = 0.5
+
+# =============================================================================
+# M7 — SUBROUTINES (the ability kit)
+# =============================================================================
+#
+# NOTHING ABOVE THIS LINE WAS TOUCHED. The Cycles economy was retuned by PT1 and
+# the balance lab and those constants are settled; everything below is new, and
+# it is priced *against* them rather than by adjusting them.
+#
+# ## The fiction, and why it costs breath
+#
+# You are software. A subroutine is a routine compiled into your program, and
+# running one costs the thing you run ON — the shared pool. DESIGN.md pillar 1
+# makes Cycles "the clock, the economy, and the argument the crew has over voice
+# chat", so a power that did not touch it would sit outside the only tension the
+# game has. Every cast BURNS from the crew pool. Power always costs breath.
+#
+# ## How the costs were chosen
+#
+# The unit that makes a cost legible is **seconds of solo runtime**: at
+# PASSIVE_DRAIN 0.3/s one Cycle is 3.33 s of existing, and a fresh solo agent
+# injects with CYCLES_PER_CREW 100 — about 333 s. Against that ladder:
+#
+#   FLARE_CYCLE_COST      8    ~27 s     the existing reference point.
+#   SURGE STEP            6    ~20 s     an escape you may take often.
+#   STACK PULSE          14    ~47 s     the co-op save button. Once a fight.
+#   FORK DECOY           22    ~73 s     a fifth of a solo life. A plan, not a
+#                                        reflex.
+#   CHECKSUM BARRIER     28    ~93 s     the most expensive thing a program can
+#                                        do. You buy three seconds for it.
+#
+# In a four-crew the pool is ~400, so the same cast is a quarter of the fraction
+# — correct, and the same shape the siphon's crew-scaled yield already has: a
+# crew can afford to be powerful more often than a lone agent, and the lone agent
+# is the one DESIGN.md says should be the scariest way to play.
+#
+# ## Two laws these numbers are written under
+#
+#   **The solo invariant.** Every subroutine is fully usable alone and NONE of
+#   them is on a critical path. Nothing in the game is gated behind owning one:
+#   they are power, never keys. A player who never buys one can complete
+#   everything a player who bought all four can.
+#
+#   **The killability law's cousin.** STACK PULSE is CONTROL, not damage — it
+#   staggers, interrupts and knocks back, and it cannot kill. Nothing here makes
+#   a process immune to the breaker and nothing here deletes one for free.
+#
+# The catalogue mirrors `MODULES` exactly (name/glyph/note/prices + per-tier
+# effect arrays where index 0 is "not compiled"), so `Modules.value_at`-shaped
+# lookups work unchanged and the Compiler panel draws both from one idiom.
+
+## Order the Compiler's SUBROUTINES section and the HUD's swap list use.
+## Cheapest and most reflexive first, most expensive and most deliberate last —
+## the same "keeps you alive -> changes the fight" sort MODULE_TRACKS uses.
+const SUBROUTINE_TRACKS: Array[String] = [
+	"surge_step", "stack_pulse", "fork_decoy", "checksum_barrier",
+]
+
+## Every subroutine goes to three tiers. Three, not five: a subroutine is a verb
+## you either have or do not, and the tiers only make the verb cheaper and
+## slightly wider. A five-tier ability track would turn a kit into a build.
+const SUBROUTINE_MAX_TIER: int = 3
+
+const SUBROUTINES: Dictionary = {
+	# --- SURGE STEP: process migration ---------------------------------------
+	# A 6 m slide, not a teleport: it MOVES the avatar through the world with its
+	# own collision, so it cannot pass a wall and cannot be used to skip geometry
+	# the generator meant you to walk around. The i-frames are the point — they
+	# are what makes it an answer to a lunge already in the air rather than a
+	# faster walk. The Hound learns nothing from it. It just misses.
+	"surge_step": {
+		"name": "SURGE STEP",
+		"glyph": "»",
+		"note": "6 m PROCESS MIGRATION  ·  BRIEF INVULNERABILITY",
+		"prices": [180, 900, 3200],
+		"cost": [0.0, 6.0, 5.0, 4.0],
+		"cooldown": [0.0, 4.0, 3.4, 2.8],
+		"distance": [0.0, 6.0, 6.0, 6.5],
+		## Seconds of i-frames. A Scrubber lunge commits for 0.45 s
+		## (SCRUBBER_LUNGE_TIME) and lands once; 0.20 s of immunity placed by the
+		## player covers the strike, never the whole commit.
+		"iframes": [0.0, 0.20, 0.22, 0.26],
+	},
+	# --- STACK PULSE: radial interrupt ---------------------------------------
+	# Control, not damage (the killability law is not negotiable and this does not
+	# bend it: a pulse has never killed anything). It cancels lunges, knocks
+	# Scrubbers back and stuns a Sentinel for a beat. It is also LOUD — a full
+	# two-room NoiseBus ping, so the Hound hears every single one. The crew's
+	# panic button rings a bell.
+	"stack_pulse": {
+		"name": "STACK PULSE",
+		"glyph": "◎",
+		"note": "6 m INTERRUPT BURST  ·  VERY LOUD",
+		"prices": [220, 1100, 3800],
+		"cost": [0.0, 14.0, 12.0, 10.0],
+		"cooldown": [0.0, 9.0, 8.0, 7.0],
+		"radius": [0.0, 6.0, 6.5, 7.0],
+		## How long a staggered process is out of the fight. Comfortably longer
+		## than SCRUBBER_RECOVER_TIME so a cancelled lunge is a real reprieve.
+		"stagger": [0.0, 1.2, 1.5, 1.8],
+		## Metres of knockback applied to light processes. Heavy ones (Sentinel,
+		## Auditor) are stunned in place instead — a 2.6 m mass does not skid.
+		"knockback": [0.0, 3.2, 3.8, 4.4],
+	},
+	# --- FORK DECOY: a copy of you, walking away ------------------------------
+	# The solo lifesaver, and the one subroutine that is *better* alone: a crew
+	# has crewmates to draw aggro, and an agent on their own has nothing. It forks
+	# a ghost of your avatar, walks it forward, and every process that hunts by
+	# position goes with it until it decompiles.
+	"fork_decoy": {
+		"name": "FORK DECOY",
+		"glyph": "◈",
+		"note": "GHOST FORK DRAWS ANTIVIRUS  ·  DECOMPILES ON A TIMER",
+		"prices": [420, 1800, 5600],
+		"cost": [0.0, 22.0, 19.0, 16.0],
+		"cooldown": [0.0, 26.0, 22.0, 18.0],
+		"lifetime": [0.0, 6.0, 7.0, 8.0],
+		## How far it walks over its life, in metres. 10 m over 6 s is a walk, not
+		## a sprint: a decoy that outran the thing chasing it would be useless.
+		"walk": [0.0, 10.0, 11.0, 12.0],
+		## Radius inside which a process prefers the fork to a real crew member.
+		"lure": [0.0, 22.0, 26.0, 30.0],
+		## Strikes it soaks before it decompiles early. It is a copy of a program,
+		## not a wall.
+		"hits": [0, 3, 4, 5],
+	},
+	# --- CHECKSUM BARRIER: integrity, held ------------------------------------
+	# Three seconds of a spherical integrity shell that absorbs damage for ANYONE
+	# standing inside it, crew included — the one subroutine whose value goes UP
+	# with the number of people around you, and therefore the co-op positioning
+	# play. Expensive enough that using it is a decision the crew talks about.
+	#
+	# MOTHER notices. A barrier is a program asserting its own integrity inside
+	# hers, and the Director's combat stress is pinned by every cast.
+	"checksum_barrier": {
+		"name": "CHECKSUM BARRIER",
+		"glyph": "⌾",
+		"note": "3 s INTEGRITY SHELL  ·  ABSORBS FOR THE CREW INSIDE",
+		"prices": [520, 2200, 6800],
+		"cost": [0.0, 28.0, 24.0, 20.0],
+		"cooldown": [0.0, 30.0, 26.0, 22.0],
+		"duration": [0.0, 3.0, 3.0, 3.5],
+		"radius": [0.0, 3.4, 3.8, 4.2],
+		## Total integrity absorbed before the shell fails. A Sentinel purge is 26
+		## and a Scrubber lunge is 9, so tier 1 eats a purge and a bite, or five
+		## bites — a fight's worth of mistakes, not a fight's worth of health.
+		"absorb": [0.0, 45.0, 65.0, 90.0],
+	},
+}
+
+## Compiler stock gate for subroutines. A Compiler stocks a subroutine tier when
+## its own `stock_tier` reaches it, exactly like a module — so tier 1 of the two
+## cheap subroutines is available at the first Compiler a fresh crew finds, which
+## is the "cheap tier-1 versions early" the kit is designed around.
+
+# --- M7 cast presentation ----------------------------------------------------
+#
+# SAFETY LAW (DESIGN.md pillar 7). Every effect below is a NEW light source, so
+# every one of them is bounded here rather than in the effect that draws it, and
+# the numbers are asserted by `--selftest`. Two rules run through all of them:
+#
+#   1. **No effect flashes.** Each is a single rise-and-fall envelope — one
+#      bloom, decaying — never a repeating cycle. A one-shot cannot strobe.
+#   2. **The rate is governed anyway**, because a player can cast repeatedly.
+#      `SUB_FLASH_MIN_INTERVAL` is the same shape and the same reasoning as
+#      `Antivirus.HURT_FLASH_MIN_INTERVAL`: at most one full-amplitude bloom per
+#      interval, so the ceiling is under 3 Hz UNCONDITIONALLY with Reduced
+#      Flashing OFF. The shortest cooldown in the kit is 2.8 s, so the governor
+#      is not even reachable by legitimate play — it is there so that a future
+#      cooldown cut, or a bug, fails in `--selftest` instead of in a living room.
+
+## Minimum seconds between two full-amplitude ability blooms. 0.36 s == 2.78 Hz.
+const SUB_FLASH_MIN_INTERVAL: float = 0.36
+## Unconditional ceiling on a cast bloom's light energy, before A11y scaling.
+## STACK PULSE is the brightest thing in the kit and it sits here.
+const SUB_FLASH_ENERGY: float = 5.0
+## How fast a cast bloom decays, in energy per second. ~0.35 s to black from the
+## ceiling: long enough to read, far too short to be a second flash.
+const SUB_FLASH_DECAY: float = 14.0
+
+## Screen shake handed out by each cast, in `Player.add_shake` units. Tiny and
+## damped — the shake discipline below caps how often any of it can land.
+const SUB_SHAKE_STEP: float = 0.28
+const SUB_SHAKE_PULSE: float = 0.55
+const SUB_SHAKE_BARRIER: float = 0.30
+const SUB_SHAKE_DECOY: float = 0.18
+
+# --- M7 juice: shake discipline ----------------------------------------------
+#
+# "Punchy screen shake discipline (tiny, damped, a11y-scaled, never >2 shakes/s)".
+# The shake itself is `Player._shake`, which has been a damped rotational noise
+# since M4.7 and is not changed. What is new is a GOVERNOR on how often a fresh
+# impulse may be added, because M7 adds several new sources (impacts, landings,
+# kills, four abilities) on top of the two M3 had — and a camera that is shaken
+# by everything is a camera nobody can aim.
+#
+# Bounded three ways: a minimum interval between impulses, a hard ceiling on the
+# accumulated weight, and `A11y.effect_scale("shake")` on top of both so Reduced
+# Flashing takes the whole thing to nothing.
+## Minimum seconds between two accepted shake impulses. 0.5 s == 2 per second,
+## the stated budget. A stronger impulse arriving inside the window is not
+## dropped — it is admitted at the difference, so a kill during a firefight still
+## reads while ten small hits do not stack into a tremor.
+const SHAKE_MIN_INTERVAL: float = 0.5
+## Ceiling on the accumulated shake weight, matching `Player.add_shake`'s clamp.
+const SHAKE_CEILING: float = 1.2
+
+# --- M7 juice: landing dust tiers --------------------------------------------
+#
+# The verticality noise tiers (Player.LAND_NOISE_SPEED / LAND_LOUD_SPEED /
+# LAND_HURT_SPEED) already tell the player how much a drop cost them in NOISE.
+# The dust puff is the same information delivered a beat earlier and in a
+# different sense: you see how hard you landed before you hear who heard it.
+# Particle counts per tier, so the three tiers are visibly three tiers.
+const LAND_DUST_SOFT: int = 8
+const LAND_DUST_LOUD: int = 18
+const LAND_DUST_HURT: int = 34
+
+# --- M7 juice: the decompile shatter -----------------------------------------
+#
+# THE money effect: a deleted process comes apart into glowing fragments that
+# scatter, tumble and fade. It is cosmetic, local, and spawned from the death
+# event every peer already receives — it consumes no RNG (variation is
+# hash-derived from the creature's own slot index and position, so two peers draw
+# the same shatter without a packet).
+#
+# Budgeted rather than generous: the perf target is 4 players + 6 processes +
+# effects at 60 fps, and a shatter is the single largest particle allocation in
+# the game. One pooled emitter per creature size class, capped counts.
+const SHATTER_FRAGMENTS_LIGHT: int = 46
+const SHATTER_FRAGMENTS_HEAVY: int = 96
+const SHATTER_LIFETIME: float = 1.35
+## The dying coal at the point of deletion, and how fast it goes out. A fading
+## glow, never a flash — this is the safety law applied to the prettiest effect
+## in the game rather than in spite of it.
+const SHATTER_GLOW_ENERGY: float = 3.2
+const SHATTER_GLOW_DECAY: float = 3.6
+
+# --- M7 juice: pooled scorch decals -------------------------------------------
+
+## How many breaker scorches may be on a layer at once before the oldest is
+## recycled, and how long one takes to fade. Pooled: the nodes are created once
+## and moved, never allocated per shot.
+const SCORCH_POOL: int = 24
+const SCORCH_LIFETIME: float = 7.0
+const SCORCH_SIZE: float = 0.42

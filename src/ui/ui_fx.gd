@@ -263,6 +263,79 @@ static func tube_safe_rect(view: Vector2) -> Rect2:
 	return Rect2(at, size)
 
 
+# --- HUD WIDTH (the ultrawide instrument zone) -------------------------------
+#
+# PT3, from live feedback on a 3440x1440 panel: "the ui in that build still
+# looked anchored to the left for some reason, the minimap also was on the left
+# for me instead of on the very right."
+#
+# MEASURED FIRST, because "anchored to the left" is a claim an instrument can
+# settle. `--ui-audit --window-size 3440x1440` reports:
+#
+#     canvas 1720x720   safe box x=316 y=45 w=1088 h=612
+#     surface HUD  INSIDE  x=316..1382
+#
+# 316 px of canvas to the left of the box, 338 to the right of the ink. The box
+# is CENTRED, exactly, and there is no arithmetic bug to fix. What the player is
+# describing is the rule working as designed: a 16:9 instrument zone in the
+# middle of a 21:9 panel leaves 676 real pixels of empty glass outboard of the
+# minimap, and the eye reads "that thing is not in the corner" as "that thing is
+# on the left".
+#
+# The rule was ergonomics theory — keep critical readouts inside one pair of
+# eyes' comfortable arc. The player's preference is DATA, and it beats the
+# theory. So the zone becomes a slider instead of a constant, and on an
+# ultrawide it defaults toward the edges (see Screen.hud_width). The theory is
+# still available at 0%; it is just no longer imposed.
+#
+# ONLY THE HORIZONTAL MOVES. The vertical inset is not an ergonomic preference,
+# it is the tube: the barrel warp in crt.gdshader genuinely has no picture out
+# there. And the MENU keeps the tube-safe box unconditionally — a menu is a
+# composed screen with a reading order, not a set of instruments the player
+# glances at, and spreading its columns across a metre of desk is a different
+# and worse experience.
+
+## The horizontal glass margin, in canvas pixels, for a viewport of `view`.
+##
+## Deliberately NOT `view.x * TUBE_EDGE`. The tube's curvature is radial and
+## normalised on the short axis, so the band the warp eats does not get wider
+## when the panel does — a 32:9 canvas that lost 7.5% of 2560 px each side would
+## be throwing away 384 real pixels per edge to model a distortion that is not
+## there. It loses what a 16:9 tube of the same height loses, and no more.
+static func glass_margin_x(view: Vector2) -> float:
+	return minf(view.x, view.y * SAFE_ASPECT) * TUBE_EDGE
+
+
+## The instrument zone: `tube_safe_rect` at `width` 0, the full canvas minus the
+## glass margin at `width` 1, straight lerp between. Vertically it is always the
+## tube-safe box.
+static func instrument_rect(view: Vector2, width: float) -> Rect2:
+	var safe: Rect2 = tube_safe_rect(view)
+	var w: float = clampf(width, 0.0, 1.0)
+	if w <= 0.001 or safe.size.x <= 0.0:
+		return safe
+	var margin: float = glass_margin_x(view)
+	var wide_x: float = margin
+	var wide_w: float = maxf(view.x - margin * 2.0, safe.size.x)
+	return Rect2(
+			Vector2(lerpf(safe.position.x, wide_x, w), safe.position.y),
+			Vector2(lerpf(safe.size.x, wide_w, w), safe.size.y))
+
+
+## Park `control` on the instrument zone — the HUD's own version of
+## `fit_to_safe_area`, reading the player's HUD WIDTH out of the settings store.
+static func fit_to_instrument_area(control: Control, view: Vector2) -> void:
+	if Debug.no_safe_area:
+		control.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		return
+	var rect: Rect2 = instrument_rect(view, Screen.hud_width_for(view))
+	control.set_anchors_preset(Control.PRESET_FULL_RECT)
+	control.offset_left = rect.position.x
+	control.offset_top = rect.position.y
+	control.offset_right = rect.position.x + rect.size.x - view.x
+	control.offset_bottom = rect.position.y + rect.size.y - view.y
+
+
 ## Park `control` on the tube-safe rect of the viewport it is in.
 ##
 ## Written as anchors + offsets rather than `position`/`size` on purpose. That

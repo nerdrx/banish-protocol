@@ -41,6 +41,17 @@ commit or an incident behind it.
   `--display-driver x11` outside the wrapper.
 - Captures of temporally-accumulated effects (TAA/SSR/SSIL/fog) need a settle
   (~240 frames) before the shot.
+- **One gamescope at a time.** Headless gamescope binds the abstract X0 socket
+  exclusively; a second concurrent run hangs silently (and pkill -f gamescope
+  murders your neighbor's capture — it happened). Serialize capture runs
+  (flock-style wait wrapper), never kill blind. Also: concurrent --autohost
+  runs need unique --port each, or the loser photographs the main menu and
+  calls it a comms room.
+- **Measure the thing the player sees.** Two instruments agreeing proves only
+  that they share assumptions: the aim solve and its probe both measured the
+  grip-to-muzzle chord for five rounds while the visible barrel pointed 13.35
+  degrees nose-down. When a human report contradicts a clean measurement,
+  first ask what the instrument is actually pointed at.
 - UI verification happens at the user's real aspects (3440x1440, 5120x1440),
   not just the 1280x720 design resolution. `--window-size` + the tube-safe-area
   rule exist for this.

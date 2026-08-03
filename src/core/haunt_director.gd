@@ -446,6 +446,34 @@ func _on_breaker_fired(peer: int, _origin: Vector3) -> void:
 	_muzzle[peer] = Balance.MOTH_MUZZLE_PULSE
 
 
+## M7. A crewmate ran CHECKSUM BARRIER: a program asserting its own integrity
+## inside hers.
+##
+## DESIGN.md's Director "tracks crew stress (recent damage, Cycles, time since
+## last scare)" and paces the hunt off it. A barrier is a declaration that the
+## crew expects to be hit, and the Director treats it exactly as it treats being
+## hit — combat recency is pinned, which raises perceived stress, which is what
+## the whole two-brain pacing reads from. So a crew that keeps shielding gets a
+## heavier haunting, and the cost of the most expensive subroutine in the game is
+## not only its Cycles.
+##
+## Also worth naming: this makes the barrier LOUD in the one sense that matters
+## to a director rather than to a Hound. It does not ping `NoiseBus` — a shell is
+## silent, and inventing a noise for it would collide with STACK PULSE, which is
+## the subroutine whose whole cost IS being heard.
+##
+## Host-only. Every peer computes its own perceived stress from replicated facts;
+## this pins the one input that is a host decision.
+func notice_assertion() -> void:
+	if not _is_host():
+		return
+	_combat_recency = 0.0
+	# She may or may not say something about it; `_bark` owns the budget and the
+	# floor between lines, and refuses far more often than it speaks. The category
+	# is an existing one from the corpus — no new entries are added for M7.
+	_bark("hunt")
+
+
 func _on_noise(where: Vector3, _rooms: int, _source: String, _seconds: float) -> void:
 	# Remember the loudest recent thing for vectoring a fresh Hound. The debt tally
 	# itself lives on NoiseBus; this only keeps the position.
@@ -507,6 +535,20 @@ func _bark(category: String, target: int = -1) -> void:
 	if Debug.log_ai:
 		print("[Haunt] MOTHER (%s t%d): %s" % [category, int(rendered["tier"]),
 			String(rendered["text"])])
+
+
+## THE PARTITION's murmur. One ambient line, host-only, budgeted by the same
+## `BARK_MIN_GAP` floor every other bark answers to.
+##
+## The hub calls this from `MotherLens` rather than getting it from `_tick_barks`,
+## because in the hub `_live` is false (there is no graph, so there is no pacing,
+## no pressure and no hunters) — and that is correct: she has no processes in the
+## crew's own sector and nothing to direct there. What she has is the ability to
+## be heard, occasionally, in the one room where it costs the crew nothing. The
+## caption track, the corruption tier and the once-ever `GO UP` bookkeeping all
+## come along for free, because this is the same `_bark` her layer lines use.
+func speak_ambient() -> void:
+	_bark("ambient")
 
 
 ## A background cadence for the quieter registers, so she is present without

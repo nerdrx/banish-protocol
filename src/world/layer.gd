@@ -129,7 +129,26 @@ func _rebuild() -> void:
 		_builder = null
 	_clear_dynamic()
 
-	if Run.use_test_layer:
+	if Run.in_hub:
+		# THE PARTITION. The hub is a mode of THIS scene rather than a scene of its
+		# own, and that is the load-bearing decision in the whole feature: crossing
+		# between the hub and a layer swaps the builder child under a
+		# MultiplayerSpawner that is never freed and avatars that are never
+		# respawned, which is the one transition this project has that is known to
+		# survive a live session. A `change_scene_to_file` would tear the spawner
+		# down mid-session and re-open the join race the header of net.gd exists to
+		# close.
+		graph = null
+		# Stamped here as well as in the procedural branch: the census prints
+		# `Time.now - _build_started_usec`, and a hub built after a layer inherited
+		# that layer's start time and reported a 39-second build. A log that lies
+		# about a hitch is how you go looking for one that is not there.
+		_build_started_usec = Time.get_ticks_usec()
+		var partition: PartitionBuilder = PartitionBuilder.new()
+		partition.name = "PartitionBuilder"
+		_builder = partition
+		_adopt_hub_furniture()
+	elif Run.use_test_layer:
 		graph = null
 		var authored: LayerBuilder = LayerBuilder.new()
 		authored.name = "LayerBuilder"
@@ -162,6 +181,13 @@ func _rebuild() -> void:
 		Debug.arm_path_walk()
 
 	add_child(_builder)  # GeometryKit._ready() runs build() synchronously.
+	# FIDELITY PASS: the camera-following dust box. Parented to the BUILDER, so it
+	# dies with the geometry it belongs to and a descent can never leave two of
+	# them stacked in the same air. Generated layers only — the hub and the
+	# hand-authored greybox are other people's rooms, and neither has a graph for
+	# the per-archetype density to read.
+	if graph != null:
+		DustAir.attach(_builder, graph)
 	_apply_environment()
 
 	# Antivirus last: the taps it listens to and the rooms it paths through both
@@ -209,9 +235,18 @@ func _rebuild() -> void:
 	# that says whether it did.
 	var elapsed: float = 0.0 if _build_started_usec <= 0 \
 			else float(Time.get_ticks_usec() - _build_started_usec) / 1000.0
+	# What was actually built, not what layer 1 would have been. The census used to
+	# fall through to `LayerParams.describe` for anything that was not the test
+	# layer, which meant the hub's line read "rooms=6 siphons=2" about a room that
+	# has neither — a log that describes a layer nobody generated is worse than no
+	# log, because it is the line somebody will believe.
+	var what: String = LayerParams.describe(Run.layer_number)
+	if Run.in_hub:
+		what = "THE PARTITION: the crew's staging sector"
+	elif Run.use_test_layer:
+		what = "layer %d: hand-authored test layer" % Run.layer_number
 	print("[Layer] built %s  nodes=%d lights=%d shadowed=%d decals=%d build=%.0fms%s%s" % [
-		"layer %d: hand-authored test layer" % Run.layer_number if Run.use_test_layer
-				else LayerParams.describe(Run.layer_number),
+		what,
 		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT)), lights, shadowed,
 		decals, elapsed, decay, clutter])
 
@@ -256,6 +291,31 @@ func _adopt_test_layer_furniture() -> void:
 	siphon_approaches = []
 	for tap: Vector3 in LayerBuilder.TEST_SIPHONS:
 		siphon_approaches.append(tap + Vector3(0.0, 0.0, 2.6))
+
+
+## THE PARTITION's furniture, published through the same properties a layer's is.
+##
+## `shaft_position` is the load-bearing one and it is not a lie: it is where the
+## crew musters to go down, which in the hub is the injection rig. Publishing it
+## under the existing name means `Run._update_muster` — the crew-on-the-pad count
+## the whole commit ritual hangs off, and the `crew_mustered()` predicate the rig's
+## own prompt reads — works in the hub with no changes at all. Nothing had to learn
+## about a second kind of muster.
+##
+## `uplink_position` is the arrival pad, for the same reason: it is where the crew
+## materialises coming home, so it is the right answer to "where did we come in".
+## There are no siphons and no maintenance node in the crew's own sector.
+func _adopt_hub_furniture() -> void:
+	shaft_position = PartitionBuilder.RIG
+	uplink_position = PartitionBuilder.ARRIVAL
+	compiler_positions = [PartitionBuilder.COMPILER]
+	backdoor_position = Vector3.ZERO
+	vault_position = Vector3.ZERO
+	nest_position = Vector3.ZERO
+	corridor_position = PartitionBuilder.GALLERY
+	corridor_yaw = PartitionBuilder.GALLERY_YAW
+	siphon_positions = []
+	siphon_approaches = []
 
 
 # ---------------------------------------------------------------- depth bands --
@@ -373,6 +433,26 @@ func _apply_environment() -> void:
 	# M4.95: the Environment adjustment grade is disabled (the depth-band LUTs own
 	# it now), so the old per-band adjustment_saturation is gone from here — its job
 	# moved into the LUTs. GRADE_SATURATION is kept above only as a record of it.
+
+	# FIDELITY PASS: per-archetype fog grading, on the duplicate, before the
+	# quality store gets its say. The BASELINE density is still the authored
+	# 0.030 — this only decides how far a layer's own character is allowed to
+	# move it, and it moves with depth, which is the same axis everything else
+	# in this function rides.
+	scaled.volumetric_fog_density = DustAir.layer_fog_density(
+			float(source.volumetric_fog_density), Run.layer_number)
+	# THE DARKNESS GUARD. Denser air is only allowed to make LIT air brighter. If
+	# the fog carries emission or takes an ambient inject, raising its density
+	# raises the floor of the whole frame and true blacks stop being true — which
+	# is the one thing the fidelity pass is not permitted to cost. Both are pinned
+	# to zero here rather than trusted to the .tres, because this is the function
+	# that made the density bigger.
+	scaled.volumetric_fog_ambient_inject = 0.0
+	scaled.volumetric_fog_emission_energy = 0.0
+
+	# And the player's quality tier, LAST, so a setting always wins over a
+	# derived value rather than being quietly overwritten by the next descent.
+	Photonics.apply_environment(scaled)
 	_world_environment.environment = scaled
 
 	# Drive the post shader's depth-band LUT + cinematic exposure off the SAME band
@@ -387,6 +467,25 @@ func _apply_environment() -> void:
 		grade.set_shader_parameter("exposure",
 				lerpf(GRADE_EXPOSURE[low], GRADE_EXPOSURE[low + 1], mix))
 		grade.set_shader_parameter("exposure_breathe", GRADE_EXPOSURE_BREATHE)
+
+
+## Re-derive the environment from the current settings, without rebuilding
+## anything. Called by Photonics when a quality row moves: a player dragging
+## VOLUMETRICS has to see the air change under the settings panel, and rebuilding
+## the layer to show them would be a two-second hitch in the middle of a run.
+##
+## Duck-typed from Photonics (`has_method`) rather than signalled, because the
+## quality store must not hold a reference to a layer that is being torn down.
+func refresh_environment() -> void:
+	if not is_inside_tree():
+		return
+	_apply_environment()
+	# The CINEMA practical lift, applied to the layer that is already standing.
+	# See Photonics.PRACTICAL_GAIN_GI: the tier's compensating brightness lives on
+	# the short-range fixtures rather than on ambient, so moving the setting has
+	# to reach the fixtures or half the tier does not happen until a descent.
+	if _builder != null and is_instance_valid(_builder):
+		LightRig.set_practical_gain(_builder, Photonics.practical_gain())
 
 
 # ------------------------------------------------------------------ descent --

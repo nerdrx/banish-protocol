@@ -42,9 +42,45 @@ const MOUNT_HEIGHT: float = 1.02
 var prop_index: int = 0
 var graph: LayerGraph = null
 
+# --- FIDELITY PASS: the tube as a light source ------------------------------
+#
+# THE GAP THIS CLOSES
+# This console has always been emissive-only: the screen glows, the room does
+# not change. That is the correct default and it is also the single largest
+# difference between our comms-room frames and the user's Isolation comms-room
+# reference. In the reference the monitors are not bright OBJECTS, they are the
+# light source — phosphor falls on the desk, on the operator's hands, on the
+# ceiling — and the room's whole colour comes from three tubes and nothing else.
+# An emissive quad cannot do that, and neither can SSIL, which only bounces what
+# is on screen and dies the moment the player looks away from the monitor at the
+# thing the monitor was lighting.
+#
+# The fix is the one prototyped in src/fidelity/crt_terminal.gd: an AreaLight3D
+# in front of the glass, sized to the glass, fed the SCREEN'S OWN IMAGE as its
+# `area_texture` so the bright header spills more than the dim body text.
+#
+# DEFAULT OFF. One shadowless textured area light is not free and there is no
+# version of this game where every console in a layer gets one. `use_area_light`
+# is handed to the PHOTONICS area-light budget at runtime (this node joins
+# `Photonics.AREA_LIGHT_GROUP`), which turns on the closest N — so the terminal
+# the player is standing at is the hero terminal, which is the only definition
+# of "hero" that survives the player walking somewhere else.
+@export var use_area_light: bool = false:
+	set(v):
+		use_area_light = v
+		_apply_cast()
+## Peak energy of the cast, before the idle/engaged/busy modulation the tube's
+## own glow already rides. Mirrors FidelityCrtTerminal.cast_energy so the
+## prototype and the shipping prop can be A/B'd with the same number.
+@export var cast_energy: float = 2.4:
+	set(v):
+		cast_energy = v
+		_apply_cast()
+
 var _screen_material: StandardMaterial3D = null
 var _rows: Array[MeshInstance3D] = []
 var _light: OmniLight3D = null
+var _cast: AreaLight3D = null
 var _channel: float = 0.0
 var _engaged: float = 0.0
 ## Rises while a query is processing, so the machine visibly works.
@@ -154,7 +190,42 @@ func _assemble() -> void:
 	_light.shadow_enabled = false
 	add_child(_light)
 
+	# The area cast. Built always, VISIBLE only when the budget says so — an
+	# AreaLight3D that is `visible = false` costs nothing per frame and building
+	# it lazily would mean a frame of pop the first time the budget reached it.
+	_cast = AreaLight3D.new()
+	_cast.name = "ScreenCast"
+	# Just in front of the glass, and turned around: every Light3D emits along
+	# its own -Z, so a light that has to throw into a +Z-facing room is rotated
+	# 180 degrees. Wiring this backwards lights the inside of the casing and the
+	# console simply looks broken — see the same note in slat_diffuser_panel.tscn.
+	_cast.position = Vector3(0.0, MOUNT_HEIGHT + 0.42, 0.40)
+	_cast.rotation_degrees = Vector3(-6.0, 180.0, 0.0)
+	_cast.area_size = Vector2(0.78, 0.58)
+	_cast.area_normalize_energy = true
+	_cast.area_texture = load(FidelityLib.TEX_CRT_PHOSPHOR) as Texture2D
+	_cast.light_color = SCREEN_COLOUR
+	# Short. A terminal lighting the far wall is a terminal that has renegotiated
+	# the darkness law on its own; what it is allowed to light is the desk, the
+	# operator, and about a metre of the room behind them.
+	_cast.area_range = 3.8
+	_cast.light_volumetric_fog_energy = 1.0
+	# No shadow. A console casting a shadow of the desk it sits on is correct and
+	# invisible; one casting a shadow of the OPERATOR is the shot, and that is a
+	# decision for a room somebody composed, not for every terminal on a layer.
+	_cast.shadow_enabled = false
+	add_child(_cast)
+	_apply_cast()
+	add_to_group(Photonics.AREA_LIGHT_GROUP)
+
 	_add_probe(Vector3(1.6, 2.0, 1.4), Vector3(0.0, MOUNT_HEIGHT + 0.3, 0.35))
+
+
+func _apply_cast() -> void:
+	if _cast == null or not is_instance_valid(_cast):
+		return
+	_cast.visible = use_area_light
+	_cast.light_energy = cast_energy
 
 
 func _ready() -> void:
@@ -211,6 +282,13 @@ func _process(delta: float) -> void:
 	_screen_material.emission_energy_multiplier = 1.7 * idle * charge
 	_light.light_energy = 0.5 * idle * (1.0 + _channel * 0.7 + _engaged * 1.1
 			+ _busy * 1.6)
+	# The cast rides the SAME curve as the tube's own glow. That is the whole
+	# claim of the retrofit: the light in the room is this screen, so when the
+	# screen works harder the room gets brighter, and when a query scrolls the
+	# rows the spill on the desk moves with them.
+	if _cast != null and _cast.visible:
+		_cast.light_energy = cast_energy * idle \
+				* (1.0 + _channel * 0.4 + _engaged * 0.6 + _busy * 0.9)
 
 	# While a query is processing the rows scroll: one row at a time goes dark and
 	# comes back, top to bottom, which is a machine reading an index.

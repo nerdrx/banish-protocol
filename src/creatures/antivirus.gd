@@ -119,6 +119,32 @@ const HURT_FLASH_MIN_INTERVAL: float = 0.36
 var _hurt_flash: float = 0.0
 var _since_hurt_flash: float = 10.0
 
+# --- M7: stagger (STACK PULSE) ------------------------------------------------
+#
+# CONTROL, NOT DAMAGE. The killability law says every monster dies to the
+# breaker; its converse is that nothing else may quietly start killing them. A
+# stagger takes a process OUT OF ITS STATE MACHINE for a beat and, if it is light
+# enough to be moved, shoves it — and does nothing else. `health` is not touched
+# anywhere on this path.
+#
+# Implemented in the BASE rather than per subclass on purpose. `_physics_process`
+# simply does not call `_think()` or `_act()` while the timer runs, so a committed
+# lunge stops committing, a purge stops swinging and a walk stops walking, for
+# every process the game has and every process it ever gets — including ones
+# written after this. A subclass that needs to *forget* what it was doing
+# overrides `_on_staggered()`; one that does not, does not have to know the
+# mechanic exists.
+
+## Seconds of stagger left (host-authoritative) and the shove being ridden out.
+var _stagger_time: float = 0.0
+var _stagger_push: Vector3 = Vector3.ZERO
+## Cosmetic, on every peer: 0..1 decaying, drives the subclass's own reaction and
+## the flinch. Replicated as a streamed flag rather than an RPC, for the same
+## reason death is — a packet aimed at a peer whose layer is still building is an
+## engine error, not a dropped message.
+var sync_staggered: bool = false
+var _stagger_flash: float = 0.0
+
 
 # ------------------------------------------------------------------ assembly --
 
@@ -168,7 +194,7 @@ func _build_sync() -> void:
 		config.property_set_spawn(NodePath(property), true)
 		config.property_set_replication_mode(NodePath(property),
 				SceneReplicationConfig.REPLICATION_MODE_ALWAYS)
-	for occasional: String in [".:sync_state", ".:sync_integrity"]:
+	for occasional: String in [".:sync_state", ".:sync_integrity", ".:sync_staggered"]:
 		config.add_property(NodePath(occasional))
 		config.property_set_spawn(NodePath(occasional), true)
 		config.property_set_replication_mode(NodePath(occasional),
@@ -216,8 +242,26 @@ func _physics_process(delta: float) -> void:
 		_begin_death()
 	if _dying:
 		return
+	# The flinch weight decays on EVERY peer against that peer's own clock, so a
+	# client's stagger reaction is never a function of packet arrival order.
+	_stagger_flash = maxf(_stagger_flash - delta * 2.2, 0.0)
+	if sync_staggered and _stagger_flash <= 0.0:
+		_stagger_flash = 1.0
 	if not _is_host:
 		_smooth_remote(delta)
+		return
+
+	# M7: staggered. Out of the state machine entirely for the duration — no
+	# decision, no attack, no pathing — and riding out whatever shove came with
+	# it. This is what "interrupts a lunge" means mechanically: the lunge simply
+	# does not get another frame of `_act`.
+	if _stagger_time > 0.0:
+		_stagger_time = maxf(_stagger_time - delta, 0.0)
+		_ride_stagger(delta)
+		if _stagger_time <= 0.0:
+			sync_staggered = false
+		sync_position = global_position
+		sync_yaw = rotation.y
 		return
 
 	_tick_clock -= delta
@@ -239,6 +283,73 @@ func _think() -> void:
 ## Subclass hook: movement for this frame. Host only.
 func _act(_delta: float) -> void:
 	pass
+
+
+# ------------------------------------------------------------------- stagger --
+
+## Host-side. STACK PULSE landed on this process.
+##
+## `seconds` is how long it is out of its own state machine; `push` is metres of
+## knockback for a process light enough to be moved. Heavy ones (see
+## `stagger_mass`) are stunned in place instead — a 2.6 m quarantine process does
+## not skid across a deck because somebody clapped, and pretending it does would
+## make the ability read as a joke rather than as an interrupt.
+##
+## Deliberately idempotent-ish: a second pulse inside the first EXTENDS the
+## stagger rather than stacking two shoves, so two crewmates pulsing together
+## buy more time, not more physics.
+func stagger(seconds: float, from: Vector3, push: float) -> void:
+	if not _is_host or _dying or seconds <= 0.0:
+		return
+	_stagger_time = maxf(_stagger_time, seconds)
+	sync_staggered = true
+	_stagger_flash = 1.0
+	var away: Vector3 = global_position - from
+	away.y = 0.0
+	if away.length_squared() > 0.0001 and push > 0.0 and not stagger_mass():
+		# Distance over duration: the shove is spent over the whole stagger, so a
+		# knocked-back Scrubber SLIDES away and settles rather than being teleported
+		# and then standing still looking foolish.
+		_stagger_push = away.normalized() * (push / maxf(seconds, 0.01))
+	else:
+		_stagger_push = Vector3.ZERO
+	_on_staggered()
+
+
+## Whether this process is too heavy to shove. Overridden by the Sentinel and the
+## Auditor; everything else is light enough to move.
+func stagger_mass() -> bool:
+	return false
+
+
+## Subclass hook: forget what you were doing. Called on the host at the moment a
+## stagger lands, so a creature whose state machine has a committed flag (a lunge
+## in flight, a purge swing armed) can drop it — the base already stops it being
+## SIMULATED, and this is for the bookkeeping that would otherwise resume when the
+## stagger ends.
+func _on_staggered() -> void:
+	pass
+
+
+## Riding out the shove, host-side. Uses `move_and_slide` like everything else, so
+## a knocked-back process stops at a wall instead of going through it.
+func _ride_stagger(delta: float) -> void:
+	velocity.x = _stagger_push.x
+	velocity.z = _stagger_push.z
+	velocity.y = 0.0 if is_on_floor() else velocity.y - GRAVITY * delta
+	_stagger_push = _stagger_push.lerp(Vector3.ZERO, 1.0 - exp(-6.0 * delta))
+	move_and_slide()
+
+
+## 0..1 flinch weight, ALREADY capped by the flash scale — the same contract
+## `hurt_flash()` keeps, and the only legal way to read it. Subclasses use it to
+## drive an emissive dip and a pose recoil; nothing may read `_stagger_flash`.
+func stagger_flash() -> float:
+	return _stagger_flash * A11y.flash_scale
+
+
+func staggered() -> bool:
+	return _stagger_time > 0.0 or sync_staggered
 
 
 ## Clients: ease onto the host's pose. No dead reckoning — a Scrubber changes
@@ -380,6 +491,17 @@ func _deck_step(room: int, want: int) -> Vector3:
 ## corpses do not get hunted — DESIGN.md's restore window would be worthless if a
 ## pack camped the body — and anyone stood in a backdoor sanctuary is off the
 ## board entirely: antivirus does not go in there.
+##
+## **M7: a live FORK DECOY is in this list too**, and that is the whole of how the
+## ability works. Everything that hunts by position — the Scrubbers, the Hound,
+## the Moth, the Sentinel, the Auditor — asks this one question, so a fork becomes
+## prey to all of them by being appended here rather than by five state machines
+## learning about a new class. The decoy is filtered by the same sanctuary rule
+## as a crew member (a fork walked into a backdoor room is off the board too), and
+## by its own lure radius: past that, a process is not fooled.
+##
+## The damage side is safe by construction because every strike goes through
+## `_land_hit`, which asks what it is aiming at before it asks anything else.
 func _running_players() -> Array[Node3D]:
 	var result: Array[Node3D] = []
 	for id: int in Net.crew.keys():
@@ -393,6 +515,12 @@ func _running_players() -> Array[Node3D]:
 		if _in_sanctuary(body.global_position):
 			continue
 		result.append(body)
+	for decoy: ForkDecoy in ForkDecoy.live_decoys(get_tree()):
+		if _in_sanctuary(decoy.global_position):
+			continue
+		if decoy.global_position.distance_to(global_position) > decoy.lure_radius:
+			continue
+		result.append(decoy)
 	return result
 
 
@@ -533,6 +661,56 @@ static func pick_target(tree: SceneTree, space: PhysicsDirectSpaceState3D,
 ## override it.
 func aim_point() -> Vector3:
 	return global_position + Vector3.UP * 0.5
+
+
+## Host-side. THE door every hostile hit in the game goes through.
+##
+## M7 introduces it because three things now sit between "a process swung" and
+## "a crewmate lost integrity", and each of the five creatures used to open that
+## door itself with a bare `Run.damage_player(int(String(body.name)), …)`. That
+## spelling was fine while the only thing a creature could ever be swinging at was
+## a player; it is actively dangerous the moment a FORK DECOY is a legitimate
+## target, because `int("ForkDecoy_3")` is 0 and peer 0 is not a peer — it would
+## have written integrity for a crew member who does not exist.
+##
+## So the question is asked once, here, in order:
+##
+##   1. **Is it a fork?** Then nothing takes damage. The decoy soaks a strike and
+##      may decompile early; that is the whole of its interaction with combat.
+##   2. **Is the target inside SURGE STEP's i-frames?** Then the blow misses. The
+##      Hound learns nothing from a dash — it just misses.
+##   3. **Is there a CHECKSUM BARRIER over them?** Then the shell takes what it
+##      can and only the remainder lands. Crew inside somebody else's shell are
+##      covered too; that is the co-op play.
+##   4. Otherwise it is a hit, through `Run.damage_player` exactly as before —
+##      still the single door integrity leaves by.
+func _land_hit(body: Node3D, amount: float) -> void:
+	if not _is_host or body == null or not is_instance_valid(body) or amount <= 0.0:
+		return
+
+	var decoy: ForkDecoy = body as ForkDecoy
+	if decoy != null:
+		Subs.report_decoy_strike(decoy)
+		return
+
+	var player: Player = body as Player
+	if player == null:
+		return
+	if Subs.invulnerable(player.peer_id):
+		if Debug.log_ai:
+			print("[AI] %s struck %s during a surge step — missed" % [
+				String(name), Net.crew_name(player.peer_id)])
+		return
+
+	var landed: float = amount
+	var barrier: ChecksumBarrier = ChecksumBarrier.covering(get_tree(),
+			player.global_position)
+	if barrier != null:
+		landed = barrier.take(amount)
+		Subs.report_barrier_absorb(barrier)
+	if landed <= 0.0:
+		return
+	Run.damage_player(player.peer_id, landed, global_position)
 
 
 ## Host-side. Everything hostile is killable; what varies is how much a given

@@ -969,6 +969,45 @@ func _register_events() -> void:
 	_def(&"weld_loop", ["weapons/weld_loop.ogg"], W, {"loop": true, "unit": COMBAT.unit, "max": COMBAT.max, "caption": &"weld"})
 	_def(&"weld_complete", ["weapons/weld_complete.ogg"], W, {"unit": COMBAT.unit, "max": COMBAT.max})
 
+	# --- M7 subroutines (World; the cast sounds are things happening in the room) ---
+	#
+	# On the World bus rather than Player, and 3D rather than 2D, on purpose: a
+	# crewmate's STACK PULSE has to arrive from where they are standing, because
+	# the whole co-op read of the ability is "somebody over THERE just saved me".
+	# The two 2D exceptions below are the ones that are genuinely inside your own
+	# process — the ready tick and the refusal — and they go on UI with the rest of
+	# the instrument.
+	#
+	# The pulse gets the LOUD attenuation curve, the same one debris and siphons
+	# use, because its audible radius should match the two-room NoiseBus ping it
+	# actually makes. A sound the crew can hear further than the Hound can would be
+	# lying to them about the cost.
+	_def(&"sub_step", ["player/sub_step_whump.ogg"], W,
+			{"unit": COMBAT.unit, "max": COMBAT.max, "caption": &"sub_step"})
+	_def(&"sub_pulse", ["player/sub_stack_pulse.ogg"], W,
+			{"unit": LOUD.unit, "max": LOUD.max, "caption": &"sub_pulse"})
+	_def(&"sub_fork", ["player/sub_fork_cast.ogg"], W,
+			{"unit": COMBAT.unit, "max": COMBAT.max, "caption": &"sub_fork"})
+	_def(&"sub_fork_hit", ["player/sub_fork_hit.ogg"], W,
+			{"unit": SCRUB.unit, "max": SCRUB.max})
+	_def(&"sub_fork_end", ["player/sub_fork_end.ogg"], W,
+			{"unit": COMBAT.unit, "max": COMBAT.max, "caption": &"sub_fork_end"})
+	_def(&"sub_barrier", ["player/sub_barrier_cast.ogg"], W,
+			{"unit": COMBAT.unit, "max": COMBAT.max, "caption": &"sub_barrier"})
+	_def(&"sub_barrier_hit", ["player/sub_barrier_hit.ogg"], W,
+			{"unit": SCRUB.unit, "max": SCRUB.max})
+	_def(&"sub_barrier_end", ["player/sub_barrier_end.ogg"], W,
+			{"unit": COMBAT.unit, "max": COMBAT.max, "caption": &"sub_barrier_end"})
+	# Your own process, not the room: 2D, on the instrument bus, and quiet. The
+	# ready tick fires every few seconds in a fight and must never become the
+	# fight (the quiet-instrument rule has an audio half).
+	_def(&"sub_ready", ["ui/ui_sub_ready.ogg"], U, {"twod": true, "vol": -4.0})
+	_def(&"sub_refused", ["ui/ui_sub_refused.ogg"], U, {"twod": true, "vol": -3.0})
+	# M7 juice: the drop-shaft ride. 2D on the PLAYER bus — this is the trunk going
+	# past your own shell, not an event somewhere in the room, and it is the same
+	# argument the breath loops are on that bus for.
+	_def(&"descent_rush", ["world/dropshaft_rush.ogg"], P, {"twod": true, "vol": -4.0})
+
 	# --- creatures (Creatures; scrubbers near-field, sentinel is a dread telegraph) ---
 	var chit: Array = ["creatures/scrubber_idle_chitter_01.ogg", "creatures/scrubber_idle_chitter_02.ogg",
 		"creatures/scrubber_idle_chitter_03.ogg"]

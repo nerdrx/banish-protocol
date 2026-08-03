@@ -70,10 +70,23 @@ uniform float pulse_hz = 0.42;
 
 uniform sampler2D screen_tex : hint_screen_texture, repeat_disable, filter_linear_mipmap;
 
+group_uniforms viewmodel;
+// The first-person VIEWMODEL LENS. 1.0 is "the world's own projection" and is
+// the default, so every creature wearing this shader is untouched; only the
+// local player's own gel is ever told otherwise, by CrewAvatar._push_lens_scale.
+// The Slime slot is the LARGEST surface on the crew body (12891 verts, the whole
+// shell), so a lens that skipped it would tear the body in half. See
+// nv_fp_lens.gdshaderinc for what the three lines do and why.
+uniform float lens_scale = 1.0;
+
 varying vec3 v_obj;
 
 void vertex() {
 	v_obj = VERTEX;
+	if (!IN_SHADOW_PASS && lens_scale != 1.0) {
+		PROJECTION_MATRIX[0][0] *= lens_scale;
+		PROJECTION_MATRIX[1][1] *= lens_scale;
+	}
 }
 
 void fragment() {

@@ -47,6 +47,13 @@ signal corruption_changed
 signal backdoor_rooted_changed
 signal exfil_changed
 
+## THE PARTITION. The crew crossed between the hub and MOTHER's layers, in either
+## direction. Rare and total — every readout on the screen means something else on
+## the other side of it — so it is a signal rather than something anyone polls.
+signal hub_changed
+## The injection rig was re-dialled, committed, or aborted.
+signal injection_changed
+
 ## M3.5 events. These carry no new state — they name moments the run already
 ## replicates, so `Achievements` can listen instead of polling.
 signal process_deleted(by_peer: int, kind: String)  ## A breaker shot killed something.
@@ -72,6 +79,70 @@ signal restored(peer_id: int, by_peer: int)         ## Somebody was brought back
 var configured: bool = false
 var layer_number: int = 1
 var use_test_layer: bool = false
+
+# --- THE PARTITION (the hub) -------------------------------------------------
+#
+# DESIGN.md, "Future backlog / The Partition": a sector of MOTHER the crew has
+# permanently carved out, and the place they exist BETWEEN intrusions. "The hub
+# IS the menu" — you walk to the injection rig to pick a depth and launch, to the
+# Compiler to spend, to a terminal to read your own program. Traditional menus
+# reduce to a thin fallback.
+#
+# It is modelled as a **flag beside `use_test_layer`**, not as a `layer_number`
+# of 0. Every read of `layer_number` in the game — LayerParams, Balance's threat
+# curve, the depth-band grade, the antivirus scaling, the backdoor gate — assumes
+# it is at least 1, and a sentinel value would have meant auditing all of them for
+# a place that has no threat curve at all. The hub reports layer 1 and simply
+# never builds a layer.
+#
+# The Partition is authored, not generated: `PartitionBuilder` consumes no RNG
+# stream at all (its only randomness is a local generator with a literal seed, the
+# same trick `LayerBuilder` uses for the greybox vault). Standing in the hub can
+# therefore never shift what `LayerGraph.generate(seed, layer)` produces, which is
+# the `--dumplayer` byte-identity invariant.
+
+## True while the crew is standing in the hub rather than inside MOTHER.
+var in_hub: bool = false
+## Where the injection rig is currently dialled. Host-authoritative, replicated in
+## the world-config packet and by `_set_injection`. The menu's dropdown is now
+## only the value the host walks into the Partition holding.
+var injection_layer: int = 1
+## The commit ritual: true from the moment the crew holds the rig until it fires
+## or somebody aborts it. Every peer runs its own copy of the clock off one
+## packet, exactly like the exfil countdown — it is a clock, not a simulation.
+var injecting: bool = false
+var inject_remaining: float = 0.0
+
+## What the last run did, kept across the walk home so the Partition can react to
+## it. The arrival pad reads these the moment it is built — `run_ended` fired one
+## fade ago, in a layer, on a node that no longer exists, so the hub's furniture
+## polls settled state instead of subscribing to a signal it always misses.
+##
+## Local to each peer and about THIS peer: `last_banked` is what came home in your
+## buffer, not the crew's total, because the pad you are standing on is yours.
+var last_run_reason: String = ""
+var last_run_success: bool = false
+var last_banked: int = 0
+
+## Where the transition in flight is going. Written by `_begin_descent`, applied
+## by `finish_descent`: the layer has to know which of the two places it is
+## building before it frees the one it is standing in.
+var _pending_hub: bool = false
+## Host-side. Seconds until the crew is pulled home after a run ends on its own;
+## negative when nothing is scheduled.
+var _hub_return_clock: float = -1.0
+
+## The commit countdown, once the crew has held the rig. Long enough that anybody
+## can shout and slap the abort; short enough that it is not a loading screen.
+const INJECT_COUNTDOWN: float = 6.0
+## Solo. There is nobody to coordinate with, so the window only has to be long
+## enough to realise you meant it. DESIGN.md's solo invariant applied to the
+## staging area: the hub must never become a lobby tax.
+const INJECT_COUNTDOWN_SOLO: float = 3.0
+## How long a debrief stands before the host brings the crew home by itself. The
+## debrief's own button does it immediately; this is what stops a crew that walked
+## away from the keyboard being stranded on a summary screen with a live socket.
+const HUB_RETURN_DELAY: float = 25.0
 
 # --- economy ----------------------------------------------------------------
 
@@ -151,7 +222,13 @@ func _ready() -> void:
 # ----------------------------------------------------------------- lifecycle --
 
 ## Host: start a fresh intrusion. Called from Net.host() once the seed is rolled.
-func begin(layer: int, test_layer: bool) -> void:
+##
+## `hub` opens the session standing in THE PARTITION instead. It is a parameter
+## rather than a second function because every field below has to be laid down
+## either way: the hub is a place the crew exists in, with a pool and an integrity
+## value and a roster, not a menu with a camera in it.
+func begin(layer: int, test_layer: bool, hub: bool = false) -> void:
+	in_hub = hub
 	layer_number = maxi(layer, 1)
 	deepest_layer = layer_number
 	start_layer = layer_number
@@ -169,18 +246,44 @@ func begin(layer: int, test_layer: bool) -> void:
 	backdoor_rooted = false
 	exfil_calling = false
 	exfil_remaining = 0.0
+	injecting = false
+	inject_remaining = 0.0
+	_pending_hub = hub
+	_hub_return_clock = -1.0
+	last_run_reason = ""
+	last_run_success = false
+	last_banked = 0
 	siphons_drained = 0
 	_run_started_msec = Time.get_ticks_msec()
 	cycles_max = Modules.crew_pool_max()
 	cycles = cycles_max
-	if Debug.start_cycles >= 0.0:
+	# `--cycles` stages a starving pool for a capture. Never in the hub: the
+	# Partition is the crew's own sector and does not bill them, so a hub that
+	# opened at 4 Cycles would be lying about the one number the HUD is built
+	# around before a single thing had happened.
+	if Debug.start_cycles >= 0.0 and not hub:
 		cycles = minf(Debug.start_cycles, cycles_max)
 	_display_cycles = cycles
 	configured = true
-	print("[Run] intrusion begins on layer %d, pool %.0f (%s)" % [
-		layer_number, cycles, "test layer" if test_layer else "procedural"])
+	var where: String = "procedural"
+	if hub:
+		where = "THE PARTITION"
+	elif test_layer:
+		where = "test layer"
+	print("[Run] %s on layer %d, pool %.0f (%s)" % [
+		"standing by" if hub else "intrusion begins", layer_number, cycles, where])
 	config_changed.emit()
 	cycles_changed.emit(cycles)
+	hub_changed.emit()
+	injection_changed.emit()
+
+
+## Host: open the session standing in THE PARTITION. The new front door — Net
+## calls this instead of `begin` for every session a human is going to play, and
+## `target_layer` is only what the rig starts dialled to.
+func begin_hub(target_layer: int) -> void:
+	injection_layer = maxi(target_layer, 1)
+	begin(1, false, true)
 
 
 ## Everything the crew has already done to the layer a joiner is about to walk
@@ -199,6 +302,16 @@ func layer_state() -> Dictionary:
 		"rooted": backdoor_rooted,
 		"exfil": exfil_calling,
 		"exfil_left": exfil_remaining,
+		# THE PARTITION rides in this packet rather than as four more positional
+		# arguments on `_receive_config`. This dictionary is exactly the growth path
+		# the M4.8.1 audit asked for ("the handshake should be one state packet"),
+		# and a joiner has to know WHICH OF THE TWO PLACES the crew is standing in
+		# before it can decide what to build — so the flag has to arrive in the same
+		# reliable message the seed does, ahead of the spawn.
+		"hub": in_hub,
+		"inject_layer": injection_layer,
+		"injecting": injecting,
+		"inject_left": inject_remaining,
 	}
 
 
@@ -228,6 +341,8 @@ func adopt(layer: int, test_layer: bool, pool: float, maximum: float,
 	cycles_changed.emit(cycles)
 	backdoor_rooted_changed.emit()
 	exfil_changed.emit()
+	hub_changed.emit()
+	injection_changed.emit()
 
 
 func _adopt_layer_state(state: Dictionary) -> void:
@@ -240,6 +355,13 @@ func _adopt_layer_state(state: Dictionary) -> void:
 	backdoor_rooted = bool(state.get("rooted", false))
 	exfil_calling = bool(state.get("exfil", false))
 	exfil_remaining = maxf(float(state.get("exfil_left", 0.0)), 0.0)
+	# Set BEFORE `adopt` emits `config_changed`, for the same reason the spent-tap
+	# list is: that signal is what makes the Layer build, and what it builds is
+	# decided by this flag.
+	in_hub = bool(state.get("hub", false))
+	injection_layer = maxi(int(state.get("inject_layer", 1)), 1)
+	injecting = bool(state.get("injecting", false))
+	inject_remaining = maxf(float(state.get("inject_left", 0.0)), 0.0)
 
 
 ## Solo / editor runs: no host to ask, so configure from whatever seed Rng has.
@@ -326,6 +448,15 @@ func reset() -> void:
 	backdoor_rooted = false
 	exfil_calling = false
 	exfil_remaining = 0.0
+	in_hub = false
+	injection_layer = 1
+	injecting = false
+	inject_remaining = 0.0
+	_pending_hub = false
+	_hub_return_clock = -1.0
+	last_run_reason = ""
+	last_run_success = false
+	last_banked = 0
 
 
 # ------------------------------------------------------------------- queries --
@@ -498,6 +629,22 @@ func _process(delta: float) -> void:
 	# peer can compute. The host's copy is the one that fires.
 	if exfil_calling:
 		exfil_remaining = maxf(exfil_remaining - delta, 0.0)
+	# The commit countdown, same deal: one packet started it, every peer counts it
+	# down itself so all four screens read the same number on the same frame. The
+	# host's copy is the one that fires.
+	if injecting:
+		inject_remaining = maxf(inject_remaining - delta, 0.0)
+
+	# THE PARTITION's homecoming clock, and the only thing in this function that
+	# runs while `run_over` is true — which is why it sits above that guard. The
+	# run is finished, the debrief is up, and something still has to bring the crew
+	# home without tearing the session down.
+	if _hub_return_clock >= 0.0 and multiplayer.has_multiplayer_peer() \
+			and multiplayer.is_server():
+		_hub_return_clock -= delta
+		if _hub_return_clock <= 0.0:
+			_hub_return_clock = -1.0
+			return_to_hub()
 
 	if not configured or run_over:
 		return
@@ -526,6 +673,10 @@ func _process(delta: float) -> void:
 
 	if exfil_calling and exfil_remaining <= 0.0:
 		_fire_exfil()
+		return
+
+	if injecting and inject_remaining <= 0.0:
+		_fire_inject()
 		return
 
 	_muster_clock -= delta
@@ -557,6 +708,12 @@ func _process(delta: float) -> void:
 func _drain(delta: float) -> void:
 	if descending:
 		return  # the layer is being rewritten; nobody is running.
+	# THE PARTITION does not bill. It is the sector the crew took off MOTHER, so
+	# they are not running inside her while they stand in it — which is the fiction,
+	# and is also the only thing that makes "the hub is where you live between
+	# runs" survive contact with a shared pool that is also the clock.
+	if in_hub:
+		return
 
 	var drain: float = 0.0
 	for id: int in Net.crew.keys():
@@ -587,8 +744,8 @@ func _drain(delta: float) -> void:
 ## Integrity falls only while the pool is empty, and creeps back once it is not.
 ## Hitting zero corrupts the process — the same door antivirus damage opens.
 func _degrade(delta: float) -> void:
-	if descending:
-		return  # the layer is being rewritten; nobody is running.
+	if descending or in_hub:
+		return  # the layer is being rewritten, or there is no layer; nobody is running.
 	var empty: bool = starved()
 
 	for id: int in Net.crew.keys():
@@ -617,8 +774,8 @@ func _degrade(delta: float) -> void:
 ## Personal decay timers. Running out is deletion — DESIGN.md's "solo corruption
 ## = countdown to deletion", generalised to anyone the crew could not reach.
 func _decay_corrupted(delta: float) -> void:
-	if descending:
-		return  # the layer is being rewritten; nobody is running.
+	if descending or in_hub:
+		return  # the layer is being rewritten, or there is no layer; nobody is running.
 	if corrupted.is_empty():
 		return
 	var expired: Array[int] = []
@@ -958,6 +1115,203 @@ func request_exfil() -> void:
 	_exfil_request.rpc_id(1)
 
 
+# ------------------------------------------------------- THE PARTITION: the rig --
+#
+# The injection ritual, which replaces "the host clicks START in a menu".
+#
+# DESIGN.md's hub backlog is explicit that the hub IS the menu: you walk to the
+# injection rig, the crew stands on the pad with you, and the thing that commits
+# them is a physical act with a countdown everybody can see and anybody can stop.
+# So there are three client requests, and they answer the same three questions
+# every other `any_peer` handler in this file does — who sent it, are they
+# running, are they standing at the thing — plus the two the ritual adds: is the
+# whole crew on the pad, and does every one of their programs have the backdoor
+# this rig is dialled to.
+#
+# That second one is DESIGN.md's "backdoor injection requires all present crew to
+# have installed it", asked in the place the fiction puts it. M4 could only ask it
+# at the door (`Net._admit_crew`) because there was no room to ask it in; the
+# consequence was that a crewmate with the wrong program found out by being
+# disconnected. Now the rig simply refuses to arm, names who is short, and nobody
+# loses their session over it. The door check stays for join-in-progress, which is
+# the only case left that it covers.
+
+
+## Local player finished the channel at the rig.
+func request_inject() -> void:
+	if not multiplayer.has_multiplayer_peer():
+		return
+	_inject_request.rpc_id(1)
+
+
+## Local player hit the rig again while the countdown was running.
+func request_abort_inject() -> void:
+	if not multiplayer.has_multiplayer_peer():
+		return
+	_abort_inject_request.rpc_id(1)
+
+
+## Local player worked the injection selector.
+func request_dial(layer: int) -> void:
+	if not multiplayer.has_multiplayer_peer():
+		return
+	_dial_request.rpc_id(1, layer)
+
+
+## Any peer, from the debrief: bring the crew home now rather than on the clock.
+func request_return_to_hub() -> void:
+	if not multiplayer.has_multiplayer_peer():
+		return
+	_return_request.rpc_id(1)
+
+
+## The layers the rig may be dialled to: always 1, plus the ring below the
+## SHALLOWEST deepest-backdoor in the crew. A backdoor one agent has and the rest
+## do not is not an injection point the crew has — asking for it here rather than
+## discovering it at the commit is the difference between a dial with two stops on
+## it and an error message.
+func injection_choices() -> Array[int]:
+	var choices: Array[int] = [1]
+	var shallowest: int = maxi(GameState.deepest_backdoor, 0)
+	for id: Variant in Net.crew:
+		var entry: Dictionary = Net.crew[id] as Dictionary
+		shallowest = mini(shallowest, maxi(int(entry.get("backdoor", 0)), 0))
+	if shallowest > 0:
+		choices.append(shallowest + 1)
+	return choices
+
+
+## Whose program is short of the backdoor the rig is dialled to. Empty means the
+## crew may commit. Named rather than counted: "SIGMA is short of backdoor 10" is
+## something a crew can act on and "1 crew ineligible" is not.
+func injection_blocked_by() -> PackedStringArray:
+	var missing: PackedStringArray = PackedStringArray()
+	var needed: int = GameState.backdoor_for(injection_layer)
+	if needed <= 0:
+		return missing
+	for id: Variant in Net.crew:
+		var entry: Dictionary = Net.crew[id] as Dictionary
+		if int(entry.get("backdoor", 0)) < needed:
+			missing.append(String(entry.get("name", "AGENT")))
+	return missing
+
+
+## The host's own copy of where the rig is. The Layer publishes it as
+## `shaft_position` in the hub exactly as it publishes the drop shaft in a layer,
+## which is what lets `_update_muster` — the crew-on-the-pad count the whole
+## ritual hangs off — work unchanged in both places.
+func _rig_position() -> Vector3:
+	var layer: Node = get_tree().get_first_node_in_group("layer")
+	if layer == null:
+		return Vector3.ZERO
+	return Vector3(layer.get("shaft_position"))
+
+
+@rpc("any_peer", "call_local", "reliable")
+func _inject_request() -> void:
+	if not multiplayer.is_server() or not in_hub or injecting or descending or run_over:
+		return
+	var body: Node3D = _requesting_body()
+	if body == null:
+		return
+	var rig: Vector3 = _rig_position()
+	# Flat distance, and spelled `if not (d <= r)` like every other guard here: a
+	# non-finite position must fail this closed, not sail through it.
+	if not (Vector2(rig.x - body.global_position.x,
+			rig.z - body.global_position.z).length() <= Balance.SHAFT_MUSTER_RADIUS):
+		push_warning("[Run] injection refused: peer %d is not at the rig" % _sender())
+		return
+	_update_muster()
+	if not crew_mustered():
+		push_warning("[Run] injection refused: crew not at the rig (%d/%d)" % [
+			muster_inside, muster_total])
+		return
+	var missing: PackedStringArray = injection_blocked_by()
+	if not missing.is_empty():
+		broadcast_notice("INJECTION REFUSED  ·  BACKDOOR %02d MISSING: %s" % [
+			GameState.backdoor_for(injection_layer), ", ".join(missing)])
+		return
+	_begin_inject.rpc(injection_layer,
+			INJECT_COUNTDOWN_SOLO if Net.crew.size() <= 1 else INJECT_COUNTDOWN)
+
+
+## Deliberately NOT proximity-checked, unlike everything else in this file.
+##
+## The rig is what you hold to abort, so being at it is already enforced by the
+## only interface that can send this. Adding a host-side distance check would
+## therefore refuse nothing a player can do — and would be exactly the wrong guard
+## to have if a future abort ever hangs off something else (a shout, a panel, a
+## crewmate who is sprinting back and needs the crew to wait for them). An abort
+## is the safe direction: the worst a spurious one can do is not launch.
+@rpc("any_peer", "call_local", "reliable")
+func _abort_inject_request() -> void:
+	if not multiplayer.is_server() or not injecting:
+		return
+	var sender: int = _sender()
+	if not is_running(sender):
+		return
+	_abort_inject.rpc(Net.crew_name(sender))
+
+
+@rpc("any_peer", "call_local", "reliable")
+func _dial_request(layer: int) -> void:
+	if not multiplayer.is_server() or not in_hub or injecting or descending:
+		return
+	if _requesting_body() == null:
+		return
+	# The dial cannot be turned to a stop it does not have. This is the same
+	# question `injection_blocked_by` asks, asked one step earlier, so a modified
+	# client cannot arm the rig at layer 40 by simply announcing that depth.
+	if not injection_choices().has(layer):
+		push_warning("[Run] dial refused: layer %d is not an injection point" % layer)
+		return
+	_set_injection.rpc(layer)
+
+
+@rpc("any_peer", "call_local", "reliable")
+func _return_request() -> void:
+	if not multiplayer.is_server() or not run_over or in_hub or descending:
+		return
+	return_to_hub()
+
+
+## The countdown reached zero. Everything is re-asked here, because six seconds is
+## plenty of time for a crewmate to step off the pad or drop off the session — and
+## a commit that was true when it was made and false when it fired is exactly the
+## bug that leaves one agent standing alone in the Partition watching the others
+## disappear.
+func _fire_inject() -> void:
+	injecting = false
+	inject_remaining = 0.0
+	_update_muster()
+	if not crew_mustered():
+		_abort_inject.rpc("THE CREW")
+		return
+	if not injection_blocked_by().is_empty():
+		_abort_inject.rpc("THE RIG")
+		return
+	print("[Run] injecting the crew at layer %d" % injection_layer)
+	_begin_descent.rpc(injection_layer, false)
+
+
+## Host: bring the crew home.
+##
+## The session is never torn down. DESIGN.md's hub is where you exist BETWEEN
+## intrusions, which means the socket, the roster, everybody's announced program
+## and every spawned avatar survive the trip in both directions — the whole reason
+## the hub reuses the layer scene's replication rig instead of being a scene of its
+## own. A `change_scene_to_file` here would free the MultiplayerSpawner underneath
+## a live session and re-run the join race the header of Net.gd exists to close.
+func return_to_hub() -> void:
+	if not multiplayer.has_multiplayer_peer() or not multiplayer.is_server():
+		return
+	if in_hub or descending:
+		return
+	_hub_return_clock = -1.0
+	print("[Run] returning the crew to THE PARTITION")
+	_begin_descent.rpc(1, true)
+
+
 ## Host-side helper for anything that wants to say something to the whole crew.
 func broadcast_notice(message: String) -> void:
 	if not multiplayer.has_multiplayer_peer() or not multiplayer.is_server():
@@ -1000,6 +1354,8 @@ func _siphon_request(index: int) -> void:
 func _descend_request() -> void:
 	if not multiplayer.is_server() or descending or run_over:
 		return
+	if in_hub:
+		return  # there is no shaft in the Partition; the rig is the only way down.
 	if not crew_intact():
 		push_warning("[Run] descent refused: a crewmate is corrupted")
 		return
@@ -1532,6 +1888,32 @@ func _apply_root(rooted_layer: int) -> void:
 
 
 @rpc("authority", "call_local", "reliable")
+func _begin_inject(layer: int, seconds: float) -> void:
+	injection_layer = maxi(layer, 1)
+	injecting = true
+	inject_remaining = seconds
+	injection_changed.emit()
+	notice.emit("INJECTION COMMITTED  ·  LAYER %02d  ·  HOLD THE RIG TO ABORT" % injection_layer)
+
+
+@rpc("authority", "call_local", "reliable")
+func _abort_inject(who: String) -> void:
+	if not injecting:
+		return
+	injecting = false
+	inject_remaining = 0.0
+	injection_changed.emit()
+	notice.emit("INJECTION ABORTED  ·  %s" % who)
+
+
+@rpc("authority", "call_local", "reliable")
+func _set_injection(layer: int) -> void:
+	injection_layer = maxi(layer, 1)
+	injection_changed.emit()
+	notice.emit("INJECTION POINT  ·  LAYER %02d" % injection_layer)
+
+
+@rpc("authority", "call_local", "reliable")
 func _begin_exfil(seconds: float) -> void:
 	exfil_calling = true
 	exfil_remaining = seconds
@@ -1542,19 +1924,40 @@ func _begin_exfil(seconds: float) -> void:
 ## Every peer runs this. The Layer scene listens for `descent_started`, covers
 ## the screen, frees the old geometry and generates `next_layer` locally — no
 ## geometry ever crosses the wire, only this number.
+##
+## Since the Partition it carries a second one. `hub` says the thing being built
+## on the other side of the fade is the HUB rather than a layer, which makes this
+## one mechanism for all three crossings the game has — descend a ring, inject out
+## of the Partition, and come home to it. That is deliberate: the descent path is
+## the only transition in this project that is known to survive a live session
+## (geometry swapped under a spawner that is never freed, avatars never respawned,
+## every peer sequencing independently off one number), and the hub gets to inherit
+## all of it instead of re-earning it.
+##
+## The default keeps the packet compatible with every existing caller: a plain
+## descent still sends one argument.
 @rpc("authority", "call_local", "reliable")
-func _begin_descent(next_layer: int) -> void:
+func _begin_descent(next_layer: int, hub: bool = false) -> void:
 	if descending:
 		return
 	descending = true
+	_pending_hub = hub
+	# Whatever the rig was doing, it is not doing it any more — the crossing has
+	# started and the Partition is about to stop existing on this peer.
+	injecting = false
+	inject_remaining = 0.0
+	injection_changed.emit()
 	descent_started.emit(next_layer)
 
 
 ## Called by the Layer on every peer once its new geometry is standing. On the
 ## host this also commits the new layer number to authoritative state.
 func finish_descent(next_layer: int) -> void:
+	var was_hub: bool = in_hub
+	in_hub = _pending_hub
 	layer_number = next_layer
-	deepest_layer = maxi(deepest_layer, next_layer)
+	if not in_hub:
+		deepest_layer = maxi(deepest_layer, next_layer)
 	descending = false
 	spent_siphons.clear()
 	taken_shards.clear()
@@ -1563,18 +1966,77 @@ func finish_descent(next_layer: int) -> void:
 	exfil_remaining = 0.0
 	muster_inside = 0
 	muster_total = 0
+	if in_hub:
+		_enter_hub_state()
 	layer_changed.emit(next_layer)
 	descent_finished.emit()
 	backdoor_rooted_changed.emit()
 	exfil_changed.emit()
-	notice.emit("LAYER %02d" % next_layer)
+	hub_changed.emit()
+	notice.emit("THE PARTITION" if in_hub else "LAYER %02d" % next_layer)
 	# The shaft's cut. Host only, and only from HERE: this function is reached
 	# exactly once per completed drop-shaft ride, and never on the injection that
 	# starts a run (`begin`) or on a backdoor start (`adopt`) — which is the whole
 	# of Balance.DESCENT_REFILL_FRACTION's "only real descents" rule, enforced by
 	# where the call site is rather than by a flag somebody has to remember.
+	#
+	# The Partition extends that rule rather than bending it: neither crossing it
+	# is an end of is a descent. Injecting out of the hub is the START of a run
+	# (the `begin` case, arriving by a different road), and coming home is not a
+	# ride down anything. Both are excluded by what they ARE, tested here, next to
+	# the rule they are an instance of.
+	if in_hub or was_hub:
+		return
 	if multiplayer.has_multiplayer_peer() and multiplayer.is_server():
 		_siphon_shaft()
+
+
+## Every peer, on arrival in THE PARTITION.
+##
+## Nothing here crosses the wire. The hub's opening state is a pure function of
+## the roster, so each peer derives the same thing rather than waiting on a
+## packet — which is what makes a returning crew's four screens agree on the frame
+## they fade back in, instead of flickering through a stale debrief's numbers
+## until the next 4 Hz health push lands. The host marks the replication flags
+## anyway, so the next scheduled push confirms rather than corrects.
+##
+## What it does NOT touch is the program file. Archive, modules and backdoors were
+## settled by `_end_run` and `GameState.bank` before the crew ever started walking
+## home; the Partition restores the *body*, never the ledger.
+func _enter_hub_state() -> void:
+	run_over = false
+	corrupted.clear()
+	deleted.clear()
+	buffered.clear()
+	buffered_value.clear()
+	injecting = false
+	inject_remaining = 0.0
+	_hub_return_clock = -1.0
+	deepest_layer = 1
+	start_layer = 1
+	siphons_drained = 0
+	_run_started_msec = Time.get_ticks_msec()
+	# Everybody comes back whole and the pool is full. The Partition is the sector
+	# the crew took off MOTHER — the one place inside her that is not trying to
+	# decompile them — so it is where a wiped crew stands up again. Nothing here is
+	# earned and nothing here is lost: the buffers were banked or forfeited by the
+	# run that just ended.
+	cycles_max = Modules.crew_pool_max()
+	cycles = cycles_max
+	_display_cycles = cycles
+	for id: Variant in Net.crew:
+		var peer: int = int(id)
+		integrity[peer] = integrity_max_of(peer)
+		buffered[peer] = 0
+		buffered_value[peer] = 0
+		flares[peer] = int(Modules.loadout(peer)["flares"])
+	_dirty_health = true
+	_dirty_buffers = true
+	integrity_changed.emit()
+	corruption_changed.emit()
+	buffers_changed.emit()
+	cycles_changed.emit(cycles)
+	injection_changed.emit()
 
 
 ## PT1. Riding the trunk down takes a cut of it: the shared pool gains
@@ -1626,7 +2088,19 @@ func _end_run(summary: Dictionary) -> void:
 	var mine: int = int(banked.get(Net.local_id(), 0))
 	if bool(summary.get("success", false)) and mine > 0:
 		GameState.bank(mine)
+	# Remembered for the walk home — the arrival pad in the Partition lights for
+	# what this run actually did (see `ArrivalPad._adopt_last_run`).
+	last_run_reason = String(summary.get("reason", ""))
+	last_run_success = bool(summary.get("success", false))
+	last_banked = mine
 	run_ended.emit(summary)
+	# THE PARTITION: a run that ends goes HOME, not to a disconnect. Host-side and
+	# on a clock so that a debrief nobody dismisses is not a dead end; the debrief's
+	# own button asks for the same thing sooner. Before the hub this was the moment
+	# the session ended and everybody bounced back to the main menu, which is the
+	# playtest complaint this whole pass exists to answer, read from the other end.
+	if multiplayer.has_multiplayer_peer() and multiplayer.is_server():
+		_hub_return_clock = HUB_RETURN_DELAY
 
 
 ## The debrief payload. Built host-side so every peer shows the same numbers.

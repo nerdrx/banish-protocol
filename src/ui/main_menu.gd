@@ -1420,10 +1420,18 @@ func _program_rule() -> Control:
 ##
 ## The dropdown therefore says what it is committing the crew to, and does not
 ## pretend to know who is going to join.
+##
+## M7 (THE PARTITION) demotes it to what DESIGN.md's hub backlog calls the *thin
+## fallback*. It is no longer where the decision is made — the injection selector
+## standing beside the rig in the hub is, with the whole crew's roster in front of
+## it (`Run.injection_choices`, `InjectionDial`). What survives here is the value
+## the host walks into the Partition holding, which is worth keeping: a crew that
+## always dives at their deepest backdoor should not have to re-dial it every
+## session. Hence the PRESET label — it is a default, and it says so.
 func _build_injection_points() -> void:
 	_injection_select.clear()
 	for layer: int in GameState.injection_choices():
-		_injection_select.add_item("LAYER %02d%s" % [
+		_injection_select.add_item("PRESET  ·  LAYER %02d%s" % [
 			layer, "" if layer == 1
 			else "  ·  NEEDS BACKDOOR %02d" % (layer - 1)], layer)
 	_injection_select.select(_injection_select.item_count - 1)

@@ -107,6 +107,20 @@ const TABLE: Dictionary = {
 	&"you_are_down": {"line": "You are down", "cat": Cat.THREAT},
 	&"restored": {"line": "Restored", "cat": Cat.INFO},
 	&"decompiled": {"line": "Decompiled", "cat": Cat.INFO},
+	# --- M7 subroutines (the ability kit) ---
+	# The cast lines are INFO: they are things the player did, and a deaf player
+	# needs them for the same reason a hearing one hears them — confirmation that
+	# an expensive thing fired. STACK PULSE is the exception and is a THREAT,
+	# because its defining property is that MOTHER heard it: it is a two-room
+	# NoiseBus ping, exactly like a draining siphon, and `siphon_channel` is a
+	# threat caption for precisely that reason. A deaf player must not be the only
+	# one who does not know they just rang a bell.
+	&"sub_step": {"line": "Surge step", "cat": Cat.INFO},
+	&"sub_pulse": {"line": "Stack pulse — pinging hunters", "cat": Cat.THREAT},
+	&"sub_fork": {"line": "Fork decoy running", "cat": Cat.INFO},
+	&"sub_fork_end": {"line": "Decoy decompiled", "cat": Cat.INFO},
+	&"sub_barrier": {"line": "Checksum barrier up", "cat": Cat.INFO},
+	&"sub_barrier_end": {"line": "Barrier failed", "cat": Cat.INFO},
 	# --- ambient (flavour; only under the "all sounds" scope) ---
 	&"machinery": {"line": "Machinery hum", "cat": Cat.AMBIENT},
 	&"data_chip": {"line": "Data chip", "cat": Cat.AMBIENT},

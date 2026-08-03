@@ -79,6 +79,33 @@ const CRATE_PROP_CLEAR: float = 3.6
 ## not allowed to stand in front of each other.
 const PROP_SEPARATION: float = 2.6
 
+## FIDELITY PASS: at most this many tripod work lights on a layer, and how often
+## a qualifying anchor gets one.
+##
+## THREE is the number and it is scarcity for the same reason MAX_SHAFTS is two.
+## The work light is the loudest storytelling object in the kit — it says a
+## PERSON was here, at this exact spot, doing this exact job, and left. Three of
+## those on a layer is a layer with a maintenance history. Nine is a layer that
+## ships with lamps, which says nothing at all. The cost argument agrees with the
+## art one (each is a shadow-casting spot at eye level), but the art one is why.
+const MAX_WORK_LIGHTS: int = 3
+## And how many anchors clear the bar. Rolled from position+seed, never `_rng`.
+const WORK_LIGHT_CHANCE: float = 0.45
+## One in three has the toolbox out. The rest are a lamp somebody left; this is
+## a lamp somebody is coming BACK for, and the difference is worth having twice
+## rather than always.
+const WORK_LIGHT_TOOLBOX_CHANCE: float = 0.34
+## How far off the wall the tripod stands.
+##
+## 2.9 m, and the number came out of a capture rather than out of reasoning. At
+## 1.85 — "where a person stands to work on something" — the lamp is correct and
+## photographs badly: the beam has less than two metres to travel, so there is no
+## visible CONE, only a pool, and the cone through the haze is the entire reason
+## this prop exists. At 2.9 the beam crosses three metres of air before it lands,
+## the volumetric shaft reads, and it is still the distance somebody would set a
+## lamp down at to light a panel they are working on rather than to light a room.
+const WORK_LIGHT_STANDOFF: float = 2.9
+
 ## M4.95: at most this many god-ray hero shafts per layer. Scarcity is what makes
 ## a motif a motif — "a room with three shafts has weather, a room with one has a
 ## hole in it" (HUB_NOTES §10; INTEGRATION2 §4).
@@ -97,6 +124,16 @@ var _trim_batches: Dictionary = {}
 ## Resolved transforms for the functional props, filled before the density pass.
 ## `{kind, index, room, pos, yaw}`.
 var _prop_spots: Array[Dictionary] = []
+## FIDELITY PASS: where the tripod work lights stand. `{pos, yaw, room, at,
+## toolbox, caster}`. Resolved with the functional props (before the lighting
+## pass) because a work light is a SHADOW CASTER standing in a room, and the
+## room's own key budget has to know about it before it spends itself.
+var _work_lights: Array[Dictionary] = []
+## Room indices whose work light is the shadow-casting one. Read by `_light_room`.
+var _hero_lamp_rooms: Dictionary = {}
+## Census counters for the fidelity pass's own line in the build log.
+var _panel_count: int = 0
+var _fidelity_note: String = ""
 ## Circles nothing solid may be dressed inside. See `_blocks_a_prop`.
 var _keep_out: Array[Dictionary] = []
 ## One line for the layer census. "The world got denser" is a claim about
@@ -175,6 +212,14 @@ func _build_content() -> void:
 
 	_resolve_prop_spots()
 	_build_keep_out()
+	# FIDELITY PASS. AFTER the keep-out list, and that ordering is load-bearing
+	# twice over: a work light must not stand in the crew's standing room (so it
+	# has to be able to CONSULT the list), and it must not be dressed over (so it
+	# has to be able to APPEND to it) — and `_build_keep_out` clears the list on
+	# entry, so anything appended before it would be silently wiped. That is the
+	# exact bug documented in `_build_keep_out`'s own comment, and it is the
+	# reason this line is here rather than at the end of `_resolve_prop_spots`.
+	_resolve_work_lights()
 
 	for room: Dictionary in graph.rooms:
 		_dress_room_decals(room)
@@ -216,11 +261,18 @@ func _build_content() -> void:
 
 	_place_furniture()
 	_place_props()
+	# FIDELITY PASS, last: the hero practicals and the air they hang in. After
+	# everything else so a panel or a lamp can be positioned against a room that
+	# is already fully dressed, and so nothing later can stand in front of one.
+	_place_work_lights()
+	_place_diffuser_panels()
+	_build_atmosphere()
 
 	var draws: int = _clutter.flush()
 	draws += _flush_trim()
-	clutter_note = " clutter=[%s] batched=%d shafts=%d%s%s" % [
-		_clutter.describe(), draws, _shaft_specs.size(), _prop_note, _vertical_note]
+	clutter_note = " clutter=[%s] batched=%d shafts=%d%s%s%s" % [
+		_clutter.describe(), draws, _shaft_specs.size(), _prop_note, _vertical_note,
+		_fidelity_note]
 
 
 ## The shell a room actually got, rather than the rect the generator asked for.
@@ -406,6 +458,97 @@ static func _decal_yaw(side: int) -> float:
 			return 90.0
 
 
+# --------------------------------------------------------- FIDELITY: masks --
+#
+# WHICH GOBO A ROOM GETS, AND WHY IT IS NEVER A ROLL.
+#
+# The fidelity library's five masks are pictures of specific hardware (see the
+# block in LightRig). That makes choosing one a MOTIVATION-LAW decision, not a
+# variety one: a key that throws louvre shadows is a key with a louvre in front
+# of it, and if the player sweeps their beam up and finds nothing there, the
+# whole effect turns from "somebody built this" into "the engine has a texture".
+#
+# So the choice is made by ASKING THE ROOM WHAT IS IN IT, in order of how loudly
+# each piece of evidence justifies a mask, and the archetype is only the fallback
+# for a room that contains nothing in particular:
+#
+#   a WELD VENT in the room       -> VENT_SLAT    an actual louvred grille, at
+#                                                 head height, that the player
+#                                                 can walk up to and weld shut.
+#                                                 The strongest evidence there is.
+#   the SIPHON archetype          -> DRIP_GRATE   a coolant plant. Wet walkway
+#                                                 grating with runnels in it.
+#   a REWIRE JUNCTION in the room -> FAN_BLADES   the junction's own VENT FAN is
+#                                                 one of its three loads, and
+#                                                 until somebody routes the bus
+#                                                 to it, that fan is STOPPED —
+#                                                 which is exactly what this mask
+#                                                 is a picture of.
+#   VAULT or SANCTUARY            -> FINE_GRILLE  formal rooms with filtered air:
+#                                                 a perforated plate over the
+#                                                 fitting, not an industrial
+#                                                 louvre.
+#   a TALL room                   -> CABLE_TRAY   tall rooms got a technical
+#                                                 ceiling (girders, pipe racks,
+#                                                 CEIL_CABLE_TRAY_4M), so a tray
+#                                                 really is between the fixture
+#                                                 and the ceiling.
+#   anything else                 -> VENT_SLAT    a bus hall. Machine spaces have
+#                                                 louvres in them.
+#
+# Nothing here touches `_rng`. Two peers agree because the graph does.
+
+## The mask for a room's KEY fixtures — the wall-mounted, shadow-casting layer.
+func _key_gobo_for(room: Dictionary) -> String:
+	var index: int = int(room["index"])
+	var archetype: String = String(room["archetype"])
+	if graph.vent_rooms.has(index):
+		return LightRig.GOBO_VENT_SLAT
+	if archetype == LayerGraph.SIPHON:
+		return LightRig.GOBO_DRIP_GRATE
+	if graph.junction_rooms.has(index):
+		return LightRig.GOBO_FAN_BLADES
+	if archetype == LayerGraph.VAULT or archetype == LayerGraph.BACKDOOR:
+		return LightRig.GOBO_FINE_GRILLE
+	if _height_of(room) >= STOREY * 1.5:
+		return LightRig.GOBO_CABLE_TRAY
+	return LightRig.GOBO_VENT_SLAT
+
+
+## And the mask for the CEILING cone — the cheap aperture shaft dropped down the
+## middle of every room that did not earn a real hole.
+##
+## A different question from the one above, with a different answer, because this
+## light comes from ABOVE and the only thing that may cut it is what is actually
+## up there. A tall room has a girder lattice and a cable tray in the way; a room
+## with slung ceiling runs has those; a plant room's overhead trunk is a grid of
+## pipes. A plain single-storey room has nothing between the ceiling slot and the
+## floor, so it keeps GOBO_APERTURE — a soft slot, which is the honest picture of
+## a ceiling with a slot in it.
+func _ceiling_gobo_for(room: Dictionary) -> String:
+	if _height_of(room) >= STOREY * 1.5:
+		return LightRig.GOBO_CABLE_TRAY
+	var density: Dictionary = _density_for(room)
+	if int(density.get("ducts", 0)) > 0:
+		return LightRig.GOBO_CABLE_TRAY
+	if String(room["archetype"]) == LayerGraph.SIPHON:
+		return LightRig.GOBO_DRIP_GRATE
+	return LightRig.GOBO_APERTURE
+
+
+## Whether this room's air carries service lines — hot or cryogenic runs that a
+## person would lag. Drives the one MLI-gold pipe in a cluster (ClutterLib).
+func _has_service_lines(room: Dictionary) -> bool:
+	var archetype: String = String(room["archetype"])
+	if archetype == LayerGraph.SIPHON:
+		return true
+	if archetype == LayerGraph.VAULT or archetype == LayerGraph.BACKDOOR \
+			or archetype == LayerGraph.ARRIVAL:
+		return false
+	# A bus hall or a nest: machinery, therefore heat, therefore lagging.
+	return true
+
+
 # ------------------------------------------------------------------- lights --
 
 ## The four-layer recipe, per room. LightRig's one rule is *no light does two
@@ -486,7 +629,25 @@ func _light_room(room: Dictionary) -> void:
 	# bright, gobo'd and casting, so the rib columns throw structure across the
 	# floor.
 	var keys: int = clampi(count - 1, 1, 2)
-	var gobos: Array[String] = [LightRig.GOBO_SLATS, LightRig.GOBO_GRATE]
+	# FIDELITY PASS: the shadow budget is shared with the props now. A room that
+	# is getting a tripod work light is getting a THIRD shadow caster standing in
+	# it at eye level, and that lamp is the one the room is composed around — so
+	# the architecture gives a caster back rather than the two of them competing
+	# for the same atlas slots. `_hero_lamp_rooms` is resolved before this runs.
+	#
+	# THE COUNT IS NOT WHAT CHANGES. This is the `_scatter_blocks` lesson applied
+	# a milestone later: shortening the loop below would consume six fewer draws
+	# from the dressing stream in this room and move every crate, tap and Sentinel
+	# post on the rest of the layer. So the loop still runs `keys` times and takes
+	# every draw it always took; one iteration simply does not BUILD its fixture.
+	# Same stream, one fewer shadow map.
+	var surrendered: int = -1
+	if _hero_lamp_rooms.has(index) and keys > 1:
+		surrendered = keys - 1
+	# ONE mask, chosen from what is standing in this room. See `_key_gobo_for`:
+	# the old alternating pair was variety for its own sake, and two different
+	# fittings' shadows in one small room is a thing no building has.
+	var gobo: String = _key_gobo_for(room)
 	# Exactly one dying fixture per room, and never in the room that is not lying
 	# to you. Two is a gimmick — the eye adapts in about four seconds.
 	var dying: int = -1
@@ -495,15 +656,20 @@ func _light_room(room: Dictionary) -> void:
 		dying = _rng.randi_range(0, keys - 1)
 
 	for i: int in keys:
+		# Every draw taken BEFORE the skip below, in the order the argument list
+		# used to evaluate them — see the note on `surrendered`.
 		var side: int = _rng.randi_range(0, 3)
 		var along: float = _rng.randf_range(0.08, 0.3)
 		var mount: Vector3 = _wall_point(rect, side, 1.6, _rng.randf_range(2.7, 3.4), along)
 		var target: Vector3 = _wall_point(rect, side, 0.3, _rng.randf_range(0.9, 1.6),
 				along + 0.6)
-		var key: SpotLight3D = LightRig.key(_fixtures, mount, target,
-				(_rng.randf_range(3.6, 5.0) + boost * 0.8) * light_scale * shaft_key,
-				gobos[i % gobos.size()], _rng.randf_range(42.0, 52.0),
-				LightRig.AMBER if warm else LightRig.KEY_COLD, reach)
+		var energy: float = (_rng.randf_range(3.6, 5.0) + boost * 0.8) \
+				* light_scale * shaft_key
+		var angle: float = _rng.randf_range(42.0, 52.0)
+		if i == surrendered:
+			continue
+		var key: SpotLight3D = LightRig.key(_fixtures, mount, target, energy,
+				gobo, angle, LightRig.AMBER if warm else LightRig.KEY_COLD, reach)
 		key.name = "Key_r%d_%d" % [index, i]
 		if i == dying:
 			LightRig.flicker(key, FlickerLight.Mode.DYING, float(index) * 1.7)
@@ -533,7 +699,7 @@ func _light_room(room: Dictionary) -> void:
 		LightRig.key(_fixtures, Vector3(mid.x, height - 0.4, mid.y),
 				Vector3(mid.x, 0.0, mid.y),
 				(_rng.randf_range(2.2, 3.4) + boost * 0.7) * light_scale,
-				LightRig.GOBO_APERTURE, _rng.randf_range(46.0, 58.0),
+				_ceiling_gobo_for(room), _rng.randf_range(46.0, 58.0),
 				LightRig.AMBER if warm else LightRig.KEY_COLD,
 				height + 6.0, false).name = "Key_shaft_r%d" % index
 
@@ -942,8 +1108,12 @@ func _light_corridor(corridor: Dictionary) -> void:
 				else Vector3(t - 1.6, 0.55, cross - side * 1.2)
 		var energy: float = _rng.randf_range(2.4, 3.6) * light_scale
 		if i == caster:
+			# CABLE_TRAY, and not a roll between two patterns. Every corridor on the
+			# layer gets a pipe/tray run slung down one wall in `_clutter_corridor`
+			# — so in a corridor the ladder tray is not a guess about what might be
+			# overhead, it is the thing that IS.
 			var key: SpotLight3D = LightRig.key(_fixtures, mount, target, energy,
-					LightRig.GOBO_SLATS if i % 2 == 0 else LightRig.GOBO_GRATE, 54.0)
+					LightRig.GOBO_CABLE_TRAY, 54.0)
 			key.name = "Key_c%s_%d" % [id, i]
 			# One dying fixture in a corridor is a corridor you do not want to be
 			# standing in. Two would be a strobe.
@@ -1299,7 +1469,7 @@ func _clutter_room(room: Dictionary) -> void:
 		if run.is_empty():
 			continue
 		_clutter.pipe_cluster(run["from"], run["to"], run["normal"],
-				minf(height - 0.9, 3.15))
+				minf(height - 0.9, 3.15), _has_service_lines(room))
 
 	# --- rubble, stains, crates ----------------------------------------------
 	#
@@ -1540,7 +1710,9 @@ func _clutter_corridor(corridor: Dictionary) -> void:
 		_clutter.cable_run(run["from"], run["to"], run["normal"])
 	var pipe: Dictionary = _wall_run(rect, sides[0], 1.2)
 	if not pipe.is_empty():
-		_clutter.pipe_cluster(pipe["from"], pipe["to"], pipe["normal"], 3.05)
+		# A corridor's overhead run leaves a machine hall and arrives at another
+		# one, so it carries the same service the rooms at both ends do.
+		_clutter.pipe_cluster(pipe["from"], pipe["to"], pipe["normal"], 3.05, true)
 
 	# Two or three loose piles down the length, hard against the wall so the
 	# middle of the corridor — which is the line every creature steers along — is
@@ -1678,6 +1850,348 @@ func _resolve_prop_spots() -> void:
 	if graph.terminal_room >= 0:
 		_add_prop_spot("terminal", 0, graph.terminal_room,
 				graph.terminal_side, graph.terminal_point)
+
+
+# -------------------------------------------- FIDELITY: the tripod work light --
+
+## Decides where the layer's work lights stand. Runs at the end of
+## `_resolve_prop_spots`, so it can see every functional anchor and nothing has
+## been built yet.
+##
+## THE MOTIVATION LAW, WHICH IS THE ENTIRE PLACEMENT RULE
+## A work light is not scatter and it must never be placed like scatter. It is a
+## portable lamp that somebody CARRIED somewhere, set down, and aimed at the
+## thing they were working on. So the only legal position for one is in front of
+## a piece of unfinished work, and the layer already knows exactly where those
+## are — they are the M4.8 functional props, every one of which is a job:
+##
+##     a REWIRE JUNCTION      an opened bus panel with the cover off
+##     a WELD VENT            a grille somebody was in the middle of sealing
+##     a LOOT CABINET         a cabinet standing open
+##
+## The lamp faces the prop, stands `WORK_LIGHT_STANDOFF` back from it (where a
+## person would have stood), and runs its cable to a block on the floor beside
+## it. If the anchor list is empty the layer gets no work lights at all, which is
+## correct: no work, no work light.
+##
+## Deterministic from position+seed like all the other dressing. `_rng` is never
+## touched, so adding this pass moved nothing else on any layer.
+func _resolve_work_lights() -> void:
+	_work_lights.clear()
+	_hero_lamp_rooms.clear()
+	var rooms_used: Dictionary = {}
+	for spot: Dictionary in _prop_spots:
+		if _work_lights.size() >= MAX_WORK_LIGHTS:
+			break
+		var kind: String = String(spot["kind"])
+		if kind != "junction" and kind != "vent" and kind != "cabinet":
+			continue
+		var at: Vector3 = spot["pos"]
+		if DecalLib.roll(at.x, at.z, 6101, graph.layer_seed) > WORK_LIGHT_CHANCE:
+			continue
+		var room_index: int = int(spot["room"])
+		# One per room. Two tripods lighting the same room from two angles is a
+		# film set, and this prop's whole claim is that it is not one.
+		if rooms_used.has(room_index):
+			continue
+		var room: Dictionary = graph.rooms[room_index]
+		var rect: Rect2 = _rect_of(room)
+		# Straight out from the wall the prop is mounted on, then nudged along it
+		# so the lamp is not dead square to its own work — nobody sets a tripod
+		# down on the centreline.
+		var yaw: float = float(spot["yaw"])
+		var normal: Vector3 = Vector3(sin(yaw), 0.0, cos(yaw))
+		var along: Vector3 = Vector3(normal.z, 0.0, -normal.x)
+		var slide: float = (DecalLib.roll(at.x, at.z, 6113, graph.layer_seed) - 0.5) * 1.5
+		var stand: Vector3 = at + normal * WORK_LIGHT_STANDOFF + along * slide
+		# Never outside the shell it was derived from — a snapped room can be
+		# narrower than the standoff assumed on a short wall.
+		stand.x = clampf(stand.x, rect.position.x + 0.9, rect.end.x - 0.9)
+		stand.z = clampf(stand.z, rect.position.y + 0.9, rect.end.y - 0.9)
+		if not _lamp_spot_clear(stand, at):
+			continue
+		rooms_used[room_index] = true
+		# The FIRST lamp on the layer is the one that casts. See `_light_room`:
+		# the room it stands in gives an architectural key back in exchange, so
+		# the shadow budget is unchanged and the lamp becomes the room's key.
+		var caster: bool = _work_lights.is_empty()
+		if caster:
+			_hero_lamp_rooms[room_index] = true
+		_work_lights.append({
+			"pos": stand,
+			# Aim at the WORK, not at the room. A Node3D's forward is -Z, so this
+			# is the yaw whose -Z points back at the prop the lamp came here for.
+			"yaw": atan2(-(at.x - stand.x), -(at.z - stand.z)),
+			"room": room_index,
+			"toolbox": DecalLib.roll(at.x, at.z, 6131, graph.layer_seed)
+					< WORK_LIGHT_TOOLBOX_CHANCE,
+			"caster": caster,
+			"kind": kind,
+		})
+	# The lamps join the keep-out list themselves, so the density pass does not
+	# stack crates against a tripod. Appended here rather than in `_build_keep_out`
+	# only because that function runs after this one; see its own note about why
+	# a keep-out has to be added where the list is assembled.
+	for lamp: Dictionary in _work_lights:
+		_keep_out.append({"pos": lamp["pos"], "radius": 1.7})
+
+
+## Whether a tripod may stand at `stand` to light the work at `own`.
+##
+## NOT `_blocks_a_prop`, and the difference is the whole reason this function
+## exists. That list is DECORATION keep-out: every functional prop carries a
+## 3.6 m circle so a crate stack never ends up between a player and a vent
+## grille. A work light stands 1.85 m from its own prop BY DEFINITION — it is
+## lighting it — so testing it against that list rejects every candidate on the
+## layer and produces a build with zero lamps in it. (It did. That is why this
+## is written down.)
+##
+## So the rule is stated for this object instead of borrowed from another one:
+##   * the lamp's OWN job is not an obstacle;
+##   * other functional props keep a smaller clearance, wide enough that the
+##     tripod is never in the breaker's line to a second grille on the same wall;
+##   * everything the crew STANDS in — the shaft's muster radius, taps,
+##     Compilers, the node and the uplink, spawn points — keeps its full circle,
+##     because those are places people stop moving and a tripod in one is a
+##     tripod somebody walks into for the length of a channel.
+func _lamp_spot_clear(stand: Vector3, own: Vector3) -> bool:
+	for spot: Dictionary in _prop_spots:
+		var pos: Vector3 = spot["pos"]
+		if Vector2(pos.x - own.x, pos.z - own.z).length() < 0.05:
+			continue
+		if Vector2(stand.x - pos.x, stand.z - pos.z).length() < 2.4:
+			return false
+	if Vector2(stand.x - graph.shaft_point.x,
+			stand.z - graph.shaft_point.z).length() < Balance.SHAFT_MUSTER_RADIUS + 2.0:
+		return false
+	var stations: Array[Vector3] = []
+	stations.append_array(graph.siphon_points)
+	stations.append_array(graph.compiler_points)
+	stations.append_array(graph.spawns)
+	if graph.is_backdoor:
+		stations.append(graph.backdoor_point)
+		stations.append(graph.uplink_point)
+	for point: Vector3 in stations:
+		if Vector2(stand.x - point.x, stand.z - point.z).length() < 3.2:
+			return false
+	# And off the verticality. A tripod standing inside a plinth or on a stair
+	# footprint is the clipping the M6.6 playtest reported, one milestone later.
+	for deck: Dictionary in graph.decks:
+		if not bool(deck["solid"]):
+			continue
+		var lo: Vector2 = deck["min"]
+		var hi: Vector2 = deck["max"]
+		if stand.x > lo.x - 0.8 and stand.x < hi.x + 0.8 \
+				and stand.z > lo.y - 0.8 and stand.z < hi.y + 0.8:
+			return false
+	return true
+
+
+func _place_work_lights() -> void:
+	if _work_lights.is_empty():
+		return
+	var scene: PackedScene = load(
+			"res://assets/props/fidelity/work_light.tscn") as PackedScene
+	if scene == null:
+		return
+	for i: int in _work_lights.size():
+		var lamp: Dictionary = _work_lights[i]
+		var at: Vector3 = lamp["pos"]
+		var node: FidelityWorkLight = scene.instantiate() as FidelityWorkLight
+		if node == null:
+			return
+		node.name = "WorkLight_r%d_%d" % [int(lamp["room"]), i]
+		node.position = at
+		node.rotation.y = float(lamp["yaw"])
+		# Every export below is DERIVED, so two peers building the same layer get
+		# the same lamp down to which way its cable coils.
+		node.seed = hash(str(graph.layer_seed, ":lamp:", int(at.x), ":", int(at.z)))
+		node.toolbox = bool(lamp["toolbox"])
+		node.cast_shadows = bool(lamp["caster"])
+		# The mask is the room's, exactly like the architecture's keys: this lamp
+		# is standing in the same building and its shroud came out of the same
+		# stores. A hero prop with a mask nothing else on the layer uses is a
+		# hero prop that arrived from another game.
+		node.gobo = _lamp_gobo(int(lamp["room"]))
+		# Halogen, and BRIGHT — brighter than any architectural fixture in the
+		# room, which is the whole composition. In the reference frame the tripod
+		# lamp is not one light among several; it is the ONLY thing lit, and every
+		# other value in the frame is a consequence of it. A work light dimmed to
+		# "sit politely inside" the room's existing rig is a work light nobody
+		# notices, which was this prop's first capture and the reason the number
+		# went up rather than down. It stays inside the darkness law because its
+		# CONE is narrow (34 degrees) and its range is short: it lights a working
+		# area, not a room.
+		node.energy = 11.0 * clampf(light_scale, 0.7, 1.0)
+		node.spot_range_m = 13.0
+		node.colour_temperature_k = 3050.0
+		# The head comes UP. The prop's authored -27 degrees is a lamp aimed at the
+		# floor right in front of it, which is right for a bench and wrong for a
+		# wall panel: it puts the whole cone into the deck inside two metres. At -12
+		# the beam grazes across the standoff and lands on the thing it was carried
+		# here for, and the slat shadows land on a VERTICAL surface where they can
+		# be seen rather than foreshortened into the floor.
+		node.head_pitch_deg = -12.0
+		# And it writes harder into the fog. This is the one fixture in the game
+		# whose visible cone is the point — the reference frame is a cone of haze
+		# with a lamp at the bottom of it — so it gets more volumetric weight than
+		# any architectural key, while its light_energy still only reaches 13 m.
+		# The darkness law is held by the CONE ANGLE (34 degrees) and the range,
+		# not by starving the one light the room is composed around.
+		node.volumetric_boost = 2.3
+		# Where the block went, in the lamp's own space: back and to one side,
+		# i.e. behind whoever was standing at the work. Not under the tripod,
+		# which is where a prop-placer puts it and where nobody ever does.
+		node.power_block_offset = Vector3(0.86, 0.0, 1.15)
+		node.power_block_yaw_deg = -24.0
+		# So `--goto worklight` can frame one. A hero prop that cannot be
+		# photographed on demand is a hero prop nobody can review.
+		node.add_to_group("work_lights")
+		_fixtures.add_child(node)
+		# THE FLICKER. Attached from here rather than authored into the prop,
+		# because whether a given lamp is failing is a fact about the layer (see
+		# FidelityWorkLight.attach_flicker for the rate cap and why it is capped
+		# in the fixture rather than in a setting).
+		if DecalLib.roll(at.x, at.z, 6151, graph.layer_seed) < 0.5:
+			node.attach_flicker(float(i) * 2.9)
+
+
+# ------------------------------------ FIDELITY: the backlit diffuser panel --
+
+## ONE slat-diffuser panel per lit room, mounted on a wall.
+##
+## WHY ONE, AND WHY IT IS NOT AUTHORED AS THE HERO
+## The panel is the only fixture in the kit that can be a REAL AreaLight3D — a
+## rectangular source with a rectangular specular reflection and a penumbra that
+## falls out of its own size (see FidelitySlatPanel's docstring). It is also the
+## most expensive fixture in the kit. So the generator's job is not to decide
+## which panel is the hero: it is to put ONE credible fixture on the wall of
+## every room and then get out of the way.
+##
+## Which of them are real is decided at RUNTIME by the AREA LIGHT budget in
+## PHOTONICS, by distance rank — because "the hero panel" is not a property of a
+## room, it is a property of where the player is standing. A panel authored as
+## the hero of a room the player never enters is a hero light rendering for
+## nobody. Every panel registers itself as a candidate and the budget hands out
+## however many the player has paid for; the rest are an emissive diffuser plus a
+## cheap unshadowed fill, which is what a wall fitting should cost anyway.
+##
+## At the shipped BASELINE the budget is ZERO and every panel is in fallback.
+## That is deliberate: BASELINE must render exactly what it rendered before this
+## pass plus a piece of geometry, and the fallback is a piece of geometry.
+func _place_diffuser_panels() -> void:
+	var scene: PackedScene = load(
+			"res://assets/props/fidelity/slat_diffuser_panel.tscn") as PackedScene
+	if scene == null:
+		return
+	var placed: int = 0
+	for room: Dictionary in graph.rooms:
+		# A nest has no fixtures at all and that is the point of a nest.
+		if bool(room["unlit"]):
+			continue
+		var index: int = int(room["index"])
+		var rect: Rect2 = _rect_of(room)
+		# Hashed, not rolled: which wall a fitting is on must not depend on the
+		# order the dressing happened to run in.
+		var side: int = int(DecalLib.roll(rect.position.x, rect.position.y, 6203,
+				graph.layer_seed) * 4.0) % 4
+		var mount: Dictionary = {}
+		for attempt: int in 4:
+			var anchor: Vector3 = _wall_point(rect, (side + attempt) % 4, 0.0, 0.0,
+					0.35 + 0.3 * DecalLib.roll(rect.position.x, rect.position.y,
+							6211, graph.layer_seed))
+			mount = _wall_prop(room, (side + attempt) % 4, anchor)
+			if bool(mount.get("ok", false)):
+				side = (side + attempt) % 4
+				break
+		if not bool(mount.get("ok", false)):
+			continue
+		var at: Vector3 = mount["pos"]
+		var node: FidelitySlatPanel = scene.instantiate() as FidelitySlatPanel
+		if node == null:
+			return
+		node.name = "Diffuser_r%d" % index
+		# Mounted at 2.35 m — above a standing player's eyeline, which is where a
+		# room's general lighting lives and, more importantly, where it is out of
+		# the way of the breaker's line to anything mounted at working height.
+		node.position = Vector3(at.x, 2.35, at.z)
+		node.rotation.y = float(mount["yaw"])
+		node.seed = hash(str(graph.layer_seed, ":panel:", index))
+		# OFF by default and handed to the runtime budget. See the docstring.
+		node.use_area_light = false
+		node.fallback_fill = true
+		# The sanctuary runs warm like everything else in it; the rest of MOTHER's
+		# architecture is cold-white fluorescent, ~1500 K above the work lights'
+		# halogen so the two eras of hardware separate in one frame.
+		node.colour_temperature_k = 3200.0 \
+				if String(room["archetype"]) == LayerGraph.BACKDOOR else 4500.0
+		node.energy = 2.1 * clampf(light_scale, 0.55, 1.1)
+		node.add_to_group(Photonics.AREA_LIGHT_GROUP)
+		node.add_to_group("diffuser_panels")
+		_fixtures.add_child(node)
+		placed += 1
+	_panel_count = placed
+
+
+# --------------------------------------------------- FIDELITY: the dusty air --
+
+## Per-room haze and the plumes that feed it.
+##
+## The global fog density is one number for the whole layer and it has to stay
+## that way — it is the number the darkness law is audited against. What varies
+## per room is a LOCAL delta on top of it (`DustAir.room_haze`), and what makes
+## the haze believable is that it has somewhere to come FROM: an open vent
+## grille, a running machine. Uniform haze is weather. A sealed machine-space
+## does not have weather; it has leaks.
+func _build_atmosphere() -> void:
+	var base: float = DustAir.layer_fog_density(0.030, graph.layer_number)
+	var volumes: int = 0
+	for room: Dictionary in graph.rooms:
+		var rect: Rect2 = _rect_of(room)
+		if DustAir.room_haze(_fixtures, rect, _height_of(room),
+				String(room["archetype"]), bool(room["unlit"]), base) != null:
+			volumes += 1
+
+	# The sources. A weld vent is a hole in the wall of a machine space with air
+	# moving through it, which is exactly where dust enters a room; a machinery
+	# island is a thing that runs hot and sheds. Both are already placed, both
+	# already know their own facing, and neither needed a new decision made about
+	# it — which is the whole shape of the motivation law.
+	for spot: Dictionary in _prop_spots:
+		if String(spot["kind"]) != "vent":
+			continue
+		var yaw: float = float(spot["yaw"])
+		DustAir.source_plume(_fixtures, spot["pos"] as Vector3,
+				Vector3(sin(yaw), 0.0, cos(yaw)), base, 1.0)
+		volumes += 1
+	for node: Node in _geometry.find_children("Machine", "Node3D", true, false):
+		var machine: Node3D = node as Node3D
+		if machine == null:
+			continue
+		# Straight up off the cabinet: what a running machine puts into the air
+		# rises, unlike what falls out of a vent.
+		DustAir.source_plume(_fixtures, machine.position + Vector3(0.0, 1.5, 0.0),
+				Vector3.UP, base, 0.7)
+		volumes += 1
+	_fidelity_note = " fidelity=[lamps %d, panels %d, fog %d]" % [
+		_work_lights.size(), _panel_count, volumes]
+
+
+## The gobo a lamp standing in room `index` shoots through.
+func _lamp_gobo(index: int) -> FidelityLib.Gobo:
+	if index < 0 or index >= graph.rooms.size():
+		return FidelityLib.Gobo.VENT_SLAT
+	match _key_gobo_for(graph.rooms[index]):
+		LightRig.GOBO_DRIP_GRATE:
+			return FidelityLib.Gobo.DRIP_GRATE
+		LightRig.GOBO_FAN_BLADES:
+			return FidelityLib.Gobo.FAN_BLADES
+		LightRig.GOBO_FINE_GRILLE:
+			return FidelityLib.Gobo.FINE_GRILLE
+		LightRig.GOBO_CABLE_TRAY:
+			return FidelityLib.Gobo.CABLE_TRAY
+		_:
+			return FidelityLib.Gobo.VENT_SLAT
 
 
 func _add_prop_spot(kind: String, index: int, room_index: int, side: int,

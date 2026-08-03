@@ -336,7 +336,20 @@ func _become_host(peer: MultiplayerPeer, dedicated: bool) -> void:
 	# clients need to reproduce it locally goes out in _register_crew's reply.
 	# The injection point is whichever is deeper: the menu's choice (a backdoor
 	# this machine has installed) or an explicit `--layer`.
-	Run.begin(maxi(Debug.start_layer, GameState.injection_layer), Debug.use_test_layer)
+	var target: int = maxi(Debug.start_layer, GameState.injection_layer)
+	# THE PARTITION is the front door now (DESIGN.md's hub backlog: "the hub IS the
+	# menu"). The crew arrives in their own sector, the rig is where they commit,
+	# and `target` is only what the dial starts on.
+	#
+	# `Debug.hub_start()` is what keeps every scripted capture in the repo working:
+	# an automated run drops straight into the layer as it always did unless it
+	# explicitly asks for `--hub`, because a `--goto shaft` script has no way to
+	# walk itself through a ritual that did not exist when it was written. A human
+	# always gets the hub.
+	if Debug.hub_start():
+		Run.begin_hub(target)
+	else:
+		Run.begin(target, Debug.use_test_layer)
 	Run.on_crew_changed()
 	crew_changed.emit()
 	get_tree().change_scene_to_file(LAYER_SCENE)
@@ -758,7 +771,15 @@ func _admit_crew(id: int, entry: Dictionary) -> void:
 	# whose program never rooted this node cannot be injected here, because the
 	# fiction of the backdoor is that it is *their* compromised infrastructure,
 	# not the host's.
-	var needed: int = GameState.backdoor_for(Run.layer_number)
+	# THE PARTITION is never gated. Nobody is turned away from the crew's own
+	# staging sector — the rig inside it is what asks the backdoor question now,
+	# before anyone commits and while everybody can still see who is short (see
+	# `Run.injection_blocked_by`). What survives here is the case the rig cannot
+	# cover: joining a run that is ALREADY under way, at a depth this program has
+	# no right to be at. Spelled explicitly rather than relying on the hub
+	# reporting layer 1, so that moving the hub's layer number can never quietly
+	# turn the gate back on.
+	var needed: int = 0 if Run.in_hub else GameState.backdoor_for(Run.layer_number)
 	if theirs < needed:
 		print("[Net] injection refused for %s: backdoor %02d required, program has %02d" % [
 			clean, needed, theirs])

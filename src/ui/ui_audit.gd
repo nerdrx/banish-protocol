@@ -97,6 +97,7 @@ const OK_COLOR: Color = Color(0.35, 1.0, 0.45, 0.85)
 const BAD_COLOR: Color = Color(1.0, 0.25, 0.25, 0.95)
 const CLIP_COLOR: Color = Color(1.0, 0.68, 0.15, 0.95)
 const SAFE_COLOR: Color = Color(0.25, 0.85, 1.0, 0.95)
+const INSTRUMENT_COLOR: Color = Color(1.0, 0.80, 0.35, 0.85)
 const SURFACE_COLOR: Color = Color(0.85, 0.55, 1.0, 0.9)
 const LEAF_ALPHA: float = 0.30
 
@@ -118,7 +119,19 @@ var _reports: int = 0
 var _entries: Array[Entry] = []
 var _surfaces: Dictionary = {}
 var _safe: Rect2 = Rect2()
+## PT3: the HUD's instrument zone, which is the tube-safe box only at HUD WIDTH
+## 0. Judged against separately, because the two boxes are two different rules —
+## the menu is a composed screen and stays tube-safe; the HUD is a set of
+## instruments and the player owns how far apart they sit. Auditing the second
+## against the first would report a setting working as a bug.
+var _instruments: Rect2 = Rect2()
 var _canvas: Control = null
+
+
+## Surfaces judged against the INSTRUMENT zone rather than the tube-safe box.
+## By CanvasLayer name, so a surface that is not an instrument cannot silently
+## opt itself into the wider rule by being added under the HUD later.
+const INSTRUMENT_SURFACES: Array[String] = ["HUD"]
 
 
 ## True for the whole session once `--ui-audit` has been seen.
@@ -173,7 +186,14 @@ func _collect() -> void:
 	var view: Vector2 = get_viewport().get_visible_rect().size
 	_safe = get_viewport().get_visible_rect() if Debug.no_safe_area \
 			else UiFx.tube_safe_rect(view)
+	_instruments = get_viewport().get_visible_rect() if Debug.no_safe_area \
+			else UiFx.instrument_rect(view, Screen.hud_width_for(view))
 	_walk(get_tree().root, "root", Rect2(Vector2.ZERO, view))
+
+
+## The box a surface is held to. See `INSTRUMENT_SURFACES`.
+func _box_for(surface: String) -> Rect2:
+	return _instruments if INSTRUMENT_SURFACES.has(surface) else _safe
 
 
 ## Depth-first, carrying the accumulated CLIP RECT down.
@@ -213,7 +233,7 @@ func _walk(node: Node, surface: String, clip: Rect2) -> void:
 			entry.inside = entry.unjudged \
 					or entry.visible_rect.size.x <= 0.0 \
 					or entry.visible_rect.size.y <= 0.0 \
-					or _covers(_safe, entry.visible_rect)
+					or _covers(_box_for(here), entry.visible_rect)
 			_entries.append(entry)
 			if not entry.unjudged \
 					and entry.visible_rect.size.x > 0.0 and entry.visible_rect.size.y > 0.0:
@@ -329,13 +349,22 @@ func _draw_audit() -> void:
 	# wing is visible without reading a single label.
 	for key: Variant in _surfaces:
 		var bounds: Rect2 = _surfaces[key] as Rect2
-		var good: bool = _covers(_safe, bounds)
+		var good: bool = _covers(_box_for(String(key)), bounds)
 		_canvas.draw_rect(bounds, SURFACE_COLOR if good else BAD_COLOR, false, 2.0)
 		_canvas.draw_string(font, bounds.position + Vector2(4.0, -5.0),
 				String(key), HORIZONTAL_ALIGNMENT_LEFT, -1.0, 11,
 				SURFACE_COLOR if good else BAD_COLOR)
 
-	# The rule itself, last, so it is never drawn over.
+	# The rules themselves, last, so they are never drawn over. The instrument
+	# zone is only drawn when it differs from the tube-safe box — at HUD WIDTH 0
+	# they are the same rectangle and two strokes on one edge reads as a bug.
+	if not _instruments.is_equal_approx(_safe):
+		_canvas.draw_rect(_instruments, INSTRUMENT_COLOR, false, 2.0)
+		_canvas.draw_string(font, _instruments.position + Vector2(4.0, 28.0),
+				"INSTRUMENTS %dx%d  (HUD WIDTH %d%%)" % [
+					int(_instruments.size.x), int(_instruments.size.y),
+					int(round(Screen.hud_width_for(view.size) * 100.0))],
+				HORIZONTAL_ALIGNMENT_LEFT, -1.0, 12, INSTRUMENT_COLOR)
 	_canvas.draw_rect(_safe, SAFE_COLOR, false, 2.0)
 	_canvas.draw_string(font, _safe.position + Vector2(4.0, 14.0),
 			"TUBE-SAFE %dx%d" % [int(_safe.size.x), int(_safe.size.y)],
@@ -379,6 +408,21 @@ func _print_report() -> void:
 	print("[UiAudit] safe box  x=%d y=%d w=%d h=%d" % [
 		int(_safe.position.x), int(_safe.position.y),
 		int(_safe.size.x), int(_safe.size.y)])
+	# PT3. Printed unconditionally, even when it equals the safe box: a reader
+	# comparing two runs has to be able to see WHICH zone the HUD was held to and
+	# what the slider was on, without inferring it from the numbers matching.
+	print("[UiAudit] instruments x=%d y=%d w=%d h=%d  hud_width=%.2f%s" % [
+		int(_instruments.position.x), int(_instruments.position.y),
+		int(_instruments.size.x), int(_instruments.size.y),
+		Screen.hud_width_for(view), " (auto)" if Screen.hud_width_auto else ""])
+	# And the centring check the "anchored to the left" report needed: the gap
+	# outboard of the instrument ink on each side. Equal gaps means centred, and
+	# a claim about anchoring is settled by two integers rather than by a JPEG.
+	var ink: Variant = _surfaces.get("HUD")
+	if ink != null:
+		var hud: Rect2 = ink as Rect2
+		print("[UiAudit] hud ink   left-gap=%d right-gap=%d  (canvas %d wide)" % [
+			int(hud.position.x), int(view.x - hud.end.x), int(view.x)])
 	var fails: int = 0
 	var clips: int = 0
 	for entry: Entry in _entries:
@@ -386,7 +430,7 @@ func _print_report() -> void:
 			print("[UiAudit] unjudged %-24s (world/centre-anchored overlay)" % entry.name)
 	for key: Variant in _surfaces:
 		var bounds: Rect2 = _surfaces[key] as Rect2
-		var verdict: String = "INSIDE" if _covers(_safe, bounds) else "OUTSIDE"
+		var verdict: String = "INSIDE" if _covers(_box_for(String(key)), bounds) else "OUTSIDE"
 		print("[UiAudit] surface %-18s %-7s  x=%d..%d y=%d..%d" % [
 			String(key), verdict,
 			int(bounds.position.x), int(bounds.end.x),

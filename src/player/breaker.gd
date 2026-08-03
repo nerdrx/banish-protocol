@@ -145,7 +145,18 @@ func pull_trigger() -> void:
 
 
 ## The visible shot, on every peer that can see this avatar.
-func show_lash(from: Vector3, to: Vector3) -> void:
+##
+## M7 adds the two arguments that turn "a line and a spray" into an impact.
+## `normal` is the surface the cut landed on, so the sparks come OFF the wall
+## rather than out of it and the scorch lies flat on it; `on_world` says whether
+## there is a surface at all, because a burn mark projected onto a creature that
+## is about to be deleted is a burn mark hanging in mid-air a second later.
+##
+## Both default to the safe approximation (spray back along the shot, no decal),
+## which is what the host's echo path uses — it re-broadcasts an endpoint, not a
+## surface, and adding a normal to that packet would be paying for a garnish.
+func show_lash(from: Vector3, to: Vector3, on_world: bool = false,
+		normal: Vector3 = Vector3.ZERO) -> void:
 	var delta: Vector3 = to - from
 	var length: float = delta.length()
 
@@ -159,6 +170,16 @@ func show_lash(from: Vector3, to: Vector3) -> void:
 	_sparks.restart()
 	_glow.global_position = to
 	_glow.light_energy = GLOW_ENERGY
+
+	# M7: the pooled impact on top of the breaker's own spray — a wider, hotter
+	# spark burst, a drifting ember, and a scorch that fades. The two are not
+	# redundant: this one is directional (it knows the wall) and pooled (it is the
+	# same eight emitters however many people are shooting), and it is what turns
+	# a hit from an event into a mark the room remembers for seven seconds.
+	var away: Vector3 = normal
+	if away.length_squared() < 0.0001:
+		away = (from - to).normalized() if length > 0.001 else Vector3.UP
+	Fx.impact(to, away, COLOUR, on_world)
 
 	# The shot itself, spatialised at the muzzle. `show_lash` runs exactly once per
 	# peer per shot (locally as prediction for the shooter, via the host echo for a

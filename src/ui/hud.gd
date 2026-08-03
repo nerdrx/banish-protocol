@@ -281,6 +281,10 @@ func _ready() -> void:
 	# who joined an intrusion that did not start at the surface.
 	Run.config_changed.connect(func() -> void: _on_layer_changed(Run.layer_number))
 	Run.run_ended.connect(_on_run_ended)
+	# THE PARTITION: arriving home takes the debrief down. The crew is standing in
+	# a room again, and a summary overlay left up over it would be the old
+	# menu-shaped ending wearing the new flow's clothes.
+	Run.hub_changed.connect(_on_hub_changed)
 	Run.damaged.connect(_on_damaged)
 	_resume_button.pressed.connect(_set_paused.bind(false))
 	_leave_button.pressed.connect(_on_leave_pressed)
@@ -296,7 +300,7 @@ func _ready() -> void:
 		leave_parent.move_child(settings_button, _leave_button.get_index())
 		settings_button.pressed.connect(func() -> void: SettingsPanel.open(self))
 	_invite_button.pressed.connect(func() -> void: SteamHub.open_invite_overlay())
-	_summary_button.pressed.connect(_on_leave_pressed)
+	_summary_button.pressed.connect(_on_summary_pressed)
 
 	# Before anything pokes one: _rebuild_crew and _on_layer_changed below both
 	# surface an element, and _process ticks them every frame after that.
@@ -314,6 +318,13 @@ func _ready() -> void:
 	_ghost = Run.display_fraction()
 	_on_layer_changed(Run.layer_number)
 	_rebuild_crew()
+
+	# M7: the subroutine slot indicator, beside the Cycles gauge. Deliberately ONE
+	# line — the widget is a self-contained Control that owns its own anchors,
+	# surfacing and drawing (see SubroutineSlot), so the HUD neither grows a ninth
+	# surface nor a fifth cluster for it. Added before `_build_tube` so it is
+	# reparented into the phosphor tube with the rest of the instrument.
+	_root.add_child(SubroutineSlot.create())
 
 	_build_tube()
 	_install_depth()
@@ -348,7 +359,24 @@ func _ready() -> void:
 	# and the true full frame; a reticle inset into a 16:9 box on an ultrawide
 	# would not be where the gun is pointing. Aim is full-bleed, instruments are
 	# safe-area, and that split is the whole rule.
+	# `-- --no-hud`: the whole instrument stack hidden, for the captures that are
+	# about the WORLD. A lighting sheet with a Cycles gauge in the corner is a
+	# sheet where half the argument is about the gauge.
+	#
+	# Read straight off the command line rather than added to `Debug.hud_state`,
+	# and that is deliberate: `hud_state` is a whitelist of HUD PORTRAIT states
+	# with a validator behind it, "no HUD" is the absence of one, and
+	# src/core/debug.gd is a shared file under concurrent edit that a capture
+	# convenience has no business widening. Costs one array scan at boot.
+	if OS.get_cmdline_user_args().has("--no-hud"):
+		visible = false
+
 	get_viewport().size_changed.connect(_fit_safe_area)
+	# PT3: and on the settings store, because HUD WIDTH does not resize the canvas
+	# — it re-decides how much of it the instruments get. A player dragging that
+	# slider with the pause menu open has to see their own minimap move under it,
+	# or they are tuning a number against a memory of where things used to be.
+	Screen.changed.connect(_fit_safe_area)
 	_fit_safe_area()
 
 	# The host already has a player when the HUD loads; clients get the signal.
@@ -868,9 +896,13 @@ func _on_shaft_siphoned(_gained: float) -> void:
 ## descent". Retinted to the phosphor so the card belongs to the same instrument
 ## as the rest of the shell rather than reading as leftover architecture teal.
 func _on_layer_changed(number: int) -> void:
-	_layer_label.text = "LAYER %02d" % number
+	# The Partition is not a ring, and saying LAYER 01 over it is the one place the
+	# instrument could still tell the player they are inside MOTHER when they are
+	# standing in the sector the crew took off her. The compact tag goes to a glyph
+	# for the same reason: it is a place, not a depth.
+	_layer_label.text = "THE PARTITION" if Run.in_hub else "LAYER %02d" % number
 	_layer_label.add_theme_color_override("font_color", UiFx.SYSTEM)
-	_layer_tag.text = "L%02d" % number
+	_layer_tag.text = "◆" if Run.in_hub else "L%02d" % number
 	_layer_tag.add_theme_color_override("font_color", COLOUR_DIM)
 	_srf_title.surface()
 
@@ -1044,6 +1076,22 @@ func _update_alerts() -> void:
 		_alert_label.text = "\n".join(lines)
 		_alert_label.modulate.a = 0.7 + 0.3 * UiFx.heartbeat(UiFx.clock(), 0.62)
 
+	# THE PARTITION's commit clock, in the same slot the exfil countdown uses.
+	#
+	# Quiet Instrument (DESIGN.md M4.9): it is the same KIND of thing — a committed
+	# clock the whole crew has to see and can still act on — so it gets the same
+	# place on the screen rather than a second one. The rest of the time it is not
+	# there at all, which is the rule. The rig itself carries the state; this is
+	# only the number, for the crewmate who is looking at the far wall.
+	if Run.injecting:
+		var closing: float = 1.0 - clampf(
+				Run.inject_remaining / maxf(Run.INJECT_COUNTDOWN, 0.01), 0.0, 1.0)
+		_exfil_label.text = "INJECTION  %02d  ·  LAYER %02d" % [
+			int(ceilf(Run.inject_remaining)), Run.injection_layer]
+		_exfil_label.modulate.a = 0.65 + 0.35 * UiFx.heartbeat(
+				UiFx.clock(), 0.72 - closing * 0.42)
+		return
+
 	if not Run.exfil_calling:
 		_exfil_label.text = ""
 		return
@@ -1143,7 +1191,13 @@ func _fit_safe_area() -> void:
 	# Off the ROOT viewport, not `_root`'s own: after `_build_tube` the cluster
 	# root lives inside the tube's SubViewport, and asking that for its size would
 	# be asking the thing being sized how big it is.
-	UiFx.fit_to_safe_area(_root, get_viewport().get_visible_rect().size)
+	#
+	# PT3: the INSTRUMENT zone, not the tube-safe box. Same rect at HUD WIDTH 0,
+	# widening toward the panel's own edges as the player (or the ultrawide
+	# auto-ramp) opens it up. The minimap rides this for free — it is anchored to
+	# `_root`'s bottom-right corner, so "put the map at the very right of my
+	# monitor" is one number on one Control. See `UiFx.instrument_rect`.
+	UiFx.fit_to_instrument_area(_root, get_viewport().get_visible_rect().size)
 	# `_root.resized` fires from this and re-snapshots every cluster's home
 	# position, which is exactly what has to happen: those homes are what the
 	# flinch and the parallax spring return to.
@@ -1161,9 +1215,10 @@ func _fit_safe_area() -> void:
 func _fit_mother_line() -> void:
 	if _mother_label == null or not is_instance_valid(_mother_label):
 		return
-	var box: float = UiFx.tube_safe_rect(get_viewport().get_visible_rect().size).size.x
+	var view: Vector2 = get_viewport().get_visible_rect().size
+	var box: float = UiFx.instrument_rect(view, Screen.hud_width_for(view)).size.x
 	if Debug.no_safe_area:
-		box = get_viewport().get_visible_rect().size.x
+		box = view.x
 	var width: float = minf(MOTHER_LINE_WIDTH, box * MOTHER_LINE_FRACTION)
 	_mother_label.custom_minimum_size = Vector2(width, 0.0)
 	_mother_label.pivot_offset = Vector2(width * 0.5, 20.0)
@@ -1976,6 +2031,13 @@ func _on_run_ended(summary: Dictionary) -> void:
 	else:
 		lines.append("ARCHIVE           %d   (UNCHANGED)" % GameState.archive)
 
+	# What the button does now (see `_on_summary_pressed`). A run that ended inside
+	# a live session goes HOME; one that ended without a session to go home to
+	# still leaves. The label says which, because a button that reads DISCONNECT
+	# and returns you to a room is a button nobody presses.
+	_summary_button.disabled = false
+	_summary_button.text = "RETURN TO THE PARTITION" \
+			if Net.is_online and Run.configured else "DISCONNECT"
 	_summary_button.grab_focus.call_deferred()
 	_summary_body.text = "\n".join(lines)
 	_summary_body.visible_ratio = 0.0
@@ -1995,6 +2057,22 @@ func _on_run_ended(summary: Dictionary) -> void:
 
 	if DisplayServer.get_name() != "headless":
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+
+
+## Crossed into or out of THE PARTITION. Arriving home is the one thing that can
+## dismiss the debrief other than the button on it, and it must — the run that
+## overlay is about is two rooms behind us now.
+func _on_hub_changed() -> void:
+	if not Run.in_hub:
+		return
+	_summary.visible = false
+	_pause.visible = false
+	_debrief_clock = -1.0
+	_exfil_label.text = ""
+	_alert_label.text = ""
+	_summary_button.disabled = false
+	if DisplayServer.get_name() != "headless" and Debug.may_capture_mouse():
+		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 
 
 ## Types the summary in and rolls the counter. Snapped to its finished state
@@ -2026,4 +2104,26 @@ func _update_debrief(delta: float) -> void:
 func _on_leave_pressed() -> void:
 	if DisplayServer.get_name() != "headless":
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	Net.leave("YOU ABORTED THE INTRUSION")
+
+
+## The debrief's button. THE PARTITION changed what "done with this run" means:
+## it used to be the end of the session, and now it is a walk home.
+##
+## Any peer may ask; the host honours the first request and pulls the whole crew
+## at once (`Run._return_request`), because arriving in the hub one at a time
+## would be four different rooms. Whoever presses it does not get to leave early
+## and does not get to strand anybody — which is the same rule the injection
+## ritual runs at the other end of the loop.
+##
+## It still falls back to leaving outright when there is nothing to go home to:
+## an offline scene run, or a session that has already been torn down under us.
+func _on_summary_pressed() -> void:
+	if DisplayServer.get_name() != "headless":
+		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+	if Net.is_online and Run.configured:
+		_summary_button.disabled = true
+		_summary_button.text = "RETURNING TO THE PARTITION"
+		Run.request_return_to_hub()
+		return
 	Net.leave("YOU ABORTED THE INTRUSION")

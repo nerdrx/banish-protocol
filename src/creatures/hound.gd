@@ -304,8 +304,10 @@ func _act_lunge(delta: float) -> void:
 	if not _struck and _target != null and is_instance_valid(_target):
 		if _target.global_position.distance_to(global_position) <= Balance.HOUND_LUNGE_RANGE * 0.7:
 			_struck = true
-			Run.damage_player(int(String(_target.name)), Balance.HOUND_LUNGE_DAMAGE,
-					global_position)
+			# M7: through the one door — see `Antivirus._land_hit`. A Hound that
+			# lunges at a fork bites a fork, and one that lunges at a dashing agent
+			# misses. It learns nothing either way.
+			_land_hit(_target, Balance.HOUND_LUNGE_DAMAGE)
 	if _lunge_time <= 0.0:
 		_recover_time = Balance.HOUND_RECOVER_TIME
 
@@ -369,6 +371,17 @@ func alert(where: Vector3, rooms: int = Balance.TAP_ALERT_ROOMS,
 			_enter(State.CHASE)
 
 
+## M7 STACK PULSE. The lunge is cancelled the same way a Scrubber's is. Note what
+## is NOT here: the Hound does not learn, does not remember the pulse and does not
+## adapt to it. It is a hunter that hears; being shoved teaches it nothing.
+func _on_staggered() -> void:
+	if state == State.LUNGE:
+		_struck = true
+		_lunge_time = 0.0
+		_recover_time = Balance.HOUND_RECOVER_TIME
+		_enter(State.CHASE)
+
+
 func _on_hurt() -> void:
 	_hit()
 	_tell_crew(&"_hit")
@@ -389,6 +402,8 @@ func _play_death() -> void:
 		Audio.detach_loop(_run_loop)
 		_run_loop = null
 	Audio.play_3d(&"scrubber_death", global_position)
+	# M7 THE DECOMPILE SHATTER — see Scrubber._play_death for the argument.
+	Fx.decompile(global_position, SENSOR_COLOUR, false, BODY_HEIGHT * 0.8)
 	CreatureKit.travel(_tree, "death")
 	CreatureKit.set_speed(_tree, 1.0)
 

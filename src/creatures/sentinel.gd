@@ -600,8 +600,10 @@ func _strike() -> void:
 			continue
 		if (to_body / distance).dot(facing) < limit:
 			continue
-		Run.damage_player(int(String(body.name)), Balance.SENTINEL_PURGE_DAMAGE,
-				global_position)
+		# M7: through the one door — see `Antivirus._land_hit`. The purge arc is
+		# area denial, so a fork standing in it eats a swing exactly like a
+		# crewmate would, and a crewmate under a barrier is covered.
+		_land_hit(body, Balance.SENTINEL_PURGE_DAMAGE)
 		landed = true
 	_purge_swing(landed)
 	_tell_crew(&"_purge_swing")
@@ -621,8 +623,35 @@ func _hit() -> void:
 	# on every peer while the shielding is down (SCAN/PURGE) — the same window the
 	# bonus damage lives in. A back-shot on a plated body has no dedicated asset;
 	# the breaker-shot report already carries it.
+	#
+	# M7 gives the two cases visibly different particles, because they are the two
+	# different answers the fight can give you and the player has to be able to
+	# tell them apart at a glance in the dark:
+	#
+	#   CORE EXPOSED   a hot burst in the alarm colour — the shielding is down and
+	#                  this shot is worth triple. Keep standing where you are.
+	#   SHIELDED       cold white sparks skating off plating — that did nothing.
+	#                  Wait for the scan.
 	if core_exposed():
 		Audio.play_3d(&"sentinel_core_hit", global_position)
+		Fx.core_breach(global_position + CORE_AT, ALARM_COLOUR)
+	else:
+		Fx.armour_spark(global_position + Vector3.UP * (BODY_HEIGHT * 0.6),
+				Vector3.UP)
+
+
+## M7. A 2.6 m quarantine process does not skid across a deck because somebody
+## clapped. A STACK PULSE still takes it out of its state machine — a purge in
+## progress stops being swung, which is the reprieve the crew paid for — but it is
+## stunned where it stands rather than shoved.
+func stagger_mass() -> bool:
+	return true
+
+
+## Drop the swing. The base stops it being SIMULATED; this is the bookkeeping that
+## would otherwise let a cancelled purge resume the instant the stun ended.
+func _on_staggered() -> void:
+	_swing_cooldown = maxf(_swing_cooldown, Balance.SENTINEL_PURGE_COOLDOWN)
 
 
 ## Everything the vault was holding falls out of it. DESIGN.md puts the haul in
@@ -664,6 +693,10 @@ func _play_death() -> void:
 		_klaxon = null
 	Audio.set_music_duck(_duck_key(), 0.0)
 	Audio.play_3d(&"sentinel_death", global_position)
+	# M7 THE DECOMPILE SHATTER at the heavy budget — 2.6 m of architecture coming
+	# apart. This is the money shot of the milestone and the Sentinel is what it
+	# was tuned against.
+	Fx.decompile(global_position, ALARM_COLOUR, true, BODY_HEIGHT * 0.55)
 
 	var burst: CPUParticles3D = CPUParticles3D.new()
 	burst.name = "Collapse"

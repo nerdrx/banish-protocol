@@ -264,12 +264,19 @@ func _do_strike() -> void:
 			continue
 		if (to_body / distance).dot(facing) < limit:
 			continue
-		Run.damage_player(int(String(body.name)), Balance.AUDITOR_STRIKE_DAMAGE,
-				global_position)
+		# M7: through the one door — see `Antivirus._land_hit`.
+		_land_hit(body, Balance.AUDITOR_STRIKE_DAMAGE)
 	_tell_crew(&"_strike_fx")
 
 
 # -------------------------------------------------------------------- events --
+
+## M7. Two metres of methodical process; it is stunned in place, not shoved.
+## Being able to knock the audit off its route would turn "dread on a schedule"
+## into "dread you can push around", which is a different creature.
+func stagger_mass() -> bool:
+	return true
+
 
 ## The Auditor does not react — noise, light, damage and absence are all nothing
 ## to it. `alert` is deliberately a no-op, which is most of the character.
@@ -311,6 +318,9 @@ func _play_death() -> void:
 		Audio.detach_loop(_drone)
 		_drone = null
 	Audio.play_3d(&"sentinel_death", global_position)
+	# M7 THE DECOMPILE SHATTER, at the heavy budget: two metres of methodical
+	# process throws twice what a cleaner does.
+	Fx.decompile(global_position, AUDIT_COLOUR, true, BODY_HEIGHT * 0.55)
 	CreatureKit.travel(_tree, "death")
 	CreatureKit.set_speed(_tree, 1.0)
 	Captions.emit(&"auditor_ended", global_position, 24.0)

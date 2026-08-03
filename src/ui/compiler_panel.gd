@@ -38,7 +38,7 @@ const REFUSE_TIME: float = 0.55
 
 ## Named the actions rather than the keys, because the actions are what a pad is
 ## bound to as well.
-const FOOTER_HINT: String = "↑↓ SELECT   ·   ACCEPT COMPILE   ·   BACK CLOSE"
+const FOOTER_HINT: String = "↑↓ SELECT   ·   ACCEPT COMPILE / SLOT   ·   BACK CLOSE"
 
 var terminal: CompilerTerminal = null
 
@@ -97,6 +97,12 @@ func _ready() -> void:
 	_build()
 	Modules.purchased.connect(_on_purchased)
 	Modules.refused.connect(_on_refused)
+	# M7: the same two beats for the second catalogue. `Subs` deliberately emits
+	# the same pair with the same shape, so the compile beat, the stamp and the
+	# refusal glitch are one implementation rather than two.
+	Subs.purchased.connect(func(peer: int, id: String, tier: int) -> void:
+		_on_purchased(peer, id, tier, 0, 0))
+	Subs.refused.connect(_on_refused)
 	Run.run_ended.connect(func(_s: Dictionary) -> void: close())
 	Run.descent_started.connect(func(_n: int) -> void: close())
 	# The panel is parented to the root Window rather than to `current_scene`, so
@@ -221,8 +227,14 @@ func _build() -> void:
 	# So: a SafeArea to centre in, and the settings panel's cap-and-scroll idiom to
 	# fit in. A player who turns UI SCALE up to read the module names does not
 	# expect the panel that lists them to walk off the bottom of the tube.
+	# M7 adds a second catalogue (four subroutines) plus its own section rule and
+	# caption, so the modal grows by four rows and a header. It was already taller
+	# than the tube-safe box at every UI scale — which is why it is wrapped in
+	# `SafeArea.modal`'s cap-and-scroll in the first place — so this is a number
+	# that has to be right rather than one that has to fit.
 	var holder: Control = SafeArea.modal(tube, Vector2(WIDTH,
-			ROW_HEIGHT * float(Balance.MODULE_TRACKS.size()) + 210.0))
+			ROW_HEIGHT * float(Balance.MODULE_TRACKS.size()
+					+ Balance.SUBROUTINE_TRACKS.size()) + 262.0))
 
 	# The piece the refusal glitch shakes. Separate from `holder` because a
 	# container owns its child's position and would put it back every frame.
@@ -252,7 +264,22 @@ func _build() -> void:
 	column.add_child(_rule(accent))
 
 	for i: int in Balance.MODULE_TRACKS.size():
-		var row: Control = _build_row(Balance.MODULE_TRACKS[i], i)
+		var row: Control = _build_row(Balance.MODULE_TRACKS[i], i, false)
+		column.add_child(row)
+		_rows.append(row)
+
+	# --- M7 SUBROUTINES ------------------------------------------------------
+	#
+	# A second catalogue under the same roof, and deliberately UNDER rather than
+	# beside: modules are what your program IS and subroutines are what it can DO,
+	# and a player reading top to bottom should meet the permanent numbers before
+	# the verbs. The section rule and its own caption are what make it read as a
+	# different kind of purchase rather than as four more module tracks.
+	column.add_child(_rule(accent))
+	_text(column, "SUBROUTINES  ·  ONE ACTIVE SLOT  ·  Q TO RUN", 13, accent)
+	for i: int in Balance.SUBROUTINE_TRACKS.size():
+		var row: Control = _build_row(Balance.SUBROUTINE_TRACKS[i],
+				_rows.size(), true)
 		column.add_child(row)
 		_rows.append(row)
 
@@ -318,7 +345,7 @@ func _framed(parent: Control, accent: Color) -> Control:
 ## One track. Five pieces laid out left to right, because that is the order the
 ## decision is made in: what is it, how far in am I, what does the next one do,
 ## what does it cost.
-func _build_row(track: String, index: int) -> Control:
+func _build_row(track: String, index: int, subroutine: bool) -> Control:
 	var row: HBoxContainer = HBoxContainer.new()
 	row.name = "Row_" + track
 	row.custom_minimum_size = Vector2(0.0, ROW_HEIGHT)
@@ -326,6 +353,11 @@ func _build_row(track: String, index: int) -> Control:
 	row.mouse_filter = Control.MOUSE_FILTER_PASS
 	row.set_meta("track", track)
 	row.set_meta("index", index)
+	# Which catalogue this row belongs to. Every read below goes through
+	# `_glyph_of` / `_name_of` / `_quote_of`, which dispatch on it — the two
+	# catalogues expose the same accessors on purpose, so the row builder and the
+	# refresh do not fork.
+	row.set_meta("subroutine", subroutine)
 
 	var marker: ColorRect = ColorRect.new()
 	marker.name = "Marker"
@@ -333,11 +365,11 @@ func _build_row(track: String, index: int) -> Control:
 	marker.color = UiFx.SYSTEM
 	row.add_child(marker)
 
-	var glyph: Label = _cell(row, Modules.glyph(track), 20, UiFx.SYSTEM, 34.0)
+	var glyph: Label = _cell(row, _glyph_of(track, subroutine), 20, UiFx.SYSTEM, 34.0)
 	glyph.name = "Glyph"
 	glyph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 
-	var name_label: Label = _cell(row, Modules.display_name(track), 17, UiFx.TEXT, 128.0)
+	var name_label: Label = _cell(row, _name_of(track, subroutine), 17, UiFx.TEXT, 128.0)
 	name_label.name = "Name"
 
 	var pips: Label = _cell(row, "", 17, UiFx.SYSTEM, 96.0)
@@ -439,17 +471,71 @@ func buy_selected() -> void:
 	_buy()
 
 
+## Accept, on whichever row is selected.
+##
+## Modules have one verb (COMPILE). Subroutines have two, and which one accept
+## means is decided by the state of the row rather than by a second keybind:
+##
+##   not owned          COMPILE — buy tier 1.
+##   owned, not slotted SLOT    — put it in the active socket. Free, instant, and
+##                                the reason "swap at any Compiler" is a sentence
+##                                a player can act on without reading a manual.
+##   owned and slotted  COMPILE — buy the next tier of the thing you are holding.
+##
+## That ordering is the one a player wants: the first press on something you own
+## equips it, and only once it is equipped does accept start spending money on
+## it. Nobody accidentally buys tier 2 of a subroutine they have never run.
 func _buy() -> void:
 	var track: String = _track_at(_selected)
-	# The panel asks anyway even when its own quote says no: the host is the
-	# authority on funds and stock, and a client that silently refuses its own
-	# purchase is a client that can be wrong in a way nobody can see. The local
-	# quote decides how the row is *drawn*, never whether the request is sent.
-	Modules.request_purchase(track, terminal.compiler_index)
+	if not _is_subroutine(_selected):
+		# The panel asks anyway even when its own quote says no: the host is the
+		# authority on funds and stock, and a client that silently refuses its own
+		# purchase is a client that can be wrong in a way nobody can see. The local
+		# quote decides how the row is *drawn*, never whether the request is sent.
+		Modules.request_purchase(track, terminal.compiler_index)
+		return
+	var owned: bool = Subs.tier_of(Net.local_id(), track) > 0
+	if owned and Subs.local_equipped() != track:
+		Subs.request_equip(track, terminal.compiler_index)
+		Audio.play_2d(&"ui_select")
+		return
+	Subs.request_purchase(track, terminal.compiler_index)
 
 
 func _track_at(index: int) -> String:
 	return String(_rows[clampi(index, 0, _rows.size() - 1)].get_meta("track"))
+
+
+func _is_subroutine(index: int) -> bool:
+	return bool(_rows[clampi(index, 0, _rows.size() - 1)].get_meta("subroutine"))
+
+
+# --- catalogue dispatch -------------------------------------------------------
+#
+# `Modules` and `Subs` expose the same six accessors with the same signatures, so
+# the panel can draw either catalogue without forking its refresh. These four
+# one-liners are the whole of the coupling.
+
+func _glyph_of(track: String, subroutine: bool) -> String:
+	return Subs.glyph(track) if subroutine else Modules.glyph(track)
+
+
+func _name_of(track: String, subroutine: bool) -> String:
+	return Subs.display_name(track) if subroutine else Modules.display_name(track)
+
+
+func _note_of(track: String, subroutine: bool) -> String:
+	return Subs.note(track) if subroutine else Modules.note(track)
+
+
+func _tiers_of(track: String, subroutine: bool) -> int:
+	return Subs.tier_count(track) if subroutine else Modules.tier_count(track)
+
+
+func _quote_of(track: String, subroutine: bool) -> Dictionary:
+	if subroutine:
+		return Subs.quote(Net.local_id(), track, terminal.stock_tier)
+	return Modules.quote(Net.local_id(), track, terminal.stock_tier)
 
 
 # ------------------------------------------------------------------ updating --
@@ -577,9 +663,14 @@ func _refresh() -> void:
 func _refresh_row(index: int) -> void:
 	var row: Control = _rows[index]
 	var track: String = String(row.get_meta("track"))
-	var deal: Dictionary = Modules.quote(Net.local_id(), track, terminal.stock_tier)
+	var subroutine: bool = bool(row.get_meta("subroutine"))
+	var deal: Dictionary = _quote_of(track, subroutine)
 	var tier: int = int(deal["tier"])
-	var total: int = Modules.tier_count(track)
+	var total: int = _tiers_of(track, subroutine)
+	## M7: the active slot. Drawn as a filled marker and a SLOTTED stamp rather
+	## than as a colour alone — which subroutine you are carrying is exactly the
+	## kind of fact pillar 7 says may never be colour-only.
+	var slotted: bool = subroutine and Subs.local_equipped() == track
 	var chosen: bool = index == _selected
 	var affordable: bool = bool(deal["affordable"])
 	var maxed: bool = tier >= total
@@ -631,12 +722,25 @@ func _refresh_row(index: int) -> void:
 	(row.get_node("Pips") as Label).add_theme_color_override("font_color", lit)
 
 	var effect: Label = row.get_node("Effect") as Label
-	effect.text = _effect_line(track, tier, maxed)
+	effect.text = _effect_line_for(track, tier, maxed, subroutine)
 	effect.add_theme_color_override("font_color",
 			UiFx.TEXT if chosen and not maxed else UiFx.DIM)
 
 	var price: Label = row.get_node("Price") as Label
-	if maxed:
+	# The slot marker: a subroutine you are carrying says so on the row, in words,
+	# permanently. It is the one piece of state on this panel that survives you
+	# walking away from the terminal.
+	if slotted:
+		(row.get_node("Marker") as ColorRect).custom_minimum_size.x = 6.0
+	if subroutine and tier > 0 and not slotted:
+		# Owned but not carried: accept SLOTS it. Said as a verb, because the
+		# player is about to press a key and needs to know what it does.
+		price.text = "SLOT ▸"
+		price.add_theme_color_override("font_color", UiFx.SYSTEM_HOT)
+	elif slotted and maxed:
+		price.text = "SLOTTED ✓"
+		price.add_theme_color_override("font_color", UiFx.SYSTEM)
+	elif maxed:
 		price.text = "COMPILED"
 		price.add_theme_color_override("font_color", UiFx.DIM)
 	elif not stocked:
@@ -723,6 +827,50 @@ func _apply_glitch(row: Control, index: int, price: Label) -> void:
 ## What the next tier of this track actually does, in the units the player reads
 ## it in elsewhere: metres, degrees, seconds, percent. Deliberately concrete —
 ## "BEAM 26° → 30°" is a decision, "OPTICS II" is a shopping list.
+## Which catalogue's effect line to print. Split from `_effect_line` so the
+## module version below is untouched — it is eight `match` arms of tuned wording
+## and none of it is M7's business.
+func _effect_line_for(track: String, tier: int, maxed: bool,
+		subroutine: bool) -> String:
+	if not subroutine:
+		return _effect_line(track, tier, maxed)
+	return _subroutine_line(track, tier, maxed)
+
+
+## What the next tier of a subroutine actually does, in the units the player
+## reads elsewhere: Cycles, seconds, metres. Same argument as the module lines —
+## "COST 14 -> 12 CYC · CD 9.0 -> 8.0 s" is a decision, "STACK PULSE II" is a
+## shopping list. Tier 0 prints what the subroutine IS, because a player who does
+## not own it needs the verb before the numbers.
+func _subroutine_line(track: String, tier: int, maxed: bool) -> String:
+	if maxed:
+		return Subs.note(track)
+	if tier <= 0:
+		return Subs.note(track)
+	var next: int = tier + 1
+	var line: String = "COST %d → %d CYC   ·   CD %.1f → %.1f s" % [
+		int(Subs.value_at(track, "cost", tier)),
+		int(Subs.value_at(track, "cost", next)),
+		float(Subs.value_at(track, "cooldown", tier)),
+		float(Subs.value_at(track, "cooldown", next))]
+	# One track-specific number on top, chosen as the thing that changes the play
+	# rather than the thing that changes the most.
+	match track:
+		"stack_pulse":
+			line += "   ·   HOLD %.1f → %.1f s" % [
+				float(Subs.value_at(track, "stagger", tier)),
+				float(Subs.value_at(track, "stagger", next))]
+		"fork_decoy":
+			line += "   ·   LIFE %.0f → %.0f s" % [
+				float(Subs.value_at(track, "lifetime", tier)),
+				float(Subs.value_at(track, "lifetime", next))]
+		"checksum_barrier":
+			line += "   ·   ABSORB %d → %d" % [
+				int(Subs.value_at(track, "absorb", tier)),
+				int(Subs.value_at(track, "absorb", next))]
+	return line
+
+
 func _effect_line(track: String, tier: int, maxed: bool) -> String:
 	if maxed:
 		return Modules.note(track)

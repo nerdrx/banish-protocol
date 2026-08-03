@@ -21,6 +21,11 @@ A11y="*res://src/core/a11y.gd"
 ;; canvas size that factor decides. Anything built before it would snapshot the
 ;; wrong geometry.
 Screen="*res://src/core/screen_settings.gd"
+;; FIDELITY PASS. The renderer quality store (PHOTONICS settings section). Third,
+;; beside Screen: it writes RenderingServer state that every later scene renders
+;; against, and it must be readable by the first WorldEnvironment that stands up.
+;; It touches no gameplay autoload and nothing touches it back.
+Photonics="*res://src/fidelity/photonics.gd"
 Rng="*res://src/core/rng.gd"
 Modules="*res://src/core/modules.gd"
 GameState="*res://src/core/game_state.gd"
@@ -39,6 +44,13 @@ Captions="*res://src/core/caption_bus.gd"
 Audio="*res://src/core/audio_service.gd"
 Music="*res://src/core/music_director.gd"
 Haunt="*res://src/core/haunt_director.gd"
+;; M7 (Subroutines & Juice). Both go LAST, and the order between them matters.
+;; Fx is a pure presentation service with no dependencies of its own; Subs reads
+;; Run, Net, Modules and GameState on load and hands its cast echoes to Fx, so it
+;; comes after everything it talks to. Neither is ever consulted by generation —
+;; the determinism dump cannot see either of them.
+Fx="*res://src/fx/fx.gd"
+Subs="*res://src/player/subroutines.gd"
 
 [shader_globals]
 
@@ -137,6 +149,12 @@ flare={
 ]
 }
 
+subroutine={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":81,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
+]
+}
+
 [layer_names]
 
 3d_physics/layer_1="world"
@@ -162,12 +180,24 @@ anti_aliasing/quality/screen_space_aa=0
 anti_aliasing/quality/use_taa=true
 lights_and_shadows/positional_shadow/atlas_size=4096
 lights_and_shadows/positional_shadow/soft_shadow_filter_quality=3
-;; M4.95: one ReflectionProbe per room (ProcLayerBuilder), each UPDATE_ONCE. The
-;; reflection ATLAS is the VRAM cost, not the probes — INTEGRATION2 §5 measured
-;; the default count of 64 at +517 MB. Capped to the maximum room count a layer
-;; can show at once; a ten-room layer with box-projected, interior probes never
-;; needs more visible simultaneously, and this recovers most of that 517 MB.
-reflections/reflection_atlas/reflection_count=12
+;; One ReflectionProbe per room (ProcLayerBuilder, M4.95), each UPDATE_ONCE. The
+;; reflection ATLAS is the VRAM cost, not the probes.
+;;
+;; THE "+517 MB" NUMBER THAT USED TO BE IN THIS COMMENT WAS STALE AND IS GONE.
+;; It was measured against the pre-4.4 cubemap atlas at reflection_size 256. Godot
+;; switched the reflection atlas to OCTAHEDRAL layout, which stores one probe as a
+;; single 2D map instead of six cube faces; at the 128 px size below a probe costs
+;; on the order of 2 MiB rather than the tens of MiB the old figure was divided
+;; out of. VRAM is no longer the reason to keep this number small.
+;;
+;; So the cap doubles, 12 -> 24. Twelve was the maximum room count of one layer,
+;; which sounded right and was not: a layer's rooms plus the M6.6 galleries and
+;; the fidelity pass's own hero props all want probes, and a probe that loses its
+;; atlas slot does not degrade — it stops reflecting, and the room it was filling
+;; goes back to emissive-trim-floating-in-black. What DOES still cost is the
+;; clustering pass that decides which probes affect which fragment, so this is
+;; watched in the perf census rather than raised further "because VRAM is free".
+reflections/reflection_atlas/reflection_count=24
 ;; And a smaller per-probe cubemap: in a near-black game the reflections carry
 ;; subtle emissive spill, not mirror detail, so 128 holds up where 256 would and
 ;; recovers most of the atlas VRAM. Halves the atlas footprint.

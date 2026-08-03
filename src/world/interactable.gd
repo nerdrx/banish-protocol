@@ -116,6 +116,19 @@ func available() -> bool:
 	return true
 
 
+## Whether one continuous hold of E may only ever fire this ONCE, so that the
+## next action on the same machine needs the key to come back up first.
+##
+## False for everything that came before M6, and correctly so: those machines
+## either stop being available the instant they fire (a drained tap, a shaft that
+## took the layer with it) or genuinely want to repeat. It exists for the things
+## whose *next* state offers a DIFFERENT action on the same probe — the injection
+## rig, where commit and abort are the same lever — because for those a held key
+## is not one gesture, it is two, and the second one undoes the first.
+func holds_once() -> bool:
+	return false
+
+
 ## Local channel reached full. Ask the host to make it real.
 func complete() -> void:
 	pass

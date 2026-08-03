@@ -45,6 +45,28 @@ const MAT_CONDUIT: Material = preload("res://assets/materials/mat_conduit.tres")
 const MAT_PANEL: Material = preload("res://assets/materials/mat_panel_dark.tres")
 const MAT_TRIM: Material = preload("res://assets/materials/mat_panel_trim.tres")
 
+# --- FIDELITY PASS: two materials that carry MEANING, not decoration ---------
+#
+# The rule the fidelity brief puts on these, and the reason they are not just
+# "two more nice textures": a material family is a WORD, and a word used
+# everywhere means nothing. So each one has exactly one thing it is allowed to
+# say and the generator may only reach for it when that thing is true.
+#
+#   MLI GOLD    multi-layer insulation. It goes on a run that is hot or cryogenic
+#               enough to need lagging, and on the jacket of a machine that runs.
+#               It never goes on a cold structural pipe, because then "gold" stops
+#               meaning "this one will burn you" and starts meaning "this level
+#               had a gold pass".
+#   HAZARD BAND diagonal stripes. It goes on the trim of things that PINCH, CRUSH
+#               or BURN — the lip of a machine's plinth, the leading edge of a
+#               bulkhead, the nosing of a ledge. Never on an empty wall: a hazard
+#               stripe on nothing is set dressing, and set dressing that cries
+#               wolf is how a player learns to walk through a real one.
+const MAT_MLI_GOLD: Material = preload(
+		"res://assets/materials/fidelity/mat_mli_gold.tres")
+const MAT_HAZARD: Material = preload(
+		"res://assets/materials/fidelity/mat_hazard_band.tres")
+
 ## Floor grime, from `tools/make_grime.py`. Albedo only — a stain does not glow,
 ## and a Decal with one texture is one projection.
 const GRIME_DIR: String = "res://assets/grime/"
@@ -102,6 +124,11 @@ var _parent: Node3D = null
 var _seed: int = 0
 ## Accumulated instance transforms, per family. Flushed into MultiMeshes once.
 var _tubes: Array[Transform3D] = []
+## LAGGED pipes — the same cylinder mesh, flushed as a second MultiMesh wearing
+## MLI gold. A separate family rather than a per-instance colour because the
+## whole point of the batching is one draw call per material, and "one of the
+## five pipes in this cluster is the hot one" is a per-instance MATERIAL fact.
+var _lagged: Array[Transform3D] = []
 var _chunks: Array[Transform3D] = []
 ## Census, printed with the layer build line: "the world got denser" is a claim,
 ## and a claim about generation belongs in a log rather than in a screenshot.
@@ -140,7 +167,7 @@ func roll(at: Vector3, salt: int) -> float:
 
 ## A tube instance between two points. Everything cylindrical in this file goes
 ## through here, so the basis maths exists once.
-func _tube(from: Vector3, to: Vector3, radius: float) -> void:
+func _tube(from: Vector3, to: Vector3, radius: float, lagged: bool = false) -> void:
 	var delta: Vector3 = to - from
 	var length: float = delta.length()
 	if length < 0.01:
@@ -150,7 +177,7 @@ func _tube(from: Vector3, to: Vector3, radius: float) -> void:
 			else Vector3.FORWARD
 	var right: Vector3 = reference.cross(up).normalized()
 	var forward: Vector3 = right.cross(up).normalized()
-	_tubes.append(Transform3D(
+	(_lagged if lagged else _tubes).append(Transform3D(
 			Basis(right * radius, up * length, forward * radius),
 			(from + to) * 0.5))
 
@@ -452,8 +479,18 @@ func machinery_island(at: Vector3, yaw: float, source: Vector3) -> Vector3:
 	# A stack of dark cabinet boxes with a conduit cap and one dim slot, so it
 	# reads as powered equipment rather than as a crate.
 	_group_box(group, Vector3(0.0, tall * 0.5, 0.0), Vector3(w, tall, w * 0.8), MAT_PANEL)
+	# FIDELITY PASS. The two materials that mean something, on the two parts of
+	# this object that earn them:
+	#   the CAP is the machine's thermal jacket. It is lagged because the thing
+	#   under it runs hot — the same reason the fattest pipe in a service cluster
+	#   is lagged, and the reason this is the only gold on the object;
+	#   the PLINTH LIP is the hazard. It is the edge you catch a foot on, at the
+	#   base of a running machine, and it is the one place on this prop where a
+	#   diagonal stripe is telling the truth.
 	_group_box(group, Vector3(0.0, tall + 0.05, 0.0),
-			Vector3(w * 0.9, 0.1, w * 0.72), MAT_CONDUIT)
+			Vector3(w * 0.9, 0.1, w * 0.72), MAT_MLI_GOLD)
+	_group_box(group, Vector3(0.0, 0.035, 0.0),
+			Vector3(w * 1.06, 0.07, w * 0.86), MAT_HAZARD)
 	_group_box(group, Vector3(0.0, tall * 0.62, -(w * 0.41)),
 			Vector3(w * 0.5, 0.02, 0.014), _slot_material())
 	# The feed lands on a junction port at the top of the machine — an overhead
@@ -482,17 +519,61 @@ func ceiling_run(a: Vector3, b: Vector3, motion: int = Motion.DEAD) -> void:
 ## A bracketed pipe cluster running along a wall at head height and above. The
 ## one piece of clutter that is *supposed* to be in your way visually and never
 ## physically: it breaks a beam sweeping down a corridor into bands.
-func pipe_cluster(from: Vector3, to: Vector3, inward: Vector3, height: float) -> void:
+## FIDELITY PASS: `service` is whether this run carries something that needs
+## lagging. Set by the caller from the ROOM (a plant room and a machine hall have
+## hot lines; a vault's pipes are structural), and if it is true, exactly ONE
+## pipe in the cluster — the FATTEST, which is the one a person would insulate —
+## comes out wearing MLI gold. One, not all: a cluster of five gold pipes is a
+## gold cluster, and the whole value of the material is that it marks out the one
+## line in the bundle you do not put your hand on.
+func pipe_cluster(from: Vector3, to: Vector3, inward: Vector3, height: float,
+		service: bool = false) -> void:
 	var length: float = from.distance_to(to)
 	if length < 3.0:
 		return
 	var count: int = 2 + int(roll(from, 8221) * 3.0)
+	# Chosen before the loop, from the same hash space as everything else here, so
+	# which pipe is lagged is a fact about the position and not about iteration.
+	var hot: int = -1
+	if service:
+		hot = int(roll(from, 8447) * float(count)) % count
 	for i: int in count:
 		var stand: float = 0.22 + float(i) * 0.19
 		var lift: float = height + (roll(from + Vector3(float(i), 0.0, 0.0), 8317) - 0.5) * 0.5
 		var radius: float = PIPE_RADIUS * (0.7 + roll(from, 8419 + i) * 0.8)
-		_tube(from + inward * stand + Vector3.UP * lift,
-				to + inward * stand + Vector3.UP * lift, radius)
+		var a: Vector3 = from + inward * stand + Vector3.UP * lift
+		var b: Vector3 = to + inward * stand + Vector3.UP * lift
+		if i == hot:
+			# LAGGING COMES IN SECTIONS, and it has to be built that way for two
+			# separate reasons that happen to have the same fix.
+			#
+			# The physical one: nobody wraps twenty metres of pipe in one piece.
+			# Insulation arrives as metre-ish jackets, taped at the joins, with the
+			# bare pipe and its clamp showing in the gaps — which is most of what
+			# makes a lagged run read as lagged rather than as a gold pipe.
+			#
+			# The rendering one, found in the first capture: every tube in this file
+			# is one instance of a unit cylinder stretched by the basis, so a 20 m
+			# run stretches ONE 0..1 UV span over 20 m. The MLI map is authored at
+			# one tile per metre (see mat_mli_gold.tres: "scale the MESH, not the
+			# UV") and smeared twenty-fold it stops being a crumpled quilt and
+			# becomes a flat yellow bar — the exact "painted on" failure the
+			# material exists to avoid. One instance per section restores the tile.
+			#
+			# The jacket is also fatter than the pipe under it, which is the
+			# silhouette that sells it in a dark room where the gold itself only
+			# shows when a beam crosses it.
+			var run: float = a.distance_to(b)
+			var sections: int = maxi(int(round(run / 1.15)), 1)
+			var step: Vector3 = (b - a) / float(sections)
+			for k: int in sections:
+				var s0: Vector3 = a + step * float(k)
+				var s1: Vector3 = a + step * float(k + 1)
+				var gap: Vector3 = (s1 - s0).normalized() * 0.055
+				_tube(s0 + gap, s1 - gap, radius * 1.55, true)
+			census["pipe"] = int(census["pipe"]) + 1
+			continue
+		_tube(a, b, radius)
 		census["pipe"] = int(census["pipe"]) + 1
 
 	# Brackets every few metres, hanging the cluster off the wall.
@@ -686,6 +767,7 @@ static func _grime_texture(name: String) -> Texture2D:
 func flush() -> int:
 	var calls: int = 0
 	calls += _flush_family("ClutterTubes", _tube_mesh, _tubes, MAT_CONDUIT)
+	calls += _flush_family("ClutterLagged", _tube_mesh, _lagged, MAT_MLI_GOLD)
 	calls += _flush_family("ClutterChunks", _chunk_mesh, _chunks, MAT_PANEL)
 	return calls
 

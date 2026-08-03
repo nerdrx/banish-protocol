@@ -310,8 +310,10 @@ func _act_lunge(delta: float) -> void:
 		var reach: float = _target.global_position.distance_to(global_position)
 		if reach <= Balance.SCRUBBER_LUNGE_RANGE * 0.62:
 			_struck = true
-			Run.damage_player(int(String(_target.name)), Balance.SCRUBBER_LUNGE_DAMAGE,
-					global_position)
+			# M7: through the one door. A lunge may now be landing on a FORK DECOY,
+			# on someone mid-SURGE-STEP, or on someone inside a CHECKSUM BARRIER,
+			# and `_land_hit` is the single place those three questions are asked.
+			_land_hit(_target, Balance.SCRUBBER_LUNGE_DAMAGE)
 	if _lunge_time <= 0.0:
 		_recover_time = Balance.SCRUBBER_RECOVER_TIME
 
@@ -375,6 +377,17 @@ func alert(where: Vector3, rooms: int = Balance.TAP_ALERT_ROOMS,
 			slot_index, str(where.snapped(Vector3.ONE * 0.1)), seconds])
 
 
+## M7 STACK PULSE. A lunge in flight is CANCELLED, not paused: the pack member
+## lands on its face, and when the stagger lifts it has to decide to come at you
+## again from a standing start. That "again" is the second the crew bought.
+func _on_staggered() -> void:
+	if state == State.LUNGE:
+		_struck = true
+		_lunge_time = 0.0
+		_recover_time = Balance.SCRUBBER_RECOVER_TIME
+		_enter(State.STALK)
+
+
 func _on_hurt() -> void:
 	_hit()
 	_tell_crew(&"_hit")
@@ -410,6 +423,14 @@ func _play_death() -> void:
 		Audio.detach_loop(_skitter)
 		_skitter = null
 	Audio.play_3d(&"scrubber_death", global_position)
+	# M7 THE DECOMPILE SHATTER. On top of the M3.7 spray, not instead of it: the
+	# spray is the shell's own plating going, and this is the PROCESS coming apart
+	# — glowing tri fragments blown out of the body, gravity-scattered, tumbling,
+	# with a coal at the point of deletion that fades rather than flashes. Pooled
+	# and tinted per creature, so a Scrubber and a Sentinel do not decompile the
+	# same colour. Local and cosmetic; every peer runs `_play_death` off the
+	# streamed `sync_dead` flag, so nothing new crosses the wire.
+	Fx.decompile(global_position, SENSOR_COLOUR, false, BODY_HEIGHT)
 	# The clip does the coming-apart; the particles are the spray it throws off.
 	# Playing one without the other reads either as a puff of dust with a corpse
 	# still standing in it, or as a mesh quietly folding up in silence.

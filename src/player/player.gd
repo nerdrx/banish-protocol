@@ -245,6 +245,10 @@ var focus_available: bool = false
 
 var _focus: Interactable = null
 var _channel_elapsed: float = 0.0
+## Set when a channel completes on something that declared `holds_once()`, and
+## cleared the moment the key comes up. While it is set no channel accumulates at
+## all — see `_update_interaction`.
+var _channel_spent: bool = false
 ## M4.8: whatever the breaker is currently cutting on (a vent, a cabinet lock).
 ## Separate from `_focus` because the two are held with different buttons and can
 ## legitimately be different objects.
@@ -291,6 +295,13 @@ var _muzzle_aligned_logged: bool = false
 ## Motes drifting in the beam cone. Local player only; see `_build_beam_dust`.
 var _beam_dust: CPUParticles3D = null
 
+# --- M7 movement fx (local lens only) ----------------------------------------
+## The drop-shaft ride's speed lines, alive only between `descent_started` and
+## `descent_finished`.
+var _rush: DescentRush = null
+## Air streaming past at sprint. See `_build_sprint_wake`.
+var _sprint_wake: CPUParticles3D = null
+
 # --- optics (M4) ------------------------------------------------------------
 ## The beam this avatar was authored with, captured before any module widens it.
 ## Optics multiplies against these rather than against last frame's values, or a
@@ -306,6 +317,10 @@ var _optics_applied: int = -1
 var _remote_velocity: Vector3 = Vector3.ZERO
 var _last_sync_position: Vector3 = Vector3.ZERO
 var _time_since_packet: float = 0.0
+## M7: enough of a remote avatar's fall to give its landing a dust tier. See
+## `_watch_remote_landing`.
+var _remote_grounded: bool = true
+var _remote_fall: float = 0.0
 
 @onready var head: Node3D = $Head
 @onready var camera: Camera3D = $Head/Camera
@@ -368,6 +383,12 @@ func _ready() -> void:
 	_set_beam_state(sync_beam)
 	if _is_local:
 		Run.damaged.connect(_on_damaged)
+		# M7: the ride down. Bracketed by the descent fade, so it has to be at
+		# full strength before the screen goes black and still running when it
+		# comes back — see DescentRush.
+		Run.descent_started.connect(_on_descent_started)
+		Run.descent_finished.connect(_on_descent_finished)
+		_build_sprint_wake()
 	Net.notify_player_ready(self)
 
 
@@ -471,6 +492,27 @@ func _build_avatar() -> void:
 func _embody() -> void:
 	_avatar.socket_breaker(player_color)
 	_avatar.set_first_person()
+
+	# YOUR OWN BEAM DOES NOT LIGHT YOUR OWN HANDS.
+	#
+	# Found by measuring a fidelity capture rather than by looking at one. The
+	# headlamp is a 26-degree, 6.6-energy spot whose origin is inside the lens —
+	# and the socketed breaker and the hands holding it sit 30-50 cm in front of
+	# that origin, dead centre in the cone, at essentially zero falloff. A 0.35
+	# albedo shell under ~6.6 units of light lands well past the environment's
+	# 1.65 glow threshold, so the grip does not merely go white: it BLOOMS, and
+	# the wide glow bands (layer_environment.tres weights 3-5 hardest) smear that
+	# blowout across the bottom-right sixth of the frame. Measured on
+	# `C_dustbeam_cinema.png`: 0.63% of the whole frame at luminance >= 0.90, and
+	# 3.1% of the quadrant, against a frame mean of 0.042.
+	#
+	# The fix is one line because the machinery was already built for it: PT4's
+	# `BodyLight` exists precisely so "your hands are not a silhouette", it is
+	# culled to the own-body layer, and its brightness was measured against that
+	# job. All that was missing was taking the OTHER light off the same surfaces.
+	# Everything the beam is actually for — the room, other crew, creatures — is
+	# untouched, because BODY_LAYER is only ever applied to the LOCAL avatar.
+	beam.light_cull_mask &= ~CrewAvatar.BODY_LAYER
 	# The lens height is deliberately NOT moved to the model's eye.
 	#
 	# The obvious thing to do here is park the camera exactly where the avatar's
@@ -598,6 +640,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		_set_beam_state(not sync_beam)
 	elif event.is_action_pressed("flare") and Run.local_running():
 		throw_flare()
+	elif event.is_action_pressed("subroutine") and Run.local_running():
+		run_subroutine()
 
 
 func _capture_mouse() -> void:
@@ -616,6 +660,7 @@ func _physics_process(delta: float) -> void:
 		_simulate_local(delta)
 	else:
 		_smooth_remote(delta)
+		_watch_remote_landing()
 	_update_view(delta)
 
 
@@ -669,6 +714,17 @@ func _simulate_local(delta: float) -> void:
 	planar = planar.move_toward(target, rate * top_speed * delta)
 	velocity.x = planar.x
 	velocity.z = planar.z
+
+	# M7 SURGE STEP. The dash OVERRIDES the walk for its 0.18 s rather than adding
+	# to it — a migration is the process being somewhere else, not the process
+	# running faster — but it still goes through `move_and_slide` below, so a wall
+	# stops it and a gap under a catwalk still drops it. Gravity is left alone on
+	# purpose: dashing off a gantry is a legitimate and very fast way down, and it
+	# costs the landing noise and the integrity like every other drop does.
+	if _step_time > 0.0:
+		_step_time = maxf(_step_time - delta, 0.0)
+		velocity.x = _step_velocity.x
+		velocity.z = _step_velocity.z
 
 	_was_on_floor = is_on_floor()
 	_fall_speed = velocity.y
@@ -781,12 +837,16 @@ func _update_breaker(frozen: bool) -> void:
 	Audio.play_2d(&"breaker_shot_dry")
 	# Light the barrel on the same frame as the lash, before the host round-trip.
 	_fire_muzzle()
+	# M7: the emitter VENTS. A light pulse, a spit of particles down the barrel's
+	# own axis and a heat wobble, at the emitter the lash actually leaves.
+	Fx.muzzle(muzzle, direction, Breaker.COLOUR)
 	# Predicted endpoint, drawn this frame. The host re-casts the same ray and
 	# decides what actually died — this is only where the streak stops.
 	var aimed: Antivirus = Antivirus.pick_target(
 			get_tree(), get_world_3d().direct_space_state, from, direction,
 			_breaker_range())
-	_breaker.show_lash(muzzle, _breaker_endpoint(from, direction))
+	_breaker.show_lash(muzzle, _breaker_endpoint(from, direction),
+			_hit_world, _hit_normal)
 	add_shake(0.22)
 	if Debug.log_ai:
 		_log_muzzle_alignment(from, basis, muzzle)
@@ -942,13 +1002,28 @@ func _log_muzzle_alignment(from: Vector3, basis: Basis, muzzle: Vector3) -> void
 		legacy.distance_to(muzzle), legacy_s.distance_to(muzzle_s)])
 
 
+## What the last predicted shot landed on. Written by `_breaker_endpoint` and
+## read one line later by `show_lash`, so the impact fx knows which way the wall
+## faces and whether there is a wall at all. Fields rather than a returned
+## Dictionary because this is on the trigger path at ~4 Hz per player and a
+## per-shot allocation for two floats and a bool is a cost with no reader.
+var _hit_normal: Vector3 = Vector3.ZERO
+var _hit_world: bool = false
+
+
 ## Where the streak stops: whatever the cutter is pointing at, or the wall behind
 ## it. Same target selection the host runs, so the prediction is not a guess.
 func _breaker_endpoint(from: Vector3, direction: Vector3) -> Vector3:
 	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
+	_hit_normal = Vector3.ZERO
+	_hit_world = false
 	var creature: Antivirus = Antivirus.pick_target(
 			get_tree(), space, from, direction, _breaker_range())
 	if creature != null:
+		# A creature is not a surface. The spray comes back along the shot (which
+		# is what a cut into a body throws) and no scorch is left, because the
+		# thing it would be painted on may be gone in a second.
+		_hit_normal = -direction.normalized()
 		return creature.aim_point()
 
 	var reach: Vector3 = from + direction * _breaker_range()
@@ -958,7 +1033,98 @@ func _breaker_endpoint(from: Vector3, direction: Vector3) -> Vector3:
 	query.collision_mask = Antivirus.WORLD_MASK
 	query.exclude = [get_rid()]
 	var hit: Dictionary = space.intersect_ray(query)
-	return reach if hit.is_empty() else Vector3(hit["position"])
+	if hit.is_empty():
+		# Nothing in reach: the streak stops in mid-air, so there is no surface to
+		# spark off and nothing to scorch.
+		_hit_normal = -direction.normalized()
+		return reach
+	_hit_normal = Vector3(hit["normal"])
+	_hit_world = true
+	return Vector3(hit["position"])
+
+
+# ---------------------------------------------------------------- subroutines --
+#
+# M7. The kit itself lives in the `Subs` autoload — the catalogue, the ownership
+# table, the wire protocol and the four effects. What belongs HERE is only the
+# two things that are properties of this body: where a cast comes from, and what
+# a SURGE STEP does to this avatar's velocity.
+
+## How long the dash takes. Not a teleport (DESIGN.md would have to answer for a
+## player passing through a wall) and not a shove either: 0.18 s is long enough
+## to read as travel and short enough that the i-frame window covers most of it.
+const STEP_TIME: float = 0.18
+## Extra clearance the dash keeps off a wall it is aimed at.
+const STEP_CLEARANCE: float = 0.5
+
+var _step_time: float = 0.0
+var _step_velocity: Vector3 = Vector3.ZERO
+
+
+## Q. The cast request, from the lens: `Subs` wants an origin it can range-check
+## against this avatar and a direction to throw things along.
+##
+## Deliberately thin. Nothing here decides whether the cast happens — the local
+## pre-check is in `Subs.request_cast` (presentation) and the decision is on the
+## host (authority). This is the input edge and nothing else.
+func run_subroutine() -> void:
+	var basis: Basis = camera.global_transform.basis
+	Subs.request_cast(global_position, -basis.z)
+
+
+## SURGE STEP, on the caster's own machine.
+##
+## Movement is client-authoritative (DESIGN.md, "responsiveness first"), so the
+## slide runs locally the frame the host's echo lands rather than being played
+## back from a stream — a dash that arrived a round trip late would be the one
+## thing in the kit that felt worse than walking. The host still owns everything
+## with a consequence: the Cycles, the cooldown and the i-frames.
+##
+## It is a SLIDE, not a teleport. The body keeps its collider and goes through
+## `move_and_slide` for the whole 0.18 s, so it cannot pass a wall, cannot clip a
+## catwalk and cannot skip a gate. Aiming one at a panel a metre away buys you a
+## metre — which is the correct answer, and cheaper than refusing the cast and
+## keeping the Cycles.
+##
+## Returns where the dash is expected to end, so the caller can draw a trail that
+## finishes where the body will.
+func surge_step(direction: Vector3, distance: float, _iframes: float) -> Vector3:
+	var planar: Vector3 = Vector3(direction.x, 0.0, direction.z)
+	if planar.length_squared() < 0.0001:
+		planar = -global_transform.basis.z
+		planar.y = 0.0
+	planar = planar.normalized()
+
+	# Predict where it ends, for the trail only. The actual stop is whatever
+	# `move_and_slide` decides over the next eleven frames; this is the artist's
+	# copy of the same question, and being a few centimetres out is invisible on
+	# a 0.42 s wake.
+	var reach: float = distance
+	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
+	if space != null:
+		var chest: Vector3 = global_position + Vector3.UP * 1.0
+		var query: PhysicsRayQueryParameters3D = PhysicsRayQueryParameters3D.create(
+				chest, chest + planar * distance)
+		query.collision_mask = 1
+		query.exclude = [get_rid()]
+		var hit: Dictionary = space.intersect_ray(query)
+		if not hit.is_empty():
+			reach = maxf(chest.distance_to(Vector3(hit["position"])) - STEP_CLEARANCE, 0.0)
+
+	_step_time = STEP_TIME
+	_step_velocity = planar * (distance / STEP_TIME)
+	# The chromatic tear: the process is being migrated, and for a fifth of a
+	# second the interface is not sure where it is. The HUD's own damage glitch
+	# vocabulary, borrowed rather than reinvented — one short shear, no repeat, so
+	# it cannot strobe.
+	Fx.shake(Balance.SUB_SHAKE_STEP)
+	return global_position + planar * reach
+
+
+## Whether the avatar is mid-dash, for the view code and for anything that should
+## not fight the slide.
+func stepping() -> bool:
+	return _step_time > 0.0
 
 
 ## Local only. Throws from the lens with a loft on it, inheriting the avatar's
@@ -987,6 +1153,12 @@ func show_breaker_shot(origin: Vector3, endpoint: Vector3, killed: bool, mine: b
 		if _avatar != null and is_instance_valid(_avatar) and _avatar.is_loaded():
 			barrel = _avatar.muzzle_point()
 			_avatar.fire()
+		# M7: the crewmate's emitter vents on your screen too. The host echoes an
+		# endpoint rather than a surface, so the impact takes the safe
+		# approximation (spray back along the shot, no scorch) — a decal placed
+		# from a guessed normal on somebody else's shot would be visibly wrong on
+		# every angled wall, and a missing decal on a remote shot is invisible.
+		Fx.muzzle(barrel, (endpoint - barrel).normalized(), Breaker.COLOUR)
 		_breaker.show_lash(barrel, endpoint)
 		return
 	if killed:
@@ -1035,6 +1207,22 @@ func _update_interaction(delta: float) -> void:
 	# needs to freeze the avatar and still be mid-channel when the shutter fires.
 	var holding: bool = Debug.hold_interact \
 			or (not Debug.lock_input and Input.is_action_pressed("interact"))
+	# One continuous hold performs at most ONE action, for the interactables that
+	# ask for it (`Interactable.holds_once`). Everything in the game up to M6 was
+	# happy to re-fire — a siphon tap is already spent, a drop shaft has taken the
+	# layer with it — so nothing needed this. THE PARTITION's injection rig does:
+	# holding the lever commits the crew, and the very next thing the same held key
+	# reaches is the ABORT, which cancelled the commit 0.35 s after it was made.
+	# Found by holding E at it and watching the rig arm and disarm forever.
+	#
+	# The rule is per-interactable and defaults to off, so the descent soak
+	# (`--autodescend`, which relies on a held key riding shaft after shaft) is
+	# untouched.
+	if not holding:
+		_channel_spent = false
+	elif _channel_spent:
+		_reset_channel()
+		return
 	if not holding or not focus_available:
 		_reset_channel()
 		return
@@ -1049,6 +1237,7 @@ func _update_interaction(delta: float) -> void:
 
 	if channel_progress >= 1.0:
 		var finished: Interactable = _focus
+		_channel_spent = finished.holds_once()
 		_reset_channel()
 		finished.complete()
 
@@ -1326,6 +1515,9 @@ func _update_view(delta: float) -> void:
 		_view_model.drive(delta, Vector2(rotation.y, _pitch),
 				clampf(strafe, -1.0, 1.0), _view_bob)
 
+	if _is_local:
+		_update_sprint_wake(speed)
+
 	_update_collapse(delta)
 	_update_beam(delta, speed)
 	_update_nameplate()
@@ -1433,6 +1625,83 @@ func _build_beam_dust() -> void:
 	_beam_dust.color_ramp = ramp
 
 	beam_rig.add_child(_beam_dust)
+
+
+# ------------------------------------------------------------- M7 movement fx --
+
+## The drop-shaft ride. Local lens only: this is what the descent feels like from
+## inside it, and a crewmate riding down beside you sees their own.
+func _on_descent_started(_next_layer: int) -> void:
+	if _rush != null and is_instance_valid(_rush):
+		return
+	_rush = DescentRush.create(player_color.lerp(Color(0.7, 0.85, 1.0), 0.45))
+	head.add_child(_rush)
+	# The whoosh. 2D and on the player's own bus: it is the sound of the trunk
+	# going past your own shell, not a thing happening somewhere in the room.
+	Audio.play_2d(&"descent_rush")
+
+
+func _on_descent_finished() -> void:
+	if _rush != null and is_instance_valid(_rush):
+		_rush.release()
+	_rush = null
+
+
+## Air disturbance at sprint. Deliberately almost invisible — DESIGN.md's second
+## pillar is that the dark is the enemy, and a sprint that lit up the corridor
+## would be a free torch. What it adds is a few motes streaming past the lens, so
+## running reads as moving through something rather than as the world scrolling.
+##
+## Local only, thirty particles, and off entirely below the sprint billing speed —
+## the same threshold the pool is charged at, so what you see and what you pay for
+## turn on together.
+func _build_sprint_wake() -> void:
+	_sprint_wake = CPUParticles3D.new()
+	_sprint_wake.name = "SprintWake"
+	_sprint_wake.emitting = false
+	_sprint_wake.amount = 30
+	_sprint_wake.lifetime = 0.5
+	_sprint_wake.local_coords = false
+	_sprint_wake.emission_shape = CPUParticles3D.EMISSION_SHAPE_BOX
+	_sprint_wake.emission_box_extents = Vector3(1.1, 0.8, 0.4)
+	_sprint_wake.position = Vector3(0.0, 0.0, -2.4)
+	# Backwards, in the head's own frame: the air the avatar is pushing through.
+	_sprint_wake.direction = Vector3(0.0, 0.0, 1.0)
+	_sprint_wake.spread = 12.0
+	_sprint_wake.initial_velocity_min = 5.0
+	_sprint_wake.initial_velocity_max = 11.0
+	_sprint_wake.gravity = Vector3.ZERO
+	_sprint_wake.scale_amount_min = 0.004
+	_sprint_wake.scale_amount_max = 0.014
+	var streak: BoxMesh = BoxMesh.new()
+	streak.size = Vector3(0.5, 0.5, 5.0)
+	_sprint_wake.mesh = streak
+	var mat: StandardMaterial3D = StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	mat.albedo_color = Color(0.55, 0.68, 0.85, 0.10)
+	mat.vertex_color_use_as_albedo = true
+	mat.disable_receive_shadows = true
+	_sprint_wake.material_override = mat
+	var ramp: Gradient = Gradient.new()
+	ramp.offsets = PackedFloat32Array([0.0, 0.25, 0.75, 1.0])
+	ramp.colors = PackedColorArray([
+		Color(1.0, 1.0, 1.0, 0.0), Color(1.0, 1.0, 1.0, 0.8),
+		Color(1.0, 1.0, 1.0, 0.6), Color(1.0, 1.0, 1.0, 0.0)])
+	_sprint_wake.color_ramp = ramp
+	head.add_child(_sprint_wake)
+
+
+func _update_sprint_wake(speed: float) -> void:
+	if _sprint_wake == null or not is_instance_valid(_sprint_wake):
+		return
+	# The dash counts as sprinting for this: 33 m/s through a corridor should
+	# absolutely disturb the air.
+	var want: bool = (speed >= Balance.SPRINT_BILLING_SPEED or _step_time > 0.0) \
+			and A11y.flash_scale > 0.0
+	if _sprint_wake.emitting != want:
+		_sprint_wake.emitting = want
 
 
 ## The downed shell, on every peer. The avatar sinks, its seams go out, and a red
@@ -1560,6 +1829,21 @@ func _process(delta: float) -> void:
 			_avatar.set_lens(Vector2(rotation.y, _pitch),
 					_avatar.global_transform.affine_inverse() * camera.global_transform,
 					_view_bob)
+			# THE VIEWMODEL LENS, derived here because this node owns the
+			# camera and therefore the only FOV there is.
+			#
+			# The ratio of the two half-angle tangents IS the magnification —
+			# that is all a change of focal length is — and taking it against
+			# the LIVE `camera.fov` rather than against BASE_FOV means the
+			# sprint kick widens the WORLD and leaves the weapon alone, which
+			# is what a real second lens does and is most of the reason a
+			# sprinting frame reads as fast. See CrewAvatar.GUN_LENS_DEG.
+			var gun_lens: float = CrewAvatar.gun_lens_deg()
+			var scale: float = 1.0
+			if gun_lens > 1.0 and gun_lens < camera.fov:
+				scale = tan(deg_to_rad(camera.fov) * 0.5) \
+						/ tan(deg_to_rad(gun_lens) * 0.5)
+			_avatar.set_lens_scale(scale)
 		_avatar.drive(delta, speed, Vector3(velocity.x, 0.0, velocity.z), _collapse)
 
 
@@ -1583,6 +1867,10 @@ func _land(impact_speed: float) -> void:
 	var strength: float = clampf(absf(impact_speed) * DIP_SCALE, 0.0, DIP_MAX)
 	_dip_offset -= strength
 	on_landed(strength)
+	# M7: the puff, scaled by the SAME thresholds that decide the noise. What you
+	# see and what the Hound hears are one fact told in two senses, and the visual
+	# arrives a beat before the consequence — which is the whole point of a tell.
+	Fx.land_dust(global_position, land_tier(absf(impact_speed)))
 	if not _is_local:
 		return
 
@@ -1650,3 +1938,36 @@ func on_landed(_strength: float) -> void:
 		Audio.play_2d(&"land_self")
 	else:
 		Audio.play_3d(&"land", global_position)
+
+
+## M7. Which of the three verticality tiers an impact at `speed` falls into:
+## 0 silent, 1 heard in this room, 2 heard next door AND it hurt. Derived from
+## the SAME constants `_resolve_landing` bills against rather than from numbers of
+## its own, so the dust can never disagree with the noise.
+static func land_tier(speed: float) -> int:
+	if speed >= LAND_HURT_SPEED:
+		return 2
+	if speed >= LAND_LOUD_SPEED:
+		return 1
+	return 0
+
+
+## Remote crewmates land too, and until M7 nothing on your screen said so.
+##
+## A remote copy never runs `_land` — that is on the client-authoritative
+## simulation path, which only the owner runs — so the transition is detected from
+## the replicated `sync_grounded` flag and the tier is inferred from the
+## dead-reckoned descent speed that was in flight a moment earlier. Approximate on
+## purpose: this is a dust puff under somebody else's feet, and the honest
+## alternative is putting an impact speed on the wire for a particle count.
+func _watch_remote_landing() -> void:
+	if _is_local:
+		return
+	if sync_grounded and not _remote_grounded:
+		Fx.land_dust(global_position, land_tier(absf(_remote_fall)))
+		on_landed(clampf(absf(_remote_fall) * DIP_SCALE, 0.0, DIP_MAX))
+	_remote_grounded = sync_grounded
+	if not sync_grounded:
+		_remote_fall = minf(_remote_velocity.y, _remote_fall)
+	else:
+		_remote_fall = 0.0

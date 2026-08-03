@@ -135,13 +135,83 @@ const CABLE_SEGMENTS: int = 44
 		seed = v
 		_rebuild_dressing()
 
+@export_group("Fault")
+## A failing ballast. OFF by default — most work lights work — and attached from
+## the generator rather than authored, because whether THIS lamp is the broken
+## one is a fact about the layer (see ProcLayerBuilder._place_work_lights).
+@export var flicker: bool = false:
+	set(v):
+		flicker = v
+		_apply_flicker()
+## Deterministic phase, so four peers watch the same lamp stutter together with
+## nothing on the wire.
+@export var flicker_seed: float = 0.0:
+	set(v):
+		flicker_seed = v
+		_apply_flicker()
+
 var _dressing: Node3D = null
+var _flicker: Node = null
+
+
+# ---------------------------------------------------------------- the fault --
+#
+# SAFETY-CRITICAL (DESIGN.md pillar 7 / WCAG 2.3.1). This is a NEW temporal-flash
+# source on a WORLD LIGHT, which is the exact class of effect the safety law was
+# written about, so it gets the same treatment every other one in the game got:
+#
+#   1. It reuses `FlickerLight.Mode.ARC`, and it reuses it ON PURPOSE rather than
+#      inventing a curve. ARC's phase advances at most 8.5 rad/s BY CONSTRUCTION
+#      (base 7.0 plus a 1.5 rad/s wobble), so the rectified flash rate peaks at
+#      8.5/PI ~= 2.7 Hz — under the 3 Hz line, with Reduced Flashing OFF. A new
+#      curve would be a new thing to prove; this one is already proven and
+#      already measured by `--selftest`.
+#   2. Its swing is capped to 0.2 peak-to-peak inside `FlickerLight.level`, and
+#      the base stays lit, so a failing work lamp browns out and never blacks
+#      out. A practical that fully drops is also a practical that takes the only
+#      light in a dark room away twice a second.
+#   3. It multiplies by `A11y.flash_scale`, so Reduced Flashing calms it further.
+#
+# ARC rather than DYING is a deliberate choice and not the obvious one. DYING is
+# the fluorescent-tube curve — long on, sudden full dropouts — and it is the
+# right curve for the strip lights in MOTHER's ceiling. A halogen work lamp on a
+# failing battery block does not drop out; it hunts. The two faults sound
+# different and they look different, and using the tube curve here would make the
+# player's own lamp read as more of MOTHER's architecture.
+
+## Attach (or remove) the fault. The generator's entry point.
+func attach_flicker(phase: float) -> void:
+	flicker_seed = phase
+	flicker = true
+
+
+func _apply_flicker() -> void:
+	if not is_inside_tree():
+		return
+	if _flicker != null and is_instance_valid(_flicker):
+		_flicker.queue_free()
+		_flicker = null
+	var l: SpotLight3D = _spot()
+	if l == null or not flicker:
+		return
+	# The same driver the LightRig uses for its own keys, so there is exactly one
+	# implementation of "a light that misbehaves" in the codebase and exactly one
+	# place a rate cap has to hold.
+	l.set_meta("base_energy", l.light_energy)
+	var driver: Node = load("res://src/world/flicker.gd").new()
+	driver.name = "Flicker"
+	driver.set("mode", FlickerLight.Mode.ARC)
+	driver.set("base_energy", l.light_energy)
+	driver.set("seed_offset", flicker_seed)
+	l.add_child(driver)
+	_flicker = driver
 
 
 func _ready() -> void:
 	_apply_light()
 	_apply_aim()
 	_rebuild_dressing()
+	_apply_flicker()
 
 
 # ----------------------------------------------------------------- the light --
@@ -158,6 +228,11 @@ func _apply_light() -> void:
 		return
 	l.light_color = FidelityLib.kelvin_to_color(colour_temperature_k)
 	l.light_energy = energy
+	# The CEILING the fault driver multiplies its curve against, not just the
+	# current value. Without this, retuning `energy` on a lamp that is already
+	# flickering writes a number the driver overwrites on the very next frame,
+	# and the export silently stops doing anything.
+	l.set_meta("base_energy", energy)
 	l.spot_angle = spot_angle_deg
 	l.spot_range = spot_range_m
 	l.shadow_enabled = cast_shadows

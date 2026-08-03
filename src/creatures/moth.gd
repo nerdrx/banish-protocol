@@ -286,8 +286,8 @@ func _do_strike() -> void:
 	if _light_body.global_position.distance_to(global_position) > Balance.MOTH_STRIKE_RANGE:
 		return
 	_strike_cooldown = Balance.MOTH_STRIKE_COOLDOWN
-	Run.damage_player(int(String(_light_body.name)), Balance.MOTH_STRIKE_DAMAGE,
-			global_position)
+	# M7: through the one door — see `Antivirus._land_hit`.
+	_land_hit(_light_body, Balance.MOTH_STRIKE_DAMAGE)
 	_tell_crew(&"_strike_fx")
 
 
@@ -372,6 +372,22 @@ func _brightest_light(range_limit: float) -> Dictionary:
 			best_pos = eye
 			best_body = player
 
+	# M7: a FORK DECOY is a running program, and a running program in this game
+	# glows. The Moth hunts light rather than position, so it would otherwise be
+	# the one process a fork could not fool — which would make the ability quietly
+	# fail against exactly the hunter it is most needed against. Weighted BELOW a
+	# lit beam and above a dark player: a fork is a faint glow, not a torch.
+	for decoy: ForkDecoy in ForkDecoy.live_decoys(get_tree()):
+		var lure: Vector3 = decoy.aim_point()
+		var dd: float = lure.distance_to(global_position)
+		if dd > range_limit or dd > decoy.lure_radius:
+			continue
+		var dw: float = 0.75 * clampf(1.0 - dd / range_limit, 0.0, 1.0)
+		if dw > best_weight:
+			best_weight = dw
+			best_pos = lure
+			best_body = decoy
+
 	return {"valid": best_weight > 0.0, "pos": best_pos, "weight": best_weight,
 			"body": best_body}
 
@@ -404,6 +420,10 @@ func _play_death() -> void:
 		Audio.detach_loop(_wing)
 		_wing = null
 	Audio.play_3d(&"scrubber_death", global_position)
+	# M7 THE DECOMPILE SHATTER. Spawned at the Moth's HOVER height rather than at
+	# its feet: it dies in the air, and fragments that appeared on the deck under
+	# it would read as a second, unrelated event.
+	Fx.decompile(global_position, EYE_COLOUR, false, HOVER_HEIGHT * 0.5)
 	CreatureKit.travel(_tree, "death")
 	CreatureKit.set_speed(_tree, 1.0)
 

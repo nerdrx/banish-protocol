@@ -383,6 +383,162 @@ const FP_PITCH_FOLLOW: float = 1.0
 ## the barrel is on the crosshair everywhere a shot can actually land.
 const CONVERGE_DISTANCE: float = 12.0
 
+## THE BARREL'S OWN DIRECTION, in the weapon's frame — and the round-five fix.
+##
+## ## What four rounds of "it still doesn't align" were actually measuring
+##
+## PT4 (05b52ca) shipped a per-frame closed-form solve, verified it at 0.0 cm of
+## miss at seven pitches and two ultrawide aspects, and the player came straight
+## back with "MY GUY THE GUN STILL DOESNT ALIGN". Both statements are true,
+## because the solve and the instrument were measuring the same wrong line.
+##
+## The solve took the vector **from the grip to the muzzle** as the barrel, and
+## `Debug.bore_offset` measures exactly that chord — so the two agreed with each
+## other and neither of them ever looked at the weapon. On the Surge those are
+## not the same direction, and they are not close. Measured off the mesh
+## (`tools`-free: slice the surface arrays along the model's own -Z):
+##
+##   the flat TOP EDGE of the weapon      y = +0.154 from z = -0.53 to z = +0.33
+##   the barrel body                      y = +0.05 .. +0.154, dead level
+##   the `Muzzle` node                    (0, +0.126, -0.531)
+##   the model ORIGIN, i.e. the grip      (0,  0.000,  0.000)
+##   the sight plate                      y = +0.163 .. +0.217
+##
+## The weapon's body axis is HORIZONTAL in its own frame. The grip sits 12.6 cm
+## BELOW it — that is a pistol grip, doing what a pistol grip does. So the chord
+## from the grip to the muzzle rises
+##
+##   atan(0.126056 / 0.530855) = 13.35 degrees
+##
+## above the barrel. Land that chord on the sight line and the barrel, the
+## receiver, the raked top edge, the sight rail — every line the eye actually
+## follows — end up **13.35 degrees nose-down**, which is 2.85 metres low at the
+## twelve-metre convergence. The player was reading the weapon. The instrument
+## was reading a chord to a point 12.6 cm off the thing it named.
+##
+## This is why every round "measured clean and shipped": each one solved the
+## chord more exactly than the last, and the visible error never moved at all.
+##
+## ## The fix
+##
+## Aim the LINE, not the chord. The bore is the line through the `Muzzle` point
+## along this axis; `_pitch_hold` now solves the rotation that puts that LINE
+## through the aim point, which is a slightly different (and still closed-form)
+## problem — see `_bore_preimage`. Everything the eye reads is parallel to this
+## axis and within 6.4 cm of it, so a silhouette that used to rake away from the
+## crosshair now converges on it at every field of view and every aspect, for the
+## same projective reason the old note gives and never got to cash in.
+##
+## -Z because that is the direction the `Muzzle` node is displaced along, and
+## because the slice table above says the body is level about it. If the weapon
+## is ever re-exported with a canted barrel, this is the constant that moves.
+const BORE_AXIS: Vector3 = Vector3(0.0, 0.0, -1.0)
+
+## FIRST-PERSON LENS — the viewmodel field of view, in degrees.
+##
+## Round five's second half. A weapon carried at the edge of a 74-degree frame is
+## smeared by the projection it is drawn with: at 3440x1440 that vertical FOV is
+## 121 degrees of HORIZONTAL, the hold sits two thirds of the way to the right
+## edge, and rectilinear projection stretches everything out there radially. The
+## bore can be exactly on the reticle (it now is) and the SILHOUETTE still reads
+## raked, because the near end of an 86 cm object 11 cm from the eye is drawn at
+## a wildly different scale from its far end.
+##
+## Every shooter answers this with a second, longer lens for the held object.
+## NULLVOID cannot use the textbook second viewport (see the note in `Player` —
+## the arms are the same skinned mesh as the legs), so this is the other route:
+## the FP meshes carry a shader that rescales the projection matrix in the vertex
+## stage. Same pass, same lights, same tonemap, same shadows (the vertex tweak is
+## skipped under `IN_SHADOW_PASS`); only the raster changes.
+##
+## Zero or anything >= the camera's own FOV switches it off entirely and the
+## build renders exactly as it did before — which is also how the conversion was
+## proved neutral. See `set_gun_lens` and `nv_fp_lens.gdshaderinc`.
+##
+## **Read `HOLD_LENS_DOLLY` before changing this**: a longer lens magnifies, and
+## the magnification is about the screen centre, so it moves the whole body too.
+##
+## ## SHIPPED AT ZERO — OFF — and the A/B that decided it
+##
+## This was built to answer the silhouette complaint and it turned out not to be
+## the answer, so it does not ship on. The honest measurement, three arms, same
+## scene, same seed, same frame, 3440x1440, with the barrel-axis fix in all
+## three (`--gunlens 0 / 60 / 52`, `--boretrace`):
+##
+##   * THE AIM IS UNCHANGED, exactly: barrel axis 0.0 cm at 12 m at all three
+##     lens values, at every pitch. Which is not luck — a change of projection is
+##     a linear map, the aim point is on the camera's own -Z axis, and a straight
+##     3D line through it projects to a straight 2D line through the reticle at
+##     any focal length. So the lens CANNOT improve "does the weapon point at the
+##     crosshair", and in the tight crops it visibly does not: the weapon's top
+##     edge extrapolates onto the 12 m target ring at 74, at 60 and at 52 alike.
+##   * WHAT IT DOES CHANGE is foreshortening — at 52 the weapon reads flatter,
+##     showing less of its top plane and tapering less along its length. That is
+##     a real and arguably nicer look.
+##   * WHAT IT COSTS: the weapon takes markedly more of the frame (the dolly can
+##     only hold the apparent size at ONE point, and holding it at the grip lets
+##     the far end grow), and the MUZZLE TIP MOVES AWAY FROM THE RETICLE — 90 px
+##     further out at 3440x1440. Both of those are the wrong direction for a
+##     weapon DESIGN.md says must "never become the subject of the shot", and the
+##     second is the wrong direction for the complaint this round is about.
+##
+## So: the machinery stays, fully wired and tested, because it is the right tool
+## for a different problem and because a look change this cheap should be
+## tunable. It is off, `--gunlens D` walks it in by eye, and turning it on is a
+## one-line change to this constant. Anything from about 1 degree up to the
+## camera's own FOV is live; below or above that the shader is a no-op.
+const GUN_LENS_DEG: float = 0.0
+## How much of the lens change is paid back by pushing the hold away from the eye.
+##
+## A longer lens with the subject dollied back by the same factor keeps the
+## subject's screen position and size and flattens only its perspective — which
+## is the entire point. 1.0 is the exact compensation; 0.0 keeps the hold where
+## it is and simply lets the weapon get bigger.
+const HOLD_LENS_DOLLY: float = 1.0
+
+## Session override for `GUN_LENS_DEG`, written by `--gunlens` so a value can be
+## walked in by eye without a rebuild. Negative means "use the constant".
+static var gun_lens_override: float = -1.0
+
+## `--chordaim`: solve the OLD way, aiming the grip-to-muzzle chord.
+##
+## A measuring instrument, and the same argument `--no-safe-area` makes: the
+## whole round-five claim is "the weapon used to point 13.35 degrees into the
+## floor", and a claim like that is only checkable if the old behaviour can still
+## be photographed FROM THIS BUILD. Otherwise the before-picture and the
+## after-picture differ by a scene, a seed, an instrument and a marker set as
+## well, and the sheet is an argument instead of a comparison.
+static var aim_chord_override: bool = false
+
+## `--stdmaterials`: skip the FP material conversion entirely and leave the local
+## player's own body and weapon on the StandardMaterial3D palette every remote
+## crewmate wears.
+##
+## The A/B arm for the CONVERSION rather than for the lens. The whole claim of
+## nv_fp_lens.gdshaderinc is "a four-channel spatial shader renders identically
+## to the BaseMaterial3D it replaces", and that is only checkable if the
+## unconverted build can still be photographed from this one — same pose, same
+## seed, same frame, one variable.
+static var fp_lens_disabled: bool = false
+
+## `--hold x,y,z`: HOLD_LENS_OFFSET for this session, so the composition can be
+## walked in against captures instead of against a rebuild. NaN means "use the
+## constant" — a sentinel rather than a companion bool, because two variables
+## that have to agree are one variable that will not.
+static var hold_offset_override: Vector3 = Vector3(NAN, NAN, NAN)
+
+
+## Where the grip sits in the lens's frame, this session.
+static func hold_lens_offset() -> Vector3:
+	if is_nan(hold_offset_override.x):
+		return HOLD_LENS_OFFSET
+	return hold_offset_override
+
+
+## The viewmodel lens actually in force, in degrees. Zero means "off".
+static func gun_lens_deg() -> float:
+	return gun_lens_override if gun_lens_override >= 0.0 else GUN_LENS_DEG
+
 ## Where the grip sits in the LENS's own frame, in metres. Right, up, forward.
 ##
 ## The hold is rigid in this frame — that is what every round of "the gun doesn't
@@ -490,6 +646,12 @@ const HEAD_MESH: String = "CrewHead"
 ## darkness is the game.
 const BODY_LAYER: int = 1 << 19
 
+## The two first-person material families. See nv_fp_lens.gdshaderinc for the
+## inventory they have to cover and for why they are hand-written.
+const FP_LENS_SHADER: Shader = preload("res://src/shaders/nv_fp_lens.gdshader")
+const FP_LENS_NOSHADOW_SHADER: Shader = preload(
+		"res://src/shaders/nv_fp_lens_noshadow.gdshader")
+
 var _model: Node3D = null
 var _tree: AnimationTree = null
 var _skeleton: Skeleton3D = null
@@ -555,6 +717,18 @@ var _lens_basis: Basis = Basis.IDENTITY
 ## The walk bob the lens is currently carrying, in the lens's frame, so the hold
 ## can lag a fraction of it back. See HOLD_BOB_LAG.
 var _lens_bob: Vector3 = Vector3.ZERO
+## The viewmodel lens's magnification: `tan(world_fov/2) / tan(gun_lens/2)`, and
+## 1.0 for "the world's own projection". Written by the owning Player once a
+## frame, because the Player owns the camera and therefore the live FOV — which
+## the sprint kick moves, and which the viewmodel deliberately does NOT follow.
+var _lens_scale: float = 1.0
+## Every first-person material carrying the `lens_scale` uniform, so the value
+## can be pushed without walking the meshes again. Empty on a remote crewmate.
+var _lens_materials: Array[ShaderMaterial] = []
+## The lens copies of the two ANIMATED materials — the crew seams' corruption
+## fade and the breaker's muzzle heat. See `_write_accent`.
+var _accent_lens: ShaderMaterial = null
+var _emitter_lens: ShaderMaterial = null
 ## Additive hold sway, chasing the lens's angular rate. See HOLD_SWAY_LAG.
 var _hold_sway: Vector2 = Vector2.ZERO
 var _last_hold_look: Vector2 = Vector2.ZERO
@@ -698,6 +872,12 @@ func repaint(colour: Color) -> void:
 	# their own skull without hiding their hands), so the palette goes on both.
 	for name: String in [BODY_MESH, HEAD_MESH]:
 		CreatureKit.paint(_model.find_child(name, true, false) as MeshInstance3D, palette)
+	if _first_person and not _lens_materials.is_empty():
+		# A colour change rebuilds the palette as StandardMaterial3D, which would
+		# quietly take the viewmodel lens off the local player's own body. Put it
+		# back on top, from the answer this function just wrote. Only when the lens
+		# is actually in use — see `set_lens_scale`.
+		_fit_fp_lens()
 
 
 ## Hangs the breaker off the right hand, so a crewmate across the room is
@@ -766,25 +946,23 @@ func drive(delta: float, speed: float, heading: Vector3, down: float) -> void:
 	_since_full_flash += delta
 	_flash = maxf(_flash - delta, 0.0)
 	var heat: float = _flash / FLASH_TIME
-	if _emitter_material != null:
-		# Peak dropped from 10.1 in M3.7. An emitter that far above the glow HDR
-		# threshold, 40 cm from the lens, bloomed across the entire frame — a shot
-		# fired in a dark corridor whited out the room it was supposed to light.
-		_emitter_material.emission_energy_multiplier = 1.1 + heat * 2.8
+	# Peak dropped from 10.1 in M3.7. An emitter that far above the glow HDR
+	# threshold, 40 cm from the lens, bloomed across the entire frame — a shot
+	# fired in a dark corridor whited out the room it was supposed to light.
+	_write_emitter_heat(1.1 + heat * 2.8)
 	if _flash_light != null:
 		# Squared, so the decay reads as a discharge rather than as a dimmer. Gated
 		# by the flash-rate governor (`_room_gate`) and scaled by A11y.flash_scale —
 		# SAFETY-CRITICAL, see MUZZLE_FLASH_MIN_INTERVAL.
 		_flash_light.light_energy = heat * heat * MUZZLE_FLASH_ENERGY \
 				* _room_gate * A11y.flash_scale
-	if _accent_material != null:
-		# The seams go out as the process comes apart. A downed crewmate must not
-		# still be wearing their colour, or the crew cannot read the room — and a
-		# *restored* one must get it back, which is why this lerps from their own
-		# tinted accent and writes it unconditionally rather than self-assigning at
-		# zero. At `_down == 0` the first term is exactly `_accent_colour`.
-		_accent_material.emission = _accent_colour.lerp(CORRUPT_ACCENT, _down)
-		_accent_material.emission_energy_multiplier = lerpf(ACCENT_ENERGY, 0.4, _down)
+	# The seams go out as the process comes apart. A downed crewmate must not
+	# still be wearing their colour, or the crew cannot read the room — and a
+	# *restored* one must get it back, which is why this lerps from their own
+	# tinted accent and writes it unconditionally rather than self-assigning at
+	# zero. At `_down == 0` the first term is exactly `_accent_colour`.
+	_write_accent(_accent_colour.lerp(CORRUPT_ACCENT, _down),
+			lerpf(ACCENT_ENERGY, 0.4, _down))
 
 
 func _choose_clip() -> void:
@@ -944,12 +1122,21 @@ func _pitch_hold(reach: Vector3) -> void:
 		_shift_bone(arm, reach)
 
 	# --- where the weapon is, this frame -------------------------------------
+	#
+	# TWO quantities, and round five exists because four rounds used one of them
+	# for both jobs (see BORE_AXIS):
+	#
+	#   `arm_v`  grip -> muzzle. A DISPLACEMENT. It says where the barrel's far
+	#            end is, and on this weapon it rises 13.35 degrees off the barrel
+	#            because the grip hangs below it.
+	#   `bore`   the barrel's own DIRECTION, which is what the receiver, the top
+	#            edge and the sight rail are all parallel to, and therefore what
+	#            the player's eye is actually reading.
 	var gun: Transform3D = _gun_local(to_local)
 	var grip: Vector3 = gun.origin
-	var bore: Vector3 = gun.basis * _emitter_in_gun()
-	var aimed: bool = bore.length_squared() > 1.0e-8
-	if aimed:
-		bore = bore.normalized()
+	var arm_v: Vector3 = gun.basis * _emitter_in_gun()
+	var aimed: bool = arm_v.length_squared() > 1.0e-8
+	var bore: Vector3 = (gun.basis * BORE_AXIS).normalized()
 
 	# --- where the lens is, this frame ---------------------------------------
 	#
@@ -960,33 +1147,97 @@ func _pitch_hold(reach: Vector3) -> void:
 			_hold_sway.x * HOLD_SWAY_SHIFT.x,
 			-_hold_sway.y * HOLD_SWAY_SHIFT.y,
 			0.0) - _lens_bob * HOLD_BOB_LAG + TUCK_LENS_SHIFT * _tuck
-	var want_grip: Vector3 = _lens_local + _lens_basis * (HOLD_LENS_OFFSET + sway)
+	# The viewmodel lens's dolly. A longer lens magnifies about the screen centre,
+	# and pushing the hold away from the eye by the same factor is what pays that
+	# back: same screen position, same apparent size, flatter perspective — which
+	# is the only reason to change lens at all. Identity at `_lens_scale == 1`.
+	var hold: Vector3 = hold_lens_offset() + sway
+	hold.z *= 1.0 + (_lens_scale - 1.0) * HOLD_LENS_DOLLY
+	var want_grip: Vector3 = _lens_local + _lens_basis * hold
 	var total: Basis = Basis.IDENTITY
+	var anchor: Vector3 = want_grip
 	if aimed:
 		# The aim drops as the weapon tucks — see TUCK_LENS_AIM. Everywhere else
 		# this is exactly the sight line.
 		var aim: Vector3 = _lens_local + _lens_basis \
 				* (Basis(Vector3.RIGHT, -TUCK_LENS_AIM * _tuck)
 					* Vector3(0.0, 0.0, -CONVERGE_DISTANCE))
-		var want_bore: Vector3 = (aim - want_grip).normalized()
-		# 1. the minimal swing that lands the barrel on the sight line.
-		total = _swing(bore, want_bore)
-		# 2. and the roll about that barrel, which cannot disturb step 1 because
-		#    every point on the axis of a rotation is a fixed point of it. Levels
-		#    the weapon to the LENS's horizon rather than to the world's, so a
-		#    hold under a rolling lens rolls with it instead of appearing to
-		#    counter-rotate. `_hold_sway` buys its lean here for free.
+		var span: Vector3 = aim - want_grip
+		# 1. THE LINE, not the chord. `_bore_preimage` returns the point of the
+		#    barrel line — measured from the grip — that has to land on the aim
+		#    point; the swing that takes it there therefore carries the whole
+		#    line through the aim point, which is what makes the SILHOUETTE
+		#    converge and not merely the muzzle.
+		var preimage: Vector3 = arm_v
+		if not aim_chord_override:
+			preimage = _bore_preimage(arm_v, bore, span.length())
+		total = _swing(preimage.normalized(), span.normalized())
+		# 2. and the roll about the barrel. Levels the weapon to the LENS's
+		#    horizon rather than to the world's, so a hold under a rolling lens
+		#    rolls with it instead of appearing to counter-rotate. `_hold_sway`
+		#    buys its lean here for free.
+		var barrel: Vector3 = (total * bore).normalized()
 		var up: Vector3 = (total * (gun.basis * Vector3.UP)).normalized()
 		var in_lens: Vector3 = _lens_basis.inverse() * up
-		total = Basis(want_bore,
-				-atan2(in_lens.x, in_lens.y) - _hold_sway.x * HOLD_SWAY_ROLL) * total
+		var roll: Basis = Basis(barrel,
+				-atan2(in_lens.x, in_lens.y) - _hold_sway.x * HOLD_SWAY_ROLL)
+		# The roll is taken about the BARREL LINE — through the muzzle — and not
+		# about the grip, and that is a correctness fix rather than a nicety. Every
+		# point of a rotation's axis is fixed by it, so rolling about the line the
+		# aim was just solved for cannot disturb the aim; rolling about a parallel
+		# axis through the grip would slide the muzzle the 12.6 cm it is off that
+		# axis, times the roll angle, straight back off the reticle. The grip is
+		# what moves instead, which is also what a rifle rolling in a hand does.
+		#
+		# Written as a correction to the grip because the placement below is
+		# expressed about the grip: step 1 puts the muzzle at
+		# `want_grip + total * arm_v`, and the composed map has to keep it there.
+		anchor = want_grip + total * arm_v - roll * total * arm_v
+		total = roll * total
 
 	# --- and put it there ----------------------------------------------------
 	for arm: int in _arm_bones:
 		var shoulder: Vector3 = to_local * _skeleton.get_bone_global_pose(arm).origin
-		var placed: Vector3 = want_grip + total * (shoulder - grip)
+		var placed: Vector3 = anchor + total * (shoulder - grip)
 		_twist_bone(arm, total)
 		_shift_bone(arm, reach + placed - shoulder)
+
+
+## Which point OF THE BARREL LINE the aim point has to be swung onto.
+##
+## This is the whole difference between round five and the four rounds before it,
+## and it is four lines of quadratic.
+##
+## Aiming a LINE at a point is not the same problem as aiming a VECTOR at a
+## point. The vector problem — "rotate the grip-to-muzzle chord onto the sight
+## line" — has the trivial answer `_swing(chord, span)`, it is what PT1..PT4
+## solved, and on a weapon whose grip hangs 12.6 cm below its barrel it points
+## the visible weapon 13.35 degrees into the floor (see BORE_AXIS).
+##
+## The line problem: the barrel line is `{arm + s * bore, s real}`, measured from
+## the grip. A rotation about the grip preserves length, so the aim point — which
+## is `span` long — can only ever land on the point of that line that is ALSO
+## `span` long. Find it, and the swing onto it carries the entire line through
+## the aim point:
+##
+##     |arm + s*bore|^2 = span^2
+##     s^2 + 2 (arm . bore) s + (|arm|^2 - span^2) = 0
+##
+## with `bore` unit. The convergence distance is twelve metres and the weapon is
+## half of one, so the discriminant is never close to zero in practice and the
+## positive root is the muzzle-ward one — but a solver that returns garbage at
+## its singularity is a solver that fails on the frame somebody photographs, so
+## the degenerate cases fall back to the chord, i.e. to exactly what PT4 did.
+static func _bore_preimage(arm: Vector3, bore: Vector3, span: float) -> Vector3:
+	var b: float = 2.0 * arm.dot(bore)
+	var c: float = arm.length_squared() - span * span
+	var disc: float = b * b - 4.0 * c
+	if disc <= 0.0:
+		return arm
+	var s: float = (-b + sqrt(disc)) * 0.5
+	if s <= 0.0:
+		return arm
+	return arm + bore * s
 
 
 ## The minimal rotation taking `from` onto `to`, both unit. No roll about the
@@ -1356,6 +1607,141 @@ func set_first_person() -> void:
 	lamp.light_volumetric_fog_energy = 0.0
 	lamp.light_cull_mask = BODY_LAYER
 	add_child(lamp)
+
+
+# ------------------------------------------------- the viewmodel lens --------
+#
+# See GUN_LENS_DEG for what the lens is for and nv_fp_lens.gdshaderinc for how
+# the three lines of shader work. This section is the plumbing: swap the local
+# player's own materials for lens-capable copies, keep the two ANIMATED writes
+# alive across the swap, and push the scale.
+
+
+## Swaps every first-person surface onto a lens-capable material.
+##
+## Local player only, and only after `repaint` and `socket_breaker` have written
+## the palette — this reads their answer back off the meshes rather than
+## rebuilding it, so a palette change is picked up for free and there is exactly
+## one place in this file that decides what colour anything is.
+##
+## The HEAD is deliberately not converted. It is SHADOWS_ONLY in first person, so
+## it contributes no main-pass pixels to bend, and leaving it on the shared
+## StandardMaterial3D keeps the corruption fade's original path alive and tested.
+func _fit_fp_lens() -> void:
+	_lens_materials.clear()
+	_accent_lens = null
+	_emitter_lens = null
+	var meshes: Array[MeshInstance3D] = []
+	if _body_mesh != null and is_instance_valid(_body_mesh):
+		meshes.append(_body_mesh)
+	var gun_mesh: MeshInstance3D = null
+	if _gun != null and is_instance_valid(_gun):
+		gun_mesh = CreatureKit.find_mesh(_gun)
+	if gun_mesh != null:
+		meshes.append(gun_mesh)
+	for mesh: MeshInstance3D in meshes:
+		if mesh.mesh == null:
+			continue
+		for i: int in mesh.mesh.get_surface_count():
+			var current: Material = mesh.get_surface_override_material(i)
+			if current == null:
+				# An unpainted slot still renders, so it still needs the lens or
+				# the body tears along that surface. Take what the .glb shipped.
+				current = mesh.mesh.surface_get_material(i)
+			var shaded: ShaderMaterial = current as ShaderMaterial
+			if shaded != null:
+				# Already a shader (the Slime gel). It carries its own copy of the
+				# lens uniform — see nv_slime.gdshader — so it only needs listing.
+				_lens_materials.append(shaded)
+				continue
+			var standard: StandardMaterial3D = current as StandardMaterial3D
+			if standard == null:
+				continue
+			var swapped: ShaderMaterial = _lens_material(standard)
+			mesh.set_surface_override_material(i, swapped)
+			_lens_materials.append(swapped)
+			# The two slots `drive()` writes every frame. Caught by IDENTITY
+			# rather than by slot name: the names live in `repaint` and in
+			# `socket_breaker`, and a copy of them here is a second place to
+			# forget when the .glb is re-exported.
+			if standard == _accent_material:
+				_accent_lens = swapped
+			elif standard == _emitter_material:
+				_emitter_lens = swapped
+	_push_lens_scale()
+
+
+## One StandardMaterial3D -> its lens-capable twin. Every property the FP palette
+## sets and nothing else; see nv_fp_lens.gdshaderinc for the inventory and for
+## why a four-channel shader is genuinely equivalent to the material it replaces.
+static func _lens_material(source: StandardMaterial3D) -> ShaderMaterial:
+	var mat: ShaderMaterial = ShaderMaterial.new()
+	mat.shader = FP_LENS_NOSHADOW_SHADER if source.disable_receive_shadows \
+			else FP_LENS_SHADER
+	mat.set_shader_parameter("albedo", source.albedo_color)
+	mat.set_shader_parameter("metallic", source.metallic)
+	mat.set_shader_parameter("roughness", source.roughness)
+	if source.emission_enabled:
+		mat.set_shader_parameter("emission_color", source.emission)
+		mat.set_shader_parameter("emission_energy",
+				source.emission_energy_multiplier)
+	else:
+		mat.set_shader_parameter("emission_color", Color(0.0, 0.0, 0.0, 1.0))
+		mat.set_shader_parameter("emission_energy", 0.0)
+	return mat
+
+
+## The magnification, written by the owning Player every frame. Cheap to call
+## with the same value: the uniform push is skipped unless it actually moved.
+##
+## THE CONVERSION IS LAZY, and that is a safety decision rather than a
+## performance one. `GUN_LENS_DEG` ships at zero (see its note for the A/B that
+## decided so), and a build whose lens is off has no business rendering the
+## player's own body through a different material family from the one four
+## milestones of look development were tuned against — however carefully that
+## family was proved equivalent. So an avatar wearing no lens keeps the exact
+## palette every remote crewmate wears, and the swap happens the first frame
+## somebody actually asks for a lens. Which also means a future settings slider
+## works live, with no rebuild and no restart.
+func set_lens_scale(scale: float) -> void:
+	var want: float = maxf(scale, 0.01)
+	if is_equal_approx(want, _lens_scale):
+		return
+	_lens_scale = want
+	if _first_person and _lens_materials.is_empty() and not fp_lens_disabled \
+			and not is_equal_approx(want, 1.0):
+		_fit_fp_lens()
+		return
+	_push_lens_scale()
+
+
+func _push_lens_scale() -> void:
+	for mat: ShaderMaterial in _lens_materials:
+		mat.set_shader_parameter("lens_scale", _lens_scale)
+
+
+## The corruption fade, written to whichever accent material this avatar ended up
+## with — the StandardMaterial3D every remote copy wears, the lens copy the local
+## one does, or both, because the head keeps the former while the body takes the
+## latter. Two materials, one meaning; `drive()` must not have to know which.
+func _write_accent(colour: Color, energy: float) -> void:
+	if _accent_material != null:
+		_accent_material.emission = colour
+		_accent_material.emission_energy_multiplier = energy
+	if _accent_lens != null:
+		_accent_lens.set_shader_parameter("emission_color", colour)
+		_accent_lens.set_shader_parameter("emission_energy", energy)
+
+
+## The muzzle's emitter glow. Same two-materials-one-meaning rule as
+## `_write_accent`, and the same reason it is a function and not two lines at the
+## call site: the flash is SAFETY-CRITICAL rate-governed state, and a path that
+## silently stopped being written would be a safety fix that quietly stopped.
+func _write_emitter_heat(energy: float) -> void:
+	if _emitter_material != null:
+		_emitter_material.emission_energy_multiplier = energy
+	if _emitter_lens != null:
+		_emitter_lens.set_shader_parameter("emission_energy", energy)
 
 
 ## Adds every mesh under `root` to the own-body render layer.

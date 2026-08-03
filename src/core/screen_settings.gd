@@ -62,6 +62,37 @@ const VIGNETTE_MAX: float = 1.4
 const VIGNETTE_DEFAULT: float = 0.55
 var vignette: float = VIGNETTE_DEFAULT
 
+## HUD WIDTH — how far the instrument clusters sit toward the screen's edges.
+##
+## 0.0 is PT2's centred 16:9 instrument zone (`UiFx.tube_safe_rect`); 1.0 is the
+## true canvas minus the tube's own glass margin. See the block comment above
+## `UiFx.instrument_rect` for the measurement that produced this control.
+##
+## ## Why there is an `auto` flag rather than just a number
+##
+## The right default is a fact about the player's PANEL, and the panel can change
+## between two boots (windowed, fullscreen, a second monitor). A number baked at
+## first launch would be wrong for the rest of the profile's life and the player
+## would never know which setting to blame. So the stored state is "the player
+## has not expressed a preference" until they touch the slider, and while that
+## holds, the value is DERIVED from the live aspect every time it is asked for:
+## 16:9 keeps the composed zone, an ultrawide spreads to its edges. The moment
+## the slider moves, the number is theirs and nothing recomputes it.
+const HUD_WIDTH_MIN: float = 0.0
+const HUD_WIDTH_MAX: float = 1.0
+## The aspects the automatic ramp runs between. Below the first, the composed
+## zone is correct and nothing moves; at and above the second there is so much
+## glass outboard of a 16:9 box that a corner readout stops reading as a corner.
+const HUD_WIDTH_AUTO_FROM: float = 1.90
+const HUD_WIDTH_AUTO_TO: float = 2.37
+## What the automatic ramp reaches. Not 1.0: the last few percent puts the crew
+## cluster hard against the glass margin, and an instrument touching the bezel
+## reads as a rendering fault rather than as a choice. A player who wants the
+## last centimetre has the slider.
+const HUD_WIDTH_AUTO_CEILING: float = 0.92
+var hud_width: float = 0.0
+var hud_width_auto: bool = true
+
 
 func _ready() -> void:
 	# Before any Control lays out. An interface built at scale 1.0 and rescaled a
@@ -70,6 +101,17 @@ func _ready() -> void:
 	# home position (Hud's clusters do exactly that).
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_load()
+	# `-- --hud-width 0..100`. A capture flag, so the three HUD WIDTH frames the
+	# ultrawide report is answered with can be shot from one script. It does not
+	# save — a capture run must never leave the developer's own profile pinned.
+	var args: PackedStringArray = OS.get_cmdline_user_args()
+	var flag: int = args.find("--hud-width")
+	if flag >= 0 and flag + 1 < args.size():
+		hud_width = clampf(args[flag + 1].to_float() / 100.0,
+				HUD_WIDTH_MIN, HUD_WIDTH_MAX)
+		hud_width_auto = false
+		print("[Screen] forced HUD WIDTH %d%% (capture flag; not saved)" % [
+			int(hud_width * 100.0)])
 	_apply()
 	# `--ui-audit`. Armed from here rather than from Debug for two reasons: this is
 	# the autoload that owns the canvas the audit measures, and Debug is a shared
@@ -89,6 +131,34 @@ func set_ui_scale(value: float) -> void:
 func set_vignette(value: float) -> void:
 	vignette = clampf(value, VIGNETTE_MIN, VIGNETTE_MAX)
 	_apply()
+	_save()
+	changed.emit()
+
+
+## The HUD WIDTH the interface should lay out at, for a canvas of `view`. Reads
+## the player's number once they have one, and the aspect ramp until then.
+func hud_width_for(view: Vector2) -> float:
+	if not hud_width_auto:
+		return clampf(hud_width, HUD_WIDTH_MIN, HUD_WIDTH_MAX)
+	if view.y <= 0.0:
+		return HUD_WIDTH_MIN
+	return auto_hud_width(view.x / view.y)
+
+
+## The automatic ramp, as a pure function of aspect, so a test can assert it and
+## the settings panel can show the resolved number without duplicating the rule.
+static func auto_hud_width(aspect: float) -> float:
+	return clampf(inverse_lerp(HUD_WIDTH_AUTO_FROM, HUD_WIDTH_AUTO_TO, aspect),
+			0.0, 1.0) * HUD_WIDTH_AUTO_CEILING
+
+
+## Touching the slider ends the automatic ramp for good — see the note on
+## `hud_width_auto`. `changed` is what makes the HUD re-fit live under the panel,
+## which matters more here than for any other row in the menu: this is a setting
+## you evaluate by looking at where your own minimap went.
+func set_hud_width(value: float) -> void:
+	hud_width = clampf(value, HUD_WIDTH_MIN, HUD_WIDTH_MAX)
+	hud_width_auto = false
 	_save()
 	changed.emit()
 
@@ -116,6 +186,9 @@ func _load() -> void:
 			UI_SCALE_MIN, UI_SCALE_MAX)
 	vignette = clampf(float(cfg.get_value(SECTION, "vignette", VIGNETTE_DEFAULT)),
 			VIGNETTE_MIN, VIGNETTE_MAX)
+	hud_width = clampf(float(cfg.get_value(SECTION, "hud_width", 0.0)),
+			HUD_WIDTH_MIN, HUD_WIDTH_MAX)
+	hud_width_auto = bool(cfg.get_value(SECTION, "hud_width_auto", true))
 
 
 ## Load-then-merge, then atomic temp-and-rename — the same discipline as
@@ -126,6 +199,8 @@ func _save() -> void:
 	cfg.load(SETTINGS_PATH)
 	cfg.set_value(SECTION, "ui_scale", ui_scale)
 	cfg.set_value(SECTION, "vignette", vignette)
+	cfg.set_value(SECTION, "hud_width", hud_width)
+	cfg.set_value(SECTION, "hud_width_auto", hud_width_auto)
 	var temp: String = SETTINGS_PATH + ".tmp"
 	if cfg.save(temp) == OK:
 		DirAccess.rename_absolute(ProjectSettings.globalize_path(temp),
