@@ -458,7 +458,8 @@ func apply_relay(where: Vector3, yaw: float, state: int, suspicion_now: int,
 	# order must not resurrect a creature that has already begun its shatter.
 	if dead and not sync_dead:
 		sync_dead = true
-	add_child(_synchronizer)
+	if _synchronizer.get_parent() == null:
+		add_child(_synchronizer)
 
 
 func _peer_has_world(peer_id: int) -> bool:

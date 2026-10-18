@@ -165,7 +165,7 @@ difficulty. Injection depth is the only difficulty slider there is.
 > architecture kit, the four-layer lighting rig and first-person embodiment —
 > and as of M4.8 the world is dense and answers back: levers, weldable ingress
 > points, physics that gives you away, and terminals you type at.
-> No packaged releases yet — for now you run from source.
+> Packaged Linux and Windows builds are available from the [GitHub Releases](https://github.com/nerdrx/banish-protocol/releases) page; source setup is below.
 
 **Requirements:** [Godot 4.7+](https://godotengine.org/download) · Linux or Windows
 
